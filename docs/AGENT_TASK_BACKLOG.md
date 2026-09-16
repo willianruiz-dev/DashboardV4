@@ -31,7 +31,10 @@
 | ESLint sin warnings | **PASA** — `npm run lint` (2026-09-16) |
 | Build de producción | **PASA** — `npm run build` (2026-09-16) |
 | Rutas relativas desde navegador | **PASA (código)** — BFF y `/staticfiles/...` same-origin |
-| Contrato de estáticos y path seguro | **PASA (local)** — una petición anónima alcanza el proxy/upstream (502 sólo por TLS del sandbox); traversal y separadores doblemente codificados devuelven 400 |
+| Contrato de estáticos y path seguro | **PASA (integración local)** — mock HTTPS confirma que el primer fetch no lleva key/token y que 401/403 reintenta sólo server-side con sesión; traversal y separadores doblemente codificados devuelven 400 |
+| Payload de cargue y almacenamiento | **PASA (integración local)** — mock recibe detalles de cargue, totales y `minDpQuantity` como números, con IDs/campos históricos intactos |
+| Payload de arqueo | **PASA (integración local)** — mock recibe `idPayPad`, `total`, `totalAp`, `totalDp`, `totalRj` como números finitos después de validar strings decimales |
+| Payload de configuración Pay+ | **PASA (integración local)** — create omite `id`/`paypad`; update conserva `id` e `idUserCreated`, igual que el formulario legado |
 | Secretos y upstream sólo server-side | **PASA (código)** |
 | Cargues y arqueos con `details: null` de un Pay+ real | **PENDIENTE E2E** |
 | Imágenes reales de denominaciones/billetes | **PENDIENTE E2E** |

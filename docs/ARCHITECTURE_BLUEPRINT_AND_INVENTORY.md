@@ -54,8 +54,12 @@
 | `npm run build` | **PASA** — rutas App Router y handlers compilados, 2026-09-16 |
 | `git diff --check` | **PASA** — 2026-09-16 |
 | Contrato Zod de cargues/arqueos | **PASA** — `details: null`/ausente se vuelve `[]`; un objeto inválido sigue rechazado. |
+| Payload de cargue y almacenamiento | **PASA (integración local)** — mock HTTPS recibió detalles/totales del cargue y `minDpQuantity` como números, preservando IDs y nombres de campo históricos. |
+| Payload de arqueo | **PASA (integración local)** — mock HTTPS recibió `idPayPad`, `total`, `totalAp`, `totalDp` y `totalRj` como números finitos, tras la validación de strings decimales del BFF. |
+| Payload de configuración Pay+ | **PASA (integración local)** — create omitió `id`/`paypad`; update transportó `id` e `idUserCreated`, como hacía el formulario legado. |
 | Normalización de paths de imágenes | **PASA** — pruebas locales cubrieron ruta legado, prefijo `staticfiles`, URL absoluta, barras inversas, espacios codificados, traversal y separadores doblemente codificados. |
-| Login/página sin sesión y estáticos | **PASA parcial** — `/login` devuelve 200, áreas privadas redirigen a `/login`; un `/staticfiles/...` anónimo llega al proxy sin exigir sesión (la red TLS del sandbox devuelve 502 antes del upstream). |
+| Contrato de estáticos | **PASA (integración local)** — mock HTTPS verificó una solicitud pública sin `DashboardKeyId`/`Authorization`, y el reintento con ambos sólo luego de 401/403. |
+| Login/página sin sesión | **PASA parcial** — `/login` devuelve 200 y las áreas privadas redirigen a `/login`. |
 | Imágenes, cargues, arqueos, Excel y vídeo con sesión real | **PENDIENTE E2E** |
 
 ## SUPUESTOS Y BLOQUEOS

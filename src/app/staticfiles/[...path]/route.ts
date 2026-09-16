@@ -63,7 +63,9 @@ async function proxyStaticFile(request: NextRequest, context: StaticFileRouteCon
       return publicResponse;
     }
 
-    await publicResponse.body?.cancel();
+    // Do not await cancellation here: Next's response stream can wait for the caller to
+    // consume it, which would prevent the compatibility retry from starting.
+    void publicResponse.body?.cancel().catch(() => undefined);
     return proxyBackendRequest(request, ["staticfiles", ...path], token);
   } catch (error) {
     return createApiRouteError(error);
