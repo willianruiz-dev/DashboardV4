@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { getDashboardToken } from "@/lib/auth/session";
 import { proxyBackendRequest } from "@/lib/server/backend-proxy";
 
 export const dynamic = "force-dynamic";
@@ -11,9 +12,54 @@ type BackendRouteContext = {
   }>;
 };
 
+function isAuthenticationPath(path: readonly string[]): boolean {
+  return path[0]?.toLowerCase() === "auth";
+}
+
+function isUnsafeMethod(method: string): boolean {
+  return !["GET", "HEAD", "OPTIONS"].includes(method);
+}
+
+function isSameOriginRequest(request: NextRequest): boolean {
+  const origin = request.headers.get("origin");
+  return origin === null || origin === request.nextUrl.origin;
+}
+
 async function proxy(request: NextRequest, context: BackendRouteContext): Promise<NextResponse> {
   const { path } = await context.params;
-  return proxyBackendRequest(request, path);
+
+  if (isAuthenticationPath(path)) {
+    return NextResponse.json(
+      {
+        message: "Usa las rutas de autenticación dedicadas.",
+        statusCode: 404,
+      },
+      { status: 404 },
+    );
+  }
+
+  if (isUnsafeMethod(request.method) && !isSameOriginRequest(request)) {
+    return NextResponse.json(
+      {
+        message: "La solicitud no proviene del origen permitido.",
+        statusCode: 403,
+      },
+      { status: 403 },
+    );
+  }
+
+  const token = await getDashboardToken();
+  if (!token) {
+    return NextResponse.json(
+      {
+        message: "La sesión no está disponible.",
+        statusCode: 401,
+      },
+      { status: 401 },
+    );
+  }
+
+  return proxyBackendRequest(request, path, token);
 }
 
 async function options(): Promise<NextResponse> {

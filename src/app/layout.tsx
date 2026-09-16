@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { AppProviders } from "@/components/providers/app-providers";
 
 import "./globals.css";
 
@@ -15,10 +14,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="es">
       <body>
-        <TooltipProvider delayDuration={300}>
-          {children}
-          <Toaster position="bottom-right" />
-        </TooltipProvider>
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );

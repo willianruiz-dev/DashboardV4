@@ -21,7 +21,7 @@ const RESPONSE_HEADERS_TO_FORWARD = [
   "last-modified",
 ] as const;
 
-function createUpstreamHeaders(request: NextRequest, apiKeyId: string): Headers {
+function createUpstreamHeaders(request: NextRequest, apiKeyId: string, token: string | null): Headers {
   const headers = new Headers();
 
   headers.set(BACKEND_API_KEY_HEADER, apiKeyId);
@@ -34,9 +34,8 @@ function createUpstreamHeaders(request: NextRequest, apiKeyId: string): Headers 
     }
   }
 
-  const authorization = request.headers.get("authorization");
-  if (authorization) {
-    headers.set("authorization", authorization);
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
   }
 
   return headers;
@@ -58,13 +57,17 @@ function createProxyError(message: string): NextResponse {
   );
 }
 
-export async function proxyBackendRequest(request: NextRequest, pathSegments: readonly string[]): Promise<NextResponse> {
+export async function proxyBackendRequest(
+  request: NextRequest,
+  pathSegments: readonly string[],
+  token: string | null,
+): Promise<NextResponse> {
   try {
     const backendConfig = getBackendConfig();
     const targetUrl = createBackendUrl(backendConfig, pathSegments, request.nextUrl.search);
     const requestInit: RequestInit = {
       cache: "no-store",
-      headers: createUpstreamHeaders(request, backendConfig.apiKeyId),
+      headers: createUpstreamHeaders(request, backendConfig.apiKeyId, token),
       method: request.method,
       redirect: "manual",
     };

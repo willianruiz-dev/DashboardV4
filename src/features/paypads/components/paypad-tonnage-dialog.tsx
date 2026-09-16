@@ -1,0 +1,122 @@
+"use client";
+
+import { Archive, LoaderCircle, Scale } from "lucide-react";
+import { useMemo, useState } from "react";
+import type { ColumnDef } from "@tanstack/react-table";
+import { toast } from "sonner";
+
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/shared/query-states";
+import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
+import { CriticalConfirmationDialog } from "@/components/ui/alert-dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
+import { usePaypadStorage, useSaveTonnage } from "@/features/paypads/hooks";
+import type { PayPad, PayPadStorage } from "@/features/paypads/schemas";
+import { formatDashboardMoney, sumMoneyStrings } from "@/lib/formatters/money";
+
+interface PayPadTonnageDialogProps {
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  paypad: PayPad | null;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "No fue posible cargar el almacenamiento del Pay+.";
+}
+
+function StorageTable({ label, rows, total }: { label: string; rows: PayPadStorage[]; total: string }) {
+  const columns: ColumnDef<PayPadStorage, unknown>[] = [
+    { accessorKey: "denominationValue", cell: ({ row }) => <span className="font-numeric font-medium">{formatDashboardMoney(row.original.denominationValue)}</span>, header: "Denominación", meta: { mobileLabel: "Denominación" } },
+    { id: "quantity", cell: ({ row }) => label === "Aceptadores" ? row.original.apStored : row.original.dpStored, header: "Unidades", meta: { mobileLabel: "Unidades" } },
+    { id: "amount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(label === "Aceptadores" ? row.original.apTotal : row.original.dpTotal)}</span>, header: "Valor", meta: { mobileLabel: "Valor" } },
+  ];
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-base">{label}</CardTitle></CardHeader>
+      <CardContent className="grid gap-4">
+        {rows.length > 0 ? <ResponsiveDataTable columns={columns} data={rows} getCardTitle={(row) => formatDashboardMoney(row.denominationValue)} getRowId={(row) => String(row.idCurrencyDenomination)} label={label} /> : <p className="text-sm text-muted-foreground">No hay unidades en {label.toLocaleLowerCase()}.</p>}
+        <div className="flex justify-between border-t pt-3 text-sm"><span className="font-medium">Total</span><span className="font-numeric font-semibold">{formatDashboardMoney(total)}</span></div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function PayPadTonnageDialog({ onOpenChange, open, paypad }: PayPadTonnageDialogProps) {
+  const session = useDashboardSession();
+  const canWrite = hasPermission(session, "WriteTonnagesAndLoads");
+  const storageQuery = usePaypadStorage(paypad?.id ?? null);
+  const saveMutation = useSaveTonnage();
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const storage = useMemo(() => storageQuery.data ?? [], [storageQuery.data]);
+  const acceptedRows = useMemo(() => storage.filter((item) => item.apStored !== "0"), [storage]);
+  const dispenserRows = useMemo(() => storage.filter((item) => item.dpStored !== "0"), [storage]);
+  const totalAccepted = sumMoneyStrings(storage.map((item) => item.apTotal));
+  const totalDispenser = sumMoneyStrings(storage.map((item) => item.dpTotal));
+  const totalRejected = sumMoneyStrings(storage.map((item) => item.rjTotal));
+  const total = sumMoneyStrings([totalAccepted, totalDispenser, totalRejected]);
+
+  function close(): void {
+    if (!saveMutation.isPending) {
+      onOpenChange(false);
+    }
+  }
+
+  async function confirmTonnage(): Promise<void> {
+    if (!paypad) {
+      return;
+    }
+
+    try {
+      await saveMutation.mutateAsync({ idPayPad: paypad.id });
+      toast.success("Arqueo registrado con éxito.");
+      setConfirmationOpen(false);
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }
+
+  return (
+    <>
+      <Dialog onOpenChange={(nextOpen) => (nextOpen ? onOpenChange(true) : close())} open={open}>
+        <DialogContent className="sm:max-w-5xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Scale aria-hidden="true" className="size-5" />Realizar arqueo</DialogTitle>
+            <DialogDescription>Revisa el efectivo almacenado en {paypad?.username ?? "el Pay+"}. El API calcula y registra el arqueo con el almacenamiento actual.</DialogDescription>
+          </DialogHeader>
+          {storageQuery.isPending ? <ListSkeleton rows={4} /> : null}
+          {!storageQuery.isPending && storageQuery.isError ? <ErrorState description={getErrorMessage(storageQuery.error)} onRetry={() => void storageQuery.refetch()} /> : null}
+          {!storageQuery.isPending && !storageQuery.isError && storage.length === 0 ? <EmptyState description="No hay almacenamiento para arqueo en este Pay+." title="No hay efectivo almacenado" /> : null}
+          {!storageQuery.isPending && !storageQuery.isError && storage.length > 0 ? (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <StorageTable label="Aceptadores" rows={acceptedRows} total={totalAccepted} />
+              <StorageTable label="Dispensadores" rows={dispenserRows} total={totalDispenser} />
+              <Card className="lg:col-span-2"><CardContent className="flex items-center justify-between gap-3 p-5"><span className="flex items-center gap-2 text-sm font-medium"><Archive aria-hidden="true" className="size-4" />Baúl de rechazo</span><span className="font-numeric text-base font-semibold">{formatDashboardMoney(totalRejected)}</span></CardContent></Card>
+            </div>
+          ) : null}
+          {!canWrite ? <Alert><AlertDescription>Tu rol puede consultar el almacenamiento, pero no registrar arqueos.</AlertDescription></Alert> : null}
+          <div className="flex items-center justify-between rounded-md border bg-secondary px-4 py-3"><span className="text-sm font-medium">Total almacenado</span><span className="font-numeric text-lg font-semibold">{formatDashboardMoney(total)}</span></div>
+          <DialogFooter>
+            <Button disabled={saveMutation.isPending} onClick={close} type="button" variant="outline">Cancelar</Button>
+            {canWrite ? <Button disabled={saveMutation.isPending || storage.length === 0} onClick={() => setConfirmationOpen(true)} type="button">{saveMutation.isPending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <Scale aria-hidden="true" className="size-4" />}{saveMutation.isPending ? "Registrando…" : "Registrar arqueo"}</Button> : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <CriticalConfirmationDialog
+        confirmationLabel="Confirmar arqueo"
+        description={`Vas a registrar un arqueo sobre ${formatDashboardMoney(total)} en ${paypad?.username ?? "el Pay+"}. Esta operación financiera es irreversible.`}
+        isPending={saveMutation.isPending}
+        onConfirm={() => void confirmTonnage()}
+        onOpenChange={setConfirmationOpen}
+        open={confirmationOpen}
+        pendingLabel="Registrando…"
+        title="Confirmar arqueo irreversible"
+        verificationText={paypad ? String(paypad.id) : ""}
+      />
+    </>
+  );
+}

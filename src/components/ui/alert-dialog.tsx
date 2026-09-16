@@ -76,6 +76,75 @@ const AlertDialogDescription = React.forwardRef<
 ));
 AlertDialogDescription.displayName = AlertDialogPrimitive.Description.displayName;
 
+export interface CriticalConfirmationDialogProps {
+  confirmationLabel: string;
+  description: string;
+  isPending?: boolean;
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  pendingLabel?: string;
+  title: string;
+  verificationText: string;
+}
+
+function CriticalConfirmationDialog(props: CriticalConfirmationDialogProps) {
+  return <CriticalConfirmationDialogContent key={`${props.open}-${props.verificationText}`} {...props} />;
+}
+
+function CriticalConfirmationDialogContent({
+  confirmationLabel,
+  description,
+  isPending = false,
+  onConfirm,
+  onOpenChange,
+  open,
+  pendingLabel = "Procesando…",
+  title,
+  verificationText,
+}: CriticalConfirmationDialogProps) {
+  const [typedVerification, setTypedVerification] = React.useState("");
+  const mayConfirm = !isPending && typedVerification === verificationText;
+
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!isPending) {
+          onOpenChange(nextOpen);
+        }
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <label className="grid gap-2 text-sm font-medium text-foreground">
+          Escribe <span className="font-numeric font-semibold">{verificationText}</span> para continuar
+          <Input
+            autoComplete="off"
+            disabled={isPending}
+            onChange={(event) => setTypedVerification(event.target.value)}
+            value={typedVerification}
+          />
+        </label>
+        <AlertDialogFooter>
+          <AlertDialogCancel asChild>
+            <Button autoFocus disabled={isPending} type="button" variant="outline">
+              Cancelar
+            </Button>
+          </AlertDialogCancel>
+          <Button disabled={!mayConfirm} onClick={onConfirm} type="button">
+            {isPending ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : null}
+            {isPending ? pendingLabel : confirmationLabel}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 export interface DestructiveConfirmationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -163,5 +232,6 @@ export {
   AlertDialogPortal,
   AlertDialogTitle,
   AlertDialogTrigger,
+  CriticalConfirmationDialog,
   DestructiveConfirmationDialog,
 };
