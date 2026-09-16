@@ -21,7 +21,7 @@
 | 4 | Arqueos | **NO INICIADO / BLOQUEADO PARCIALMENTE** | Fase 3; B-01, B-04, B-05, B-07. |
 | 5 | Monitoreo en Tiempo Real | **NO INICIADO / BLOQUEADO PARCIALMENTE** | Fase 4; B-02, B-03, B-06, B-11. |
 
-Los IDs `B-*` se detallan en `docs/ARCHITECTURE_BLUEPRINT_AND_INVENTORY.md`, sección 6.
+Los IDs `B-*` se detallan en `docs/ARCHITECTURE_BLUEPRINT_AND_INVENTORY.md`, sección `SUPUESTOS Y BLOQUEOS`.
 
 ---
 

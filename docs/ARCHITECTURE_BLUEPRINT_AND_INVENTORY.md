@@ -339,7 +339,9 @@ Si se entrega un WebSocket/SignalR contract, su capa sólo emitirá eventos de i
 
 La implementación requerirá: contrato de URL/protocolo, autenticación, tipos de eventos, campos de orden/versión, política de reconexión/backoff, indicador de conexión y refetch al reconectar. No se simulará realtime con polling presentado como WebSocket.
 
-## 6. Contratos que necesitan confirmación antes de código de dominio
+## SUPUESTOS Y BLOQUEOS
+
+Los siguientes puntos no se han inferido como requisitos; quedan registrados para decisión o prueba de contrato antes de escribir el código de dominio afectado.
 
 | ID | Bloqueo / supuesto no resuelto | Impacto | Acción requerida |
 | --- | --- | --- | --- |
