@@ -1,7 +1,8 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- Files are authenticated, dynamic legacy assets served by the same-origin /staticfiles proxy. */
+
 import { ImageOff } from "lucide-react";
-import Image from "next/image";
 import { useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
@@ -16,8 +17,9 @@ interface BackendStaticImageProps {
 }
 
 /**
- * Keeps legacy static assets on a same-origin route. The route resolves the protected
- * upstream server-side, so session credentials and the upstream URL never reach the browser.
+ * Uses a native image so the browser requests the authenticated same-origin URL directly.
+ * Next's optimizer is deliberately bypassed: it cannot forward a dashboard session to an
+ * upstream asset and would change the legacy `/staticfiles/...` request contract.
  */
 export function BackendStaticImage({ alt, className, fallback, height, src, width }: BackendStaticImageProps) {
   const [failedSource, setFailedSource] = useState<string | null>(null);
@@ -38,14 +40,14 @@ export function BackendStaticImage({ alt, className, fallback, height, src, widt
 
   return (
     <span className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-md border bg-secondary", className)} style={{ height, width }}>
-      <Image
+      <img
         alt={alt}
         className="absolute inset-0 h-full w-full object-contain"
+        decoding="async"
         height={height}
         loading="lazy"
         onError={() => setFailedSource(src)}
         src={src}
-        unoptimized
         width={width}
       />
     </span>
