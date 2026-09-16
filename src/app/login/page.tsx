@@ -1,4 +1,4 @@
-import { Landmark } from "lucide-react";
+import Image from "next/image";
 import { redirect } from "next/navigation";
 
 import { ThemeToggle } from "@/components/layout/theme-toggle";
@@ -20,13 +20,16 @@ export default async function LoginPage() {
       <ThemeToggle className="absolute right-4 top-4 sm:right-6 sm:top-6" showLabel />
       <div className="grid w-full max-w-md gap-6">
         <div className="grid gap-3 text-center">
-          <div className="mx-auto flex size-14 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Landmark aria-hidden="true" className="size-7" />
-          </div>
-          <div className="space-y-1">
-            <p className="text-sm font-semibold text-primary">E-city</p>
-            <p className="text-sm text-muted-foreground">Plataforma operativa</p>
-          </div>
+          <Image
+            alt="E-city Software"
+            className="mx-auto h-auto w-52 rounded-md border bg-card p-1 shadow-sm"
+            height={182}
+            priority
+            sizes="(max-width: 640px) 13rem, 13rem"
+            src="/images/banner_resized.jpg"
+            width={448}
+          />
+          <p className="text-sm text-muted-foreground">Plataforma operativa</p>
         </div>
         <Card>
           <CardContent className="p-5 sm:p-7">

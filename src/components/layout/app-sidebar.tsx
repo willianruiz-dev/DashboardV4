@@ -17,6 +17,7 @@ import {
   Users,
   WalletCards,
 } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -125,14 +126,16 @@ export function AppSidebar({ navigation, onNavigate }: AppSidebarProps) {
 
   return (
     <aside aria-label="Navegación principal" className="grid h-full grid-rows-[auto_1fr] gap-6 bg-card p-4 text-card-foreground">
-      <Link className="flex min-h-11 items-center gap-3 rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="/dashboard" onClick={onNavigate}>
-        <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <Landmark aria-hidden="true" className="size-5" />
-        </span>
-        <span className="grid leading-tight">
-          <span className="font-semibold">E-city</span>
-          <span className="text-xs text-muted-foreground">Dashboard</span>
-        </span>
+      <Link aria-label="E-city Software: ir al inicio" className="flex min-h-11 items-center rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="/dashboard" onClick={onNavigate}>
+        <Image
+          alt=""
+          className="h-auto w-40 rounded-sm border bg-card p-1"
+          height={182}
+          priority
+          sizes="10rem"
+          src="/images/banner_resized.jpg"
+          width={448}
+        />
       </Link>
       <nav className="grid content-start gap-1 overflow-y-auto pr-1">
         <Link

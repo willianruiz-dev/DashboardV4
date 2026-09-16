@@ -16,3 +16,12 @@ export function getPaypadMachineName(paypad: Pick<PayPad, "userName" | "username
 export function getPaypadDisplayName(paypad: Pick<PayPad, "id" | "userName" | "username"> | null | undefined): string {
   return getPaypadMachineName(paypad) || (paypad ? `Pay+ ${paypad.id}` : "Pay+");
 }
+
+/**
+ * Transaction DTOs carry a `paypad` display field whose source is not the machine
+ * username. Prefer the username resolved from the PayPad list and never present a
+ * description as the machine name.
+ */
+export function getResolvedPaypadMachineName(paypadUsername: string | null | undefined, id: number): string {
+  return paypadUsername?.trim() || `Pay+ ${id}`;
+}

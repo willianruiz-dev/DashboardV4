@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { paypadSchema } from "@/features/paypads/schemas";
+import { getPaypadMachineName } from "@/features/paypads/paypad-display";
+import { paypadSchema, type PayPad } from "@/features/paypads/schemas";
 import { transactionSchema, transactionSearchRequestSchema, transactionSearchResponseSchema, type DashboardTransaction, type TransactionSearchRequest } from "@/features/transactions/schemas";
 import { compareMoneyStrings, subtractMoneyStrings, sumMoneyStrings } from "@/lib/formatters/money";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
@@ -44,15 +45,34 @@ function compareTransactions(left: DashboardTransaction, right: DashboardTransac
   return search.sortDirection === "asc" ? result : -result;
 }
 
-async function getTransactions(paypadId: number, from: string, to: string, token: string): Promise<DashboardTransaction[]> {
+interface TransactionSearchPaypad {
+  id: number;
+  paypadUsername: string | null;
+}
+
+function toTransactionSearchPaypad(paypad: PayPad): TransactionSearchPaypad {
+  return {
+    id: paypad.id,
+    paypadUsername: getPaypadMachineName(paypad),
+  };
+}
+
+async function getTransactions(paypad: TransactionSearchPaypad, from: string, to: string, token: string): Promise<DashboardTransaction[]> {
   try {
     const envelope = await requestBackend(["api", "Transaction", "GetByDate"], httpEnvelopeSchema(z.array(transactionSchema)), {
-      body: JSON.stringify({ from, id: paypadId, to }),
+      body: JSON.stringify({ from, id: paypad.id, to }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
       token,
     });
-    return envelope.response;
+
+    // The Transaction DTO's `paypad` label is a server-side display field and can
+    // contain the Pay+ description. Resolve the only authoritative machine label
+    // from the same PayPad list used by the legacy selector (`username`).
+    return envelope.response.map((transaction) => ({
+      ...transaction,
+      paypadUsername: paypad.paypadUsername,
+    }));
   } catch (error) {
     if (error instanceof BackendApiError && error.status === 404) {
       return [];
@@ -61,10 +81,10 @@ async function getTransactions(paypadId: number, from: string, to: string, token
   }
 }
 
-async function getPaypadIds(token: string): Promise<number[]> {
+async function getPaypads(token: string): Promise<PayPad[]> {
   try {
     const envelope = await requestBackend(["api", "PayPad"], httpEnvelopeSchema(z.array(paypadSchema)), { token });
-    return envelope.response.map((paypad) => paypad.id);
+    return envelope.response;
   } catch (error) {
     if (error instanceof BackendApiError && error.status === 404) {
       return [];
@@ -92,8 +112,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body: unknown = await request.json().catch(() => undefined);
     const search = transactionSearchRequestSchema.parse(body);
     const token = await requireDashboardToken();
-    const paypadIds = search.paypadId === null ? await getPaypadIds(token) : [search.paypadId];
-    const resultSets = await Promise.all(paypadIds.map((paypadId) => getTransactions(paypadId, search.from, search.to, token)));
+    const paypads = await getPaypads(token);
+    const selectedPaypad = search.paypadId === null ? undefined : paypads.find((paypad) => paypad.id === search.paypadId);
+    const searchPaypads = search.paypadId === null
+      ? paypads.map(toTransactionSearchPaypad)
+      : [{
+          id: search.paypadId,
+          paypadUsername: selectedPaypad ? getPaypadMachineName(selectedPaypad) : null,
+        }];
+    const resultSets = await Promise.all(searchPaypads.map((paypad) => getTransactions(paypad, search.from, search.to, token)));
     const allTransactions = resultSets.flat();
     const products = [...new Set(allTransactions.flatMap((transaction) => transaction.product?.trim() ? [transaction.product] : []))].sort((left, right) => left.localeCompare(right));
     const matchingTransactions = search.product === null ? allTransactions : allTransactions.filter((transaction) => transaction.product === search.product);

@@ -129,7 +129,10 @@ export const loadDetailSchema = z
   .object({
     denominationValue: integerStringSchema,
     id: z.number().int().nonnegative().optional(),
-    idCurrencyDenomination: z.number().int().positive(),
+    // Historical list procedures can omit this joined value; .NET then serializes
+    // the non-nullable DTO property as 0. It is only used to match an optional
+    // denomination image in the history view, never as a mutation identifier.
+    idCurrencyDenomination: z.number().int().nonnegative(),
     idLoad: z.number().int().nonnegative().optional(),
     quantity: integerStringSchema,
   })
@@ -141,7 +144,10 @@ export const loadSchema = z
     dateCreated: optionalString,
     details: z.array(loadDetailSchema).nullish().transform((details) => details ?? []),
     id: z.number().int().nonnegative(),
-    idPayPad: z.number().int().positive(),
+    // GetByPaypad procedures already receive the selected Pay+ ID and can return
+    // the DTO's default 0 when the ID_PAYPAD column is not included in their row.
+    // Do not reject otherwise valid historical movements for that non-displayed key.
+    idPayPad: z.number().int().nonnegative(),
     totalLoaded: decimalStringSchema,
   })
   .passthrough();
@@ -162,7 +168,9 @@ export const tonnageDetailSchema = z
   .object({
     denominationValue: integerStringSchema,
     id: z.number().int().nonnegative().optional(),
-    idCurrencyDenomination: z.number().int().positive(),
+    // See LoadDetail: 0 is a legacy read-model sentinel when a joined column was
+    // not selected. Create/update payloads remain strictly positive elsewhere.
+    idCurrencyDenomination: z.number().int().nonnegative(),
     idTonnage: z.number().int().nonnegative().optional(),
     quantityAp: integerStringSchema,
     quantityDp: integerStringSchema,
@@ -177,7 +185,9 @@ export const tonnageSchema = z
     dateCreated: optionalString,
     details: z.array(tonnageDetailSchema).nullish().transform((details) => details ?? []),
     id: z.number().int().nonnegative(),
-    idPayPad: z.number().int().positive(),
+    // The history endpoint can expose 0 for an omitted ID_PAYPAD join. The selected
+    // card owns the actual Pay+ ID; this value is not reused for a mutation.
+    idPayPad: z.number().int().nonnegative(),
     total: decimalStringSchema,
     totalAp: decimalStringSchema,
     totalDp: decimalStringSchema,

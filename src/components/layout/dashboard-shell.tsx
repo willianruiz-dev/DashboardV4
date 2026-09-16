@@ -1,6 +1,8 @@
 "use client";
 
 import { Menu, PanelLeftClose } from "lucide-react";
+import Image from "next/image";
+import Link from "next/link";
 import { useState, type ReactNode } from "react";
 
 import { AppSidebar } from "@/components/layout/app-sidebar";
@@ -77,7 +79,18 @@ export function DashboardShell({ children, session }: DashboardShellProps) {
             >
               <PanelLeftClose aria-hidden="true" className="size-5" />
             </Button>
-            <div className="min-w-0">
+            <Link aria-label="Ir al inicio de E-city" className="flex min-w-0 items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="/dashboard">
+              <Image
+                alt=""
+                className="h-auto w-28 rounded-sm border bg-card p-0.5 sm:w-32"
+                height={182}
+                priority
+                sizes="(max-width: 640px) 7rem, 8rem"
+                src="/images/banner_resized.jpg"
+                width={448}
+              />
+            </Link>
+            <div className="hidden min-w-0 sm:block">
               <p className="truncate text-sm font-semibold text-foreground">Dashboard operativo</p>
               <p className="truncate text-xs text-muted-foreground">E-city</p>
             </div>

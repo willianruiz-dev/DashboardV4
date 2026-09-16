@@ -15,6 +15,9 @@ export const transactionSchema = z
     idTypePayment: z.number().int().optional(),
     idTypeTransaction: z.number().int().optional(),
     incomeAmount: moneyStringSchema,
+    // Added by the server-side transaction search after resolving idPayPad against
+    // the PayPad list. `paypad` is retained only as the untouched legacy DTO field.
+    paypadUsername: optionalString,
     paypad: optionalString,
     product: optionalString,
     realAmount: moneyStringSchema,
