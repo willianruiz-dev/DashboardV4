@@ -4,6 +4,8 @@
  * layouts and interactive components without turning a server import into a client
  * reference.
  */
+const STATIC_PROXY_REVISION = "legacy-static-origin-v1";
+
 function decodeStaticPathSegment(segment: string): string {
   let decodedSegment = segment;
 
@@ -43,5 +45,8 @@ export function backendStaticFilePath(filePath: string | null | undefined): stri
     return null;
   }
 
-  return `/staticfiles/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`;
+  // The revision keeps image elements that already failed under an earlier local
+  // proxy implementation from reusing that failed browser resource. The BFF strips
+  // this query before forwarding to the legacy static host.
+  return `/staticfiles/${segments.map((segment) => encodeURIComponent(segment)).join("/")}?v=${STATIC_PROXY_REVISION}`;
 }

@@ -62,6 +62,11 @@ const serverEnvironment = {
     legacyEnvironment.get("REACT_APP_BASEADD"),
     "https://apidashboardv2.e-city.co/",
   ),
+  STATIC_FILES_BASE_ADDRESS: firstConfiguredValue(
+    process.env.STATIC_FILES_BASE_ADDRESS,
+    localEnvironment.get("STATIC_FILES_BASE_ADDRESS"),
+    "https://dashboardv2.e-city.co/",
+  ),
   DASHBOARD_API_KEY_ID: firstConfiguredValue(
     process.env.DASHBOARD_API_KEY_ID,
     localEnvironment.get("DASHBOARD_API_KEY_ID"),

@@ -1,12 +1,19 @@
 import "server-only";
 
 const DEFAULT_API_BASE_ADDRESS = "https://apidashboardv2.e-city.co/";
+// The legacy React app resolves `/staticfiles${IMG}` from its own deployed origin.
+// This is intentionally separate from the API origin, which does not host these files.
+const DEFAULT_STATIC_FILES_BASE_ADDRESS = "https://dashboardv2.e-city.co/";
 
 export const BACKEND_API_KEY_HEADER = "DashboardKeyId";
 
 export interface BackendConfig {
   apiBaseAddress: URL;
   apiKeyId: string;
+}
+
+export interface StaticFilesConfig {
+  staticFilesBaseAddress: URL;
 }
 
 export class BackendConfigurationError extends Error {
@@ -34,28 +41,44 @@ function isUnsafePathSegment(segment: string): boolean {
   return decodedSegment.length === 0 || decodedSegment === "." || decodedSegment === ".." || decodedSegment.includes("/") || decodedSegment.includes("\\");
 }
 
-function parseApiBaseAddress(value: string): URL {
-  let apiBaseAddress: URL;
+function parseServerBaseAddress(variableName: "API_BASE_ADDRESS" | "STATIC_FILES_BASE_ADDRESS", value: string): URL {
+  let baseAddress: URL;
 
   try {
-    apiBaseAddress = new URL(value);
+    baseAddress = new URL(value);
   } catch {
-    throw new BackendConfigurationError("API_BASE_ADDRESS must be a valid absolute URL.");
+    throw new BackendConfigurationError(`${variableName} must be a valid absolute URL.`);
   }
 
-  if (apiBaseAddress.protocol !== "https:") {
-    throw new BackendConfigurationError("API_BASE_ADDRESS must use HTTPS.");
+  if (baseAddress.protocol !== "https:") {
+    throw new BackendConfigurationError(`${variableName} must use HTTPS.`);
   }
 
-  if (apiBaseAddress.username || apiBaseAddress.password || apiBaseAddress.search || apiBaseAddress.hash) {
-    throw new BackendConfigurationError("API_BASE_ADDRESS cannot include credentials, a query string, or a hash.");
+  if (baseAddress.username || baseAddress.password || baseAddress.search || baseAddress.hash) {
+    throw new BackendConfigurationError(`${variableName} cannot include credentials, a query string, or a hash.`);
   }
 
-  if (!apiBaseAddress.pathname.endsWith("/")) {
-    apiBaseAddress.pathname = `${apiBaseAddress.pathname}/`;
+  if (!baseAddress.pathname.endsWith("/")) {
+    baseAddress.pathname = `${baseAddress.pathname}/`;
   }
 
-  return apiBaseAddress;
+  return baseAddress;
+}
+
+function createServerUrl(baseAddress: URL, pathSegments: readonly string[], search: string, targetName: string): URL {
+  if (pathSegments.length === 0) {
+    throw new BackendConfigurationError(`A ${targetName} path is required.`);
+  }
+
+  if (pathSegments.some(isUnsafePathSegment)) {
+    throw new BackendConfigurationError(`The ${targetName} path contains an invalid segment.`);
+  }
+
+  const encodedPath = pathSegments.map((segment) => encodeURIComponent(segment)).join("/");
+  const targetUrl = new URL(encodedPath, baseAddress);
+  targetUrl.search = search;
+
+  return targetUrl;
 }
 
 export function getBackendConfig(): BackendConfig {
@@ -66,23 +89,24 @@ export function getBackendConfig(): BackendConfig {
   }
 
   return {
-    apiBaseAddress: parseApiBaseAddress(process.env.API_BASE_ADDRESS ?? DEFAULT_API_BASE_ADDRESS),
+    apiBaseAddress: parseServerBaseAddress("API_BASE_ADDRESS", process.env.API_BASE_ADDRESS ?? DEFAULT_API_BASE_ADDRESS),
     apiKeyId,
   };
 }
 
+export function getStaticFilesConfig(): StaticFilesConfig {
+  return {
+    staticFilesBaseAddress: parseServerBaseAddress(
+      "STATIC_FILES_BASE_ADDRESS",
+      process.env.STATIC_FILES_BASE_ADDRESS ?? DEFAULT_STATIC_FILES_BASE_ADDRESS,
+    ),
+  };
+}
+
 export function createBackendUrl(config: BackendConfig, pathSegments: readonly string[], search: string): URL {
-  if (pathSegments.length === 0) {
-    throw new BackendConfigurationError("A backend path is required.");
-  }
+  return createServerUrl(config.apiBaseAddress, pathSegments, search, "backend");
+}
 
-  if (pathSegments.some(isUnsafePathSegment)) {
-    throw new BackendConfigurationError("The backend path contains an invalid segment.");
-  }
-
-  const encodedPath = pathSegments.map((segment) => encodeURIComponent(segment)).join("/");
-  const targetUrl = new URL(encodedPath, config.apiBaseAddress);
-  targetUrl.search = search;
-
-  return targetUrl;
+export function createStaticFilesUrl(config: StaticFilesConfig, pathSegments: readonly string[], search: string): URL {
+  return createServerUrl(config.staticFilesBaseAddress, pathSegments, search, "static-file");
 }
