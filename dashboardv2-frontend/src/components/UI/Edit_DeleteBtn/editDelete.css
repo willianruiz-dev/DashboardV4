@@ -1,0 +1,33 @@
+.edit-btn {
+  margin: 4px;
+  color: black;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 30px;
+  height: 30px;
+  background-color: #ccc; /* Color gris */
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.edit-btn:hover {
+  background-color: #999;
+}
+
+.del-btn {
+  margin: 4px;
+  color: black;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 30px;
+  height: 30px;
+  background-color: #dc3545; /* Color gris */
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.del-btn:hover {
+  background-color: #bb2d3b;
+}

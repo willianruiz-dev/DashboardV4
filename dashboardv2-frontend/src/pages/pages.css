@@ -1,0 +1,184 @@
+/*Login ----------------------------------------------------*/
+.Login {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.login-box {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+  background-color: transparent;
+  border-radius: 15px;
+  width: 50vw;
+  height: 50vh;
+  font-family: "Segoe UI", sans-serif;
+}
+
+.form-box {
+  border-style: solid;
+  border-width: 2px;
+  border-radius: 15px;
+  border-color: #ffffff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+  width: 50vw;
+  height: 50vh;
+  color: #ffffff;
+}
+
+.error-message {
+  font-weight: bold;
+  color: rgb(144, 14, 14);
+}
+
+p {
+  font-size: small;
+}
+
+.inputGroup {
+  display: flex;
+  font-family: "Segoe UI", sans-serif;
+  margin: 2vh 0 2vh 0;
+  max-width: 190px;
+  position: relative;
+}
+
+.inputGroup input {
+  font-size: medium;
+  padding: 0.8em 0.8em 0.8em 1em;
+  outline: none;
+  border: 2px solid rgb(200, 200, 200);
+  background-color: transparent;
+  border-radius: 20px;
+  width: 100%;
+  color: aliceblue;
+}
+
+.inputGroup label {
+  font-size: medium;
+  position: absolute;
+  left: 0;
+  padding: 0.8em;
+  margin-left: 0.5em;
+  pointer-events: none;
+  transition: all 0.3s ease;
+  color: rgb(200, 200, 200);
+}
+
+.inputGroup :is(input:focus, input:valid) ~ label {
+  transform: translateY(-60%) scale(1);
+  margin: 0em;
+  margin-left: 1em;
+  padding: 0.4em;
+  background-color: var(--bg-color);
+}
+
+.inputGroup :is(input:focus, input:valid) {
+  border-color: rgb(150, 150, 200);
+}
+
+/* Button*/
+.animated-button {
+  position: relative;
+  display: inline-block;
+  padding: 12px 24px;
+  border: none;
+  font-size: 16px;
+  background-color: inherit;
+  border-radius: 100px;
+  font-weight: bold;
+  color: #ffffff40;
+  box-shadow: 0 0 0 2px #ffffff20;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+  margin-bottom: 20px;
+}
+.animated-button span:last-child {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  background-color: #8803ed60;
+  border-radius: 50%;
+  opacity: 0;
+  transition: all 0.8s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.animated-button span:first-child {
+  position: relative;
+  z-index: 1;
+}
+
+.animated-button:hover {
+  box-shadow: 0 0 0 5px #8803ed60;
+  color: #ffffff;
+}
+
+.animated-button:active {
+  scale: 0.95;
+}
+
+.animated-button:hover span:last-child {
+  width: 150px;
+  height: 150px;
+  opacity: 1;
+}
+
+.p-button.p-button-rounded {
+  border-radius: 2rem!important;
+}
+
+/* SelectPayPad-.----------------------------------------------------------------*/
+.paypad .input-value {
+  background-color: #282c34;
+  border-color: white;
+  color: white;
+}
+
+/* BottonPaginator---------------------------------------------------------------*/
+.p-paginator-bottom {
+  background: transparent;
+}
+
+.p-selectable-row {
+  background: var(--bs-dark-rgb);
+  border-bottom-width: var(--bs-border-width);
+}
+
+.p-selectable-row:hover {
+  /* opacity: 50%; */
+  background-color: #282c34;
+
+}
+
+
+.card-pay-pad {
+  /*cursor: pointer;*/
+  transition: all 0.5s;
+  box-sizing: border-box;
+  backdrop-filter: blur(6px);
+}
+
+.card-pay-pad:hover {
+  border: 3px solid #198754;
+  transform: scale(1.05);
+}
+
+.card-pay-pad:active {
+  transform: scale(0.95) rotateZ(1.7deg);
+}
+
+.p-column-header-content {
+  place-content: center;
+  text-align: center;
+}
