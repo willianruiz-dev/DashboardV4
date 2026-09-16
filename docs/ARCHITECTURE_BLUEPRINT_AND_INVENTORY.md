@@ -61,6 +61,12 @@
 | B-03 | Las operaciones retornan listas completas sin paginación/filtro/orden upstream. | Las tablas no pueden delegar esos parámetros al API legado. | El BFF `/api/transactions/search` procesa filtro/orden/paginación server-side sin exponer credenciales. |
 | B-04 | Arena no puede completar TLS hacia `https://apidashboardv2.e-city.co`. | No se puede ejecutar una prueba de credenciales o flujo real desde este sandbox. | La aplicación queda configurada para resolver el upstream sólo desde el servidor. La validación funcional final debe hacerse desde la red del despliegue con sus secretos configurados. |
 
-## Ejecución de producción
+## Prueba local contra el API productivo
 
-La aplicación no requiere que el navegador conozca el upstream. El proceso de despliegue debe inyectar, mediante su gestor de secretos, `DASHBOARD_API_KEY_ID` y `DASHBOARD_RSA_PUBLIC_KEY`, además de `API_BASE_ADDRESS` si se modifica el valor por defecto. No se deben copiar al repositorio ni a variables `NEXT_PUBLIC_*`.
+Para probar la aplicación migrada desde un PC local sin desplegarla, ejecutar `npm run build` y después `npm run start:local-api`. Ese comando sólo corre Next.js en `localhost`, pero usa el valor productivo de `API_BASE_ADDRESS` y carga en memoria las variables heredadas `REACT_APP_BASEADD`, `REACT_APP_DKEYID` y `REACT_APP_PUBKEY` de `dashboardv2-frontend/.env.production` si no existen equivalentes en `.env.local`. No imprime ni expone esos valores al navegador; el navegador continúa llamando únicamente a rutas relativas `/api/*`.
+
+`start:local-api` establece `SESSION_COOKIE_SECURE=false` sólo para que la cookie HttpOnly funcione en `http://localhost`. Si se necesita usar otro conjunto de credenciales local, `.env.local` tiene prioridad con `API_BASE_ADDRESS`, `DASHBOARD_API_KEY_ID`, `DASHBOARD_RSA_PUBLIC_KEY` y `SESSION_COOKIE_SECURE`.
+
+## Ejecución desplegada
+
+La aplicación no requiere que el navegador conozca el upstream. El proceso de despliegue debe inyectar, mediante su gestor de secretos, `DASHBOARD_API_KEY_ID` y `DASHBOARD_RSA_PUBLIC_KEY`, además de `API_BASE_ADDRESS` si se modifica el valor por defecto. No se deben copiar al repositorio ni a variables `NEXT_PUBLIC_*`; allí `SESSION_COOKIE_SECURE` debe permanecer en `true`.
