@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { useDenominations } from "@/features/denominations/hooks";
 import { usePaypadLoads, usePaypadTonnages } from "@/features/paypads/hooks";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { Load, LoadDetail, PayPad, Tonnage, TonnageDetail } from "@/features/paypads/schemas";
 import { ClientApiError } from "@/lib/api/client";
 import { backendStaticFilePath } from "@/lib/api/backend";
@@ -132,15 +133,23 @@ function BalanceHistory({ imageById, loads, tonnages }: { imageById: Denominatio
             {tonnages.map((tonnage) => {
               const isExpanded = openTonnageIds.has(tonnage.id);
               return (
-                <div className="grid gap-2 rounded-md border p-3" key={tonnage.id}>
+                <div className="grid gap-3 rounded-md border p-3" key={tonnage.id}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-numeric font-semibold">{formatDashboardMoney(tonnage.total)}</span>
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Arqueo {tonnage.id}</p>
+                      <p className="text-xs text-muted-foreground">{displayDate(tonnage.dateCreated)}</p>
+                    </div>
                     <Button aria-expanded={isExpanded} onClick={() => toggleTonnage(tonnage.id)} type="button" variant="ghost">
                       <ChevronRight aria-hidden="true" className={isExpanded ? "size-4 rotate-90" : "size-4"} />
                       Detalle
                     </Button>
                   </div>
-                  <span className="text-xs text-muted-foreground">{displayDate(tonnage.dateCreated)}</span>
+                  <dl className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                    <div><dt className="text-xs text-muted-foreground">Aceptadores</dt><dd className="font-numeric font-medium">{formatDashboardMoney(tonnage.totalAp)}</dd></div>
+                    <div><dt className="text-xs text-muted-foreground">Dispensadores</dt><dd className="font-numeric font-medium">{formatDashboardMoney(tonnage.totalDp)}</dd></div>
+                    <div><dt className="text-xs text-muted-foreground">Baúl de rechazo</dt><dd className="font-numeric font-medium">{formatDashboardMoney(tonnage.totalRj)}</dd></div>
+                    <div><dt className="text-xs text-muted-foreground">Total</dt><dd className="font-numeric font-semibold">{formatDashboardMoney(tonnage.total)}</dd></div>
+                  </dl>
                   {isExpanded ? <TonnageDetails details={tonnage.details} imageById={imageById} /> : null}
                 </div>
               );
@@ -160,15 +169,20 @@ function BalanceHistory({ imageById, loads, tonnages }: { imageById: Denominatio
             {loads.map((load) => {
               const isExpanded = openLoadIds.has(load.id);
               return (
-                <div className="grid gap-2 rounded-md border p-3" key={load.id}>
+                <div className="grid gap-3 rounded-md border p-3" key={load.id}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-numeric font-semibold">{formatDashboardMoney(load.totalLoaded)}</span>
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Cargue {load.id}</p>
+                      <p className="text-xs text-muted-foreground">{displayDate(load.dateCreated)}</p>
+                    </div>
                     <Button aria-expanded={isExpanded} onClick={() => toggleLoad(load.id)} type="button" variant="ghost">
                       <ChevronRight aria-hidden="true" className={isExpanded ? "size-4 rotate-90" : "size-4"} />
                       Detalle
                     </Button>
                   </div>
-                  <span className="text-xs text-muted-foreground">{displayDate(load.dateCreated)}</span>
+                  <dl className="grid gap-1 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2"><dt className="text-muted-foreground">Valor total cargado</dt><dd className="font-numeric font-semibold">{formatDashboardMoney(load.totalLoaded)}</dd></div>
+                  </dl>
                   {isExpanded ? <LoadDetails details={load.details} imageById={imageById} /> : null}
                 </div>
               );
@@ -203,7 +217,7 @@ export function PayPadBalanceDialog({ onOpenChange, open, paypad }: PayPadBalanc
             <History aria-hidden="true" className="size-5" />
             Cargues y arqueos
           </DialogTitle>
-          <DialogDescription>Consulta los movimientos registrados para {paypad?.username ?? "el Pay+"}.</DialogDescription>
+          <DialogDescription>Consulta los movimientos registrados para {getPaypadDisplayName(paypad)}.</DialogDescription>
         </DialogHeader>
         {loading ? <ListSkeleton rows={5} /> : null}
         {!loading && blockingError ? (

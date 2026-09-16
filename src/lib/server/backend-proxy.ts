@@ -21,10 +21,21 @@ const RESPONSE_HEADERS_TO_FORWARD = [
   "last-modified",
 ] as const;
 
-function createUpstreamHeaders(request: NextRequest, apiKeyId: string, token: string | null): Headers {
+interface ProxyBackendRequestOptions {
+  forwardDashboardCredentials?: boolean;
+}
+
+function createUpstreamHeaders(
+  request: NextRequest,
+  apiKeyId: string,
+  token: string | null,
+  forwardDashboardCredentials: boolean,
+): Headers {
   const headers = new Headers();
 
-  headers.set(BACKEND_API_KEY_HEADER, apiKeyId);
+  if (forwardDashboardCredentials) {
+    headers.set(BACKEND_API_KEY_HEADER, apiKeyId);
+  }
 
   for (const headerName of REQUEST_HEADERS_TO_FORWARD) {
     const headerValue = request.headers.get(headerName);
@@ -34,7 +45,7 @@ function createUpstreamHeaders(request: NextRequest, apiKeyId: string, token: st
     }
   }
 
-  if (token) {
+  if (forwardDashboardCredentials && token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
@@ -61,13 +72,14 @@ export async function proxyBackendRequest(
   request: NextRequest,
   pathSegments: readonly string[],
   token: string | null,
+  { forwardDashboardCredentials = true }: ProxyBackendRequestOptions = {},
 ): Promise<NextResponse> {
   try {
     const backendConfig = getBackendConfig();
     const targetUrl = createBackendUrl(backendConfig, pathSegments, request.nextUrl.search);
     const requestInit: RequestInit = {
       cache: "no-store",
-      headers: createUpstreamHeaders(request, backendConfig.apiKeyId, token),
+      headers: createUpstreamHeaders(request, backendConfig.apiKeyId, token, forwardDashboardCredentials),
       method: request.method,
       redirect: "manual",
     };

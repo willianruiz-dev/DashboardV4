@@ -17,6 +17,7 @@ import { hasPermission, useDashboardSession } from "@/features/auth/session-cont
 import { useDenominations } from "@/features/denominations/hooks";
 import type { CurrencyDenomination } from "@/features/denominations/schemas";
 import { usePaypadStorage, useSavePaypadStorage } from "@/features/paypads/hooks";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { PayPad, PayPadStorage, PayPadStorageMutation } from "@/features/paypads/schemas";
 import { backendStaticFilePath } from "@/lib/api/backend";
 import { formatDashboardMoney } from "@/lib/formatters/money";
@@ -153,7 +154,7 @@ export function PayPadStorageDialog({ onOpenChange, open, paypad }: PayPadStorag
       <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Settings2 aria-hidden="true" className="size-5" />Configuración de denominaciones</DialogTitle>
-          <DialogDescription>Define qué denominaciones puede dispensar {paypad?.username ?? "este Pay+"} y su cantidad mínima de operación.</DialogDescription>
+          <DialogDescription>Define qué denominaciones puede dispensar {getPaypadDisplayName(paypad)} y su cantidad mínima de operación.</DialogDescription>
         </DialogHeader>
         {isLoading ? <ListSkeleton rows={4} /> : null}
         {!isLoading && queryError ? <ErrorState description={getErrorMessage(queryError)} onRetry={() => void Promise.all([storageQuery.refetch(), denominationsQuery.refetch()])} /> : null}

@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { useDenominations } from "@/features/denominations/hooks";
 import { usePaypadStorage, useSaveLoad } from "@/features/paypads/hooks";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { LoadMutation, PayPad, PayPadStorage } from "@/features/paypads/schemas";
 import { backendStaticFilePath } from "@/lib/api/backend";
 import { formatDashboardMoney, multiplyMoneyString, sumMoneyStrings } from "@/lib/formatters/money";
@@ -138,7 +139,7 @@ export function PayPadLoadDialog({ onOpenChange, open, paypad }: PayPadLoadDialo
         <DialogContent className="sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><WalletCards aria-hidden="true" className="size-5" />Registrar cargue</DialogTitle>
-            <DialogDescription>Indica las unidades a cargar en {paypad?.username ?? "el Pay+"}. Sólo aparecen denominaciones habilitadas para dispensación.</DialogDescription>
+            <DialogDescription>Indica las unidades a cargar en {getPaypadDisplayName(paypad)}. Sólo aparecen denominaciones habilitadas para dispensación.</DialogDescription>
           </DialogHeader>
           {storageQuery.isPending ? <ListSkeleton rows={4} /> : null}
           {!storageQuery.isPending && storageQuery.isError ? <ErrorState description={getErrorMessage(storageQuery.error)} onRetry={() => void storageQuery.refetch()} /> : null}
@@ -157,7 +158,7 @@ export function PayPadLoadDialog({ onOpenChange, open, paypad }: PayPadLoadDialo
       </Dialog>
       <CriticalConfirmationDialog
         confirmationLabel="Confirmar cargue"
-        description={`Vas a registrar un cargue por ${formatDashboardMoney(total)} en ${paypad?.username ?? "el Pay+"}. Esta operación financiera es irreversible.`}
+        description={`Vas a registrar un cargue por ${formatDashboardMoney(total)} en ${getPaypadDisplayName(paypad)}. Esta operación financiera es irreversible.`}
         isPending={saveMutation.isPending}
         onConfirm={() => void confirmSave()}
         onOpenChange={setConfirmationOpen}

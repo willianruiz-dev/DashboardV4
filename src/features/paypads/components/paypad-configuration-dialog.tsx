@@ -14,6 +14,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useCreatePaypadConfiguration, usePaypadConfiguration, useUpdatePaypadConfiguration } from "@/features/paypads/hooks";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import { paypadConfigurationFormSchema, type PayPad, type PayPadConfiguration, type PayPadConfigurationFormValues, type PayPadConfigurationMutation } from "@/features/paypads/schemas";
 import { ClientApiError } from "@/lib/api/client";
 
@@ -89,14 +90,16 @@ export function PayPadConfigurationDialog({ onOpenChange, open, paypad }: PayPad
 
     const payload: PayPadConfigurationMutation = {
       ...values,
-      id: configuration?.id ?? 0,
       idPaypad: paypad.id,
-      paypad: paypad.username ?? null,
     };
 
     try {
       if (configuration) {
-        await updateMutation.mutateAsync(payload);
+        await updateMutation.mutateAsync({
+          ...payload,
+          id: configuration.id,
+          idUserCreated: configuration.idUserCreated ?? 0,
+        });
       } else {
         await createMutation.mutateAsync(payload);
       }
@@ -112,7 +115,7 @@ export function PayPadConfigurationDialog({ onOpenChange, open, paypad }: PayPad
       <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>Configuración de Pay+</DialogTitle>
-          <DialogDescription>Configura puertos, banderas operativas y datos adicionales para {paypad?.username ?? "este Pay+"}.</DialogDescription>
+          <DialogDescription>Configura puertos, banderas operativas y datos adicionales para {getPaypadDisplayName(paypad)}.</DialogDescription>
         </DialogHeader>
         {configurationQuery.isPending ? <ListSkeleton rows={5} /> : null}
         {!configurationQuery.isPending && blockingError ? <ErrorState description={getErrorMessage(blockingError)} onRetry={() => void configurationQuery.refetch()} /> : null}

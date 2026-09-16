@@ -2,8 +2,16 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { createOffice, deleteOffice, getOffice, getOfficesByClient, officeQueryKeys, updateOffice } from "@/features/offices/api";
+import { createOffice, deleteOffice, getOffice, getOffices, getOfficesByClient, officeQueryKeys, updateOffice } from "@/features/offices/api";
 import type { OfficeMutation } from "@/features/offices/schemas";
+
+export function useOffices(enabled = true) {
+  return useQuery({
+    enabled,
+    queryFn: getOffices,
+    queryKey: officeQueryKeys.all,
+  });
+}
 
 export function useOfficesByClient(clientId: number | null, enabled = true) {
   return useQuery({

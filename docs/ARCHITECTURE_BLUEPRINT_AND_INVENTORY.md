@@ -11,7 +11,7 @@
 | Aplicación | Next.js 16.3.5 App Router, React 19 y TypeScript 5.9 con `strict` y `noUncheckedIndexedAccess`. |
 | Diseño | Tailwind CSS v4 CSS-first y tokens derivados de `ManualDeMarca.md` en `src/app/globals.css`; componentes Radix/Shadcn tematizados en `src/components/ui/`. |
 | Sesión | Login RSA-OAEP SHA-1/Base64 server-side, JWT exclusivamente en cookie HttpOnly, `SameSite=Strict`; logout y carga de usuario/rol server-side. |
-| BFF | El navegador consume rutas relativas. `src/app/api/backend/[...path]/route.ts` agrega `DashboardKeyId` y token sólo en el servidor; `/staticfiles/[...path]` conserva el contrato de imágenes legado y también resuelve el upstream sólo server-side. |
+| BFF | El navegador consume rutas relativas. `src/app/api/backend/[...path]/route.ts` agrega `DashboardKeyId` y token sólo en el servidor; `/staticfiles/[...path]` conserva el request público histórico de imágenes, reintenta con sesión sólo ante 401/403 y también resuelve el upstream sólo server-side. |
 | Datos | TanStack Query v5, claves jerárquicas por dominio y contratos Zod en cada borde de API. |
 | Formularios | React Hook Form + Zod; controles con labels, feedback y estado pendiente. |
 | Tablas | TanStack Table v8: tabla en escritorio amplio y cards en formatos menores, sin scroll horizontal de página. |
@@ -40,8 +40,10 @@
 - Las fechas enviadas a `Transaction/GetByDate` se convierten a ISO 8601 UTC explícito (`yyyy-MM-ddTHH:mm:ss.fffZ`), que es el formato comprobado en el controlador legado.
 - Cargues, arqueos y eliminaciones esperan la mutación antes de cerrar; se deshabilitan durante `isPending`, muestran feedback y las operaciones irreversibles requieren confirmar el ID del registro.
 - El BFF de búsqueda de transacciones aplica filtro, orden y paginación en servidor porque el API legado devuelve colecciones completas sin protocolo de paginación.
-- Los paths históricos de imagen (`/images/...`, `/staticfiles/images/...`, barras inversas y URLs absolutas) se normalizan a un path relativo seguro `/staticfiles/...`. No se permiten segmentos de traversal.
+- Los paths históricos de imagen (`/images/...`, `/staticfiles/images/...`, barras inversas y URLs absolutas) se normalizan a un path relativo seguro `/staticfiles/...`. No se permiten traversal ni separadores codificados repetidamente. El primer fetch al upstream no incluye credenciales, como el `<img>` del legado; un 401/403 puede reintentarse con la sesión HttpOnly sólo desde el servidor.
+- El nombre visible de una máquina procede de `username`, con `userName` como alias histórico. `description` se mantiene como campo editable y no se usa como identidad; `Pay+ <id>` es un fallback sólo de presentación. Las tarjetas resuelven sucursal/dirección globales mediante `GET /api/Office`.
 - De acuerdo con el Swagger productivo, sólo `LoadDto.details` y `TonnageDto.details` se normalizan de `null` o ausencia a `[]`. Las demás desviaciones de formato continúan fallando en Zod, salvo los arreglos de bytes de imagen documentados como anulables.
+- El arqueo envía de nuevo el snapshot legado completo (`idPayPad`, `total`, `totalAp`, `totalDp`, `totalRj`) y lo convierte a números finitos únicamente en el BFF antes de enviarlo al API histórico.
 
 ## Calidad verificada
 
@@ -52,8 +54,8 @@
 | `npm run build` | **PASA** — rutas App Router y handlers compilados, 2026-09-16 |
 | `git diff --check` | **PASA** — 2026-09-16 |
 | Contrato Zod de cargues/arqueos | **PASA** — `details: null`/ausente se vuelve `[]`; un objeto inválido sigue rechazado. |
-| Normalización de paths de imágenes | **PASA** — pruebas locales cubrieron ruta legado, prefijo `staticfiles`, URL absoluta, barras inversas, espacios codificados y traversal. |
-| Login/página sin sesión | **PASA parcial** — `/login` devuelve 200, áreas privadas redirigen a `/login` y `/staticfiles/...` devuelve 401 sin sesión. |
+| Normalización de paths de imágenes | **PASA** — pruebas locales cubrieron ruta legado, prefijo `staticfiles`, URL absoluta, barras inversas, espacios codificados, traversal y separadores doblemente codificados. |
+| Login/página sin sesión y estáticos | **PASA parcial** — `/login` devuelve 200, áreas privadas redirigen a `/login`; un `/staticfiles/...` anónimo llega al proxy sin exigir sesión (la red TLS del sandbox devuelve 502 antes del upstream). |
 | Imágenes, cargues, arqueos, Excel y vídeo con sesión real | **PENDIENTE E2E** |
 
 ## SUPUESTOS Y BLOQUEOS
@@ -68,4 +70,4 @@
 
 ## ESTADO DEL BACKLOG
 
-La arquitectura no se presenta como cierre de producción. La corrección de `details` nullable y la restauración de imágenes protegidas están implementadas y validadas estáticamente; falta la comprobación autenticada con un Pay+ real y con las rutas de archivo reales antes de declarar paridad funcional completa.
+La arquitectura no se presenta como cierre de producción. La corrección de `details` nullable, el payload completo de arqueo, el nombre/sucursal del Pay+ y la restauración automática de rutas de imagen están implementados y validados estáticamente; falta la comprobación autenticada con un Pay+ real y con rutas de archivo reales antes de declarar paridad funcional completa.

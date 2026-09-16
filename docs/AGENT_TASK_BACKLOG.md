@@ -6,11 +6,11 @@
 | Fase | Entrega | Estado | Evidencia / pendiente |
 | --- | --- | --- | --- |
 | 0 | Sistema de diseño | **PASA (código)** | Tailwind v4 CSS-first, tokens del manual, tema claro/oscuro y primitives. Falta inspección visual autenticada de todos los flujos. |
-| 1 | Tipos e infraestructura | **PASA (código)** | Zod, Query, BFF relativo, sesión HttpOnly y cifrado server-side. La nueva ruta protegida `/staticfiles/...` compila y rechaza acceso anónimo. |
-| 2 | Usuarios y administración habilitadora | **PENDIENTE E2E** | CRUD de Usuarios, Clientes, Sucursales, Roles, Rutas y Maestros implementado; imágenes y mutaciones deben verificarse con una sesión real. |
-| 3 | Cargues | **CORRECCIÓN APLICADA; PENDIENTE E2E** | `LoadDto.details` ahora acepta sólo `null`/ausencia documentadas y normaliza a `[]`; la tabla de cargue muestra el billete desde la ruta estática protegida. Falta probar con un Pay+ productivo. |
-| 4 | Arqueos | **CORRECCIÓN APLICADA; PENDIENTE E2E** | `TonnageDto.details` recibe la misma normalización; arqueo e historial muestran previews de denominación cuando el API los provee. Falta prueba con un Pay+ productivo. |
-| 5 | Monitoreo y reportes | **PENDIENTE E2E** | Transacciones, detalle, vídeo, Excel, filtros/orden/paginación BFF y filtros de Pay+ están implementados. Falta validar descargas y datos productivos reales. |
+| 1 | Tipos e infraestructura | **PASA (código)** | Zod, Query, BFF relativo, sesión HttpOnly y cifrado server-side. `/staticfiles/...` preserva primero el request público del legado y mantiene el upstream sólo en servidor. |
+| 2 | Usuarios y administración habilitadora | **PENDIENTE E2E** | CRUD de Usuarios, Clientes, Sucursales, Roles, Rutas y Maestros implementado; las rutas `img`/`logoImg` se solicitan automáticamente por `/staticfiles/...`, pero imágenes y mutaciones requieren sesión real para cierre. |
+| 3 | Cargues | **CORRECCIÓN DE PARIDAD APLICADA; PENDIENTE E2E** | `LoadDto.details` acepta sólo `null`/ausencia documentadas; el cargue conserva denominación, cantidad y total, usa el nombre de máquina y solicita el billete histórico automáticamente. Falta probar con un Pay+ productivo. |
+| 4 | Arqueos | **CORRECCIÓN DE PARIDAD APLICADA; PENDIENTE E2E** | El payload vuelve a enviar `total`, `totalAp`, `totalDp` y `totalRj`; el total general se toma de storage, el arqueo vacío sigue registrable y el historial presenta los resúmenes del legado. Falta prueba con un Pay+ productivo. |
+| 5 | Monitoreo y reportes | **PENDIENTE E2E** | Transacciones, detalle, vídeo, Excel, filtros/orden/paginación BFF y filtros de Pay+ por nombre, sucursal y dirección están implementados. Falta validar descargas y datos productivos reales. |
 
 ## Trabajo implementado
 
@@ -19,8 +19,9 @@
 - Gestión de Pay+: crear, editar, eliminar, cambiar contraseña, configurar puertos, configurar denominaciones, cargues, arqueos e historial.
 - Alertas: crear y eliminar suscripciones por Pay+.
 - Transacciones y Reportes: consulta por fechas/Pay+, resumen, detalle por denominación, descarga de vídeo y exportación Excel.
-- Modo oscuro seleccionable y filtro por texto/estado para encontrar Pay+.
-- Restauración de archivos estáticos del contrato legado: los campos `img`, `imgDenom`, `logoImg` e imagen de perfil se solicitan mediante `/staticfiles/...`; el navegador no conoce el upstream ni el token.
+- Modo oscuro seleccionable y filtro por texto/estado para encontrar Pay+, incluida sucursal y dirección resueltas desde `GET /api/Office`.
+- El nombre de Pay+ se resuelve con `username`, luego el alias histórico `userName`; `description` no sustituye la identidad de máquina. El fallback `Pay+ <id>` se usa sólo al presentar un valor ausente, nunca al persistirlo.
+- Restauración de archivos estáticos del contrato legado: los campos `img`, `imgDenom`, `logoImg` e imagen de perfil se solicitan automáticamente mediante `/staticfiles/...`; el navegador no conoce el upstream ni el token. El proxy reproduce primero la petición pública que hacía el legado y reintenta con la sesión server-side únicamente si el upstream responde 401/403.
 
 ## Validación actual
 
@@ -30,8 +31,8 @@
 | ESLint sin warnings | **PASA** — `npm run lint` (2026-09-16) |
 | Build de producción | **PASA** — `npm run build` (2026-09-16) |
 | Rutas relativas desde navegador | **PASA (código)** — BFF y `/staticfiles/...` same-origin |
-| Protección de estáticos sin sesión | **PASA** — `GET /staticfiles/...` local anónimo devuelve 401 |
-| Secretos sólo server-side | **PASA (código)** |
+| Contrato de estáticos y path seguro | **PASA (local)** — una petición anónima alcanza el proxy/upstream (502 sólo por TLS del sandbox); traversal y separadores doblemente codificados devuelven 400 |
+| Secretos y upstream sólo server-side | **PASA (código)** |
 | Cargues y arqueos con `details: null` de un Pay+ real | **PENDIENTE E2E** |
 | Imágenes reales de denominaciones/billetes | **PENDIENTE E2E** |
 | Descarga Excel y vídeo reales | **PENDIENTE E2E** |
@@ -48,4 +49,4 @@
 
 ## ESTADO DEL BACKLOG
 
-No se declara la migración terminada. Las correcciones de formato de cargues/arqueos y las rutas de imágenes están implementadas y pasan el control estático, pero el cierre exige validar con una sesión real que el historial cargue, que cada URL `img`/`imgDenom` real devuelva su archivo, y que Excel/vídeo/acciones visibles mantengan la paridad funcional del legado.
+No se declara la migración terminada. La paridad de nombre de máquina, sucursal, cargues, arqueos, historial y rutas automáticas de imagen está implementada y pasa controles estáticos/locales, pero el cierre exige una sesión real que confirme que cada ruta `img`/`imgDenom`/`logoImg` devuelve su archivo y que Excel, vídeo y todas las acciones visibles mantengan la paridad funcional del legado.

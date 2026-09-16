@@ -10,7 +10,7 @@ import type {
   PayPadStorageMutation,
   TonnageMutation,
 } from "@/features/paypads/schemas";
-import { loadSchema, paypadConfigurationSchema, paypadSchema, paypadStorageSchema, tonnageSchema } from "@/features/paypads/schemas";
+import { loadSchema, paypadConfigurationMutationSchema, paypadConfigurationSchema, paypadSchema, paypadStorageSchema, tonnageSchema } from "@/features/paypads/schemas";
 import { ClientApiError, requestApi } from "@/lib/api/client";
 import { deleteBackendResource, requestBackendApi, sendBackendJson } from "@/lib/api/backend";
 
@@ -110,9 +110,9 @@ export function saveTonnage(payload: TonnageMutation) {
 }
 
 export function createPaypadConfiguration(payload: PayPadConfigurationMutation) {
-  return sendBackendJson(["api", "PayPad", "CreateConfiguration"], "POST", payload, z.unknown());
+  return sendBackendJson(["api", "PayPad", "CreateConfiguration"], "POST", paypadConfigurationMutationSchema.parse(payload), z.unknown());
 }
 
 export function updatePaypadConfiguration(payload: PayPadConfigurationMutation) {
-  return sendBackendJson(["api", "PayPad", "UpdateConfiguration"], "PUT", payload, z.unknown());
+  return sendBackendJson(["api", "PayPad", "UpdateConfiguration"], "PUT", paypadConfigurationMutationSchema.parse(payload), z.unknown());
 }

@@ -23,6 +23,7 @@ import { alertDefinitions, subscriptionFormSchema, type AlertSubscription, type 
 import { useCreateSubscription, useDeleteSubscription, useSubscriptions } from "@/features/alerts/hooks";
 import { SearchablePaypadSelect } from "@/features/paypads/components/searchable-paypad-select";
 import { usePaypads } from "@/features/paypads/hooks";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { PayPad } from "@/features/paypads/schemas";
 
 interface SubscriptionFormProps {
@@ -32,10 +33,6 @@ interface SubscriptionFormProps {
 
 function getAlertName(idAlert: number): string {
   return alertDefinitions.find((alert) => alert.id === idAlert)?.description ?? `Alerta ${idAlert}`;
-}
-
-function paypadName(paypad: PayPad): string {
-  return paypad.username?.trim() || `Pay+ ${paypad.id}`;
 }
 
 function SubscriptionForm({ onComplete, paypad }: SubscriptionFormProps) {
@@ -59,7 +56,7 @@ function SubscriptionForm({ onComplete, paypad }: SubscriptionFormProps) {
         email: values.email,
         idAlert: alert.id,
         idPayPad: paypad.id,
-        paypad: paypadName(paypad),
+        paypad: getPaypadDisplayName(paypad),
       });
       toast.success("Suscripción creada.");
       onComplete();

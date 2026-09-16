@@ -10,11 +10,22 @@ export function backendPath(...segments: readonly (number | string)[]): string {
 }
 
 function decodeStaticPathSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
+  let decodedSegment = segment;
+
+  // Treat repeatedly encoded path separators and traversal as unsafe too.
+  for (let index = 0; index < 4; index += 1) {
+    try {
+      const nextSegment = decodeURIComponent(decodedSegment);
+      if (nextSegment === decodedSegment) {
+        break;
+      }
+      decodedSegment = nextSegment;
+    } catch {
+      break;
+    }
   }
+
+  return decodedSegment;
 }
 
 export function backendStaticFilePath(filePath: string | null | undefined): string | null {

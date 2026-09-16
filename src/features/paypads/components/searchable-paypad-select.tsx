@@ -5,6 +5,7 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { PayPad } from "@/features/paypads/schemas";
 import { cn } from "@/lib/utils";
 
@@ -23,10 +24,6 @@ interface SearchablePaypadSelectProps {
   paypads: readonly PayPad[];
   placeholder?: string;
   value: string;
-}
-
-function paypadName(paypad: PayPad): string {
-  return paypad.username?.trim() || `Pay+ ${paypad.id}`;
 }
 
 function normalize(value: string): string {
@@ -56,7 +53,7 @@ export function SearchablePaypadSelect({
 
   const options = useMemo<PaypadOption[]>(() => {
     const paypadOptions = paypads.map((paypad) => ({
-      label: `${paypadName(paypad)} · ID ${paypad.id}`,
+      label: `${getPaypadDisplayName(paypad)} · ID ${paypad.id}`,
       value: String(paypad.id),
     }));
 

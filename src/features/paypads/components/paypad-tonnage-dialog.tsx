@@ -16,7 +16,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { useDenominations } from "@/features/denominations/hooks";
 import { usePaypadStorage, useSaveTonnage } from "@/features/paypads/hooks";
-import type { PayPad, PayPadStorage } from "@/features/paypads/schemas";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
+import type { PayPad, PayPadStorage, TonnageMutation } from "@/features/paypads/schemas";
 import { backendStaticFilePath } from "@/lib/api/backend";
 import { formatDashboardMoney, sumMoneyStrings } from "@/lib/formatters/money";
 
@@ -47,7 +48,7 @@ function StorageTable({ denominationImageById, label, rows, total }: { denominat
       id: "image",
       cell: ({ row }) => (
         <DenominationImage
-          imagePath={denominationImageById.get(row.original.idCurrencyDenomination) ?? row.original.imgDenom ?? null}
+          imagePath={row.original.imgDenom ?? denominationImageById.get(row.original.idCurrencyDenomination) ?? null}
           value={row.original.denominationValue}
         />
       ),
@@ -88,7 +89,8 @@ export function PayPadTonnageDialog({ onOpenChange, open, paypad }: PayPadTonnag
   const totalAccepted = sumMoneyStrings(storage.map((item) => item.apTotal));
   const totalDispenser = sumMoneyStrings(storage.map((item) => item.dpTotal));
   const totalRejected = sumMoneyStrings(storage.map((item) => item.rjTotal));
-  const total = sumMoneyStrings([totalAccepted, totalDispenser, totalRejected]);
+  // Keep the same total supplied by the storage endpoint that the legacy screen sent.
+  const total = sumMoneyStrings(storage.map((item) => item.total));
 
   function close(): void {
     if (!saveMutation.isPending) {
@@ -96,13 +98,28 @@ export function PayPadTonnageDialog({ onOpenChange, open, paypad }: PayPadTonnag
     }
   }
 
-  async function confirmTonnage(): Promise<void> {
+  function createTonnagePayload(): TonnageMutation | null {
     if (!paypad) {
+      return null;
+    }
+
+    return {
+      idPayPad: paypad.id,
+      total,
+      totalAp: totalAccepted,
+      totalDp: totalDispenser,
+      totalRj: totalRejected,
+    };
+  }
+
+  async function confirmTonnage(): Promise<void> {
+    const payload = createTonnagePayload();
+    if (!payload) {
       return;
     }
 
     try {
-      await saveMutation.mutateAsync({ idPayPad: paypad.id });
+      await saveMutation.mutateAsync(payload);
       toast.success("Arqueo registrado con éxito.");
       setConfirmationOpen(false);
       onOpenChange(false);
@@ -117,7 +134,7 @@ export function PayPadTonnageDialog({ onOpenChange, open, paypad }: PayPadTonnag
         <DialogContent className="sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><Scale aria-hidden="true" className="size-5" />Realizar arqueo</DialogTitle>
-            <DialogDescription>Revisa el efectivo almacenado en {paypad?.username ?? "el Pay+"}. El API calcula y registra el arqueo con el almacenamiento actual.</DialogDescription>
+            <DialogDescription>Revisa el efectivo almacenado en {getPaypadDisplayName(paypad)}. El API calcula y registra el arqueo con el almacenamiento actual.</DialogDescription>
           </DialogHeader>
           {storageQuery.isPending ? <ListSkeleton rows={4} /> : null}
           {!storageQuery.isPending && storageQuery.isError ? <ErrorState description={getErrorMessage(storageQuery.error)} onRetry={() => void storageQuery.refetch()} /> : null}
@@ -133,13 +150,13 @@ export function PayPadTonnageDialog({ onOpenChange, open, paypad }: PayPadTonnag
           <div className="flex items-center justify-between rounded-md border bg-secondary px-4 py-3"><span className="text-sm font-medium">Total almacenado</span><span className="font-numeric text-lg font-semibold">{formatDashboardMoney(total)}</span></div>
           <DialogFooter>
             <Button disabled={saveMutation.isPending} onClick={close} type="button" variant="outline">Cancelar</Button>
-            {canWrite ? <Button disabled={saveMutation.isPending || storage.length === 0} onClick={() => setConfirmationOpen(true)} type="button">{saveMutation.isPending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <Scale aria-hidden="true" className="size-4" />}{saveMutation.isPending ? "Registrando…" : "Registrar arqueo"}</Button> : null}
+            {canWrite ? <Button disabled={saveMutation.isPending} onClick={() => setConfirmationOpen(true)} type="button">{saveMutation.isPending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <Scale aria-hidden="true" className="size-4" />}{saveMutation.isPending ? "Registrando…" : "Registrar arqueo"}</Button> : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>
       <CriticalConfirmationDialog
         confirmationLabel="Confirmar arqueo"
-        description={`Vas a registrar un arqueo sobre ${formatDashboardMoney(total)} en ${paypad?.username ?? "el Pay+"}. Esta operación financiera es irreversible.`}
+        description={`Vas a registrar un arqueo sobre ${formatDashboardMoney(total)} en ${getPaypadDisplayName(paypad)}. Esta operación financiera es irreversible.`}
         isPending={saveMutation.isPending}
         onConfirm={() => void confirmTonnage()}
         onOpenChange={setConfirmationOpen}

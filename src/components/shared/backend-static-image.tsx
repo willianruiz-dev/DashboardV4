@@ -1,6 +1,6 @@
 "use client";
 
-/* eslint-disable @next/next/no-img-element -- Files are authenticated, dynamic legacy assets served by the same-origin /staticfiles proxy. */
+/* eslint-disable @next/next/no-img-element -- Dynamic legacy assets are served by the same-origin /staticfiles proxy. */
 
 import { ImageOff } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -17,9 +17,9 @@ interface BackendStaticImageProps {
 }
 
 /**
- * Uses a native image so the browser requests the authenticated same-origin URL directly.
- * Next's optimizer is deliberately bypassed: it cannot forward a dashboard session to an
- * upstream asset and would change the legacy `/staticfiles/...` request contract.
+ * Uses a native image so the browser requests the same-origin legacy URL directly.
+ * Next's optimizer is deliberately bypassed because it would change the legacy
+ * `/staticfiles/...` request contract.
  */
 export function BackendStaticImage({ alt, className, fallback, height, src, width }: BackendStaticImageProps) {
   const [failedSource, setFailedSource] = useState<string | null>(null);

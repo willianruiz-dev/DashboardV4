@@ -16,6 +16,24 @@ export class BackendConfigurationError extends Error {
   }
 }
 
+function isUnsafePathSegment(segment: string): boolean {
+  let decodedSegment = segment;
+
+  for (let index = 0; index < 4; index += 1) {
+    try {
+      const nextSegment = decodeURIComponent(decodedSegment);
+      if (nextSegment === decodedSegment) {
+        break;
+      }
+      decodedSegment = nextSegment;
+    } catch {
+      break;
+    }
+  }
+
+  return decodedSegment.length === 0 || decodedSegment === "." || decodedSegment === ".." || decodedSegment.includes("/") || decodedSegment.includes("\\");
+}
+
 function parseApiBaseAddress(value: string): URL {
   let apiBaseAddress: URL;
 
@@ -58,7 +76,7 @@ export function createBackendUrl(config: BackendConfig, pathSegments: readonly s
     throw new BackendConfigurationError("A backend path is required.");
   }
 
-  if (pathSegments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+  if (pathSegments.some(isUnsafePathSegment)) {
     throw new BackendConfigurationError("The backend path contains an invalid segment.");
   }
 

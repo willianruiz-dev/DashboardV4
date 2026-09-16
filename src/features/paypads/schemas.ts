@@ -186,9 +186,15 @@ export const tonnageSchema = z
   .passthrough();
 export type Tonnage = z.infer<typeof tonnageSchema>;
 
-// The legacy API creates the detail and totals from the Pay+ storage server-side.
+// The legacy screen sends the storage snapshot totals when it registers an arqueo.
+// The upstream procedure recalculates them as well, but preserving this payload is part
+// of the old dashboard contract.
 export const tonnageMutationSchema = z.object({
   idPayPad: z.number().int().positive(),
+  total: decimalStringSchema,
+  totalAp: decimalStringSchema,
+  totalDp: decimalStringSchema,
+  totalRj: decimalStringSchema,
 });
 export type TonnageMutation = z.infer<typeof tonnageMutationSchema>;
 
@@ -202,6 +208,7 @@ export const paypadConfigurationSchema = z
     extraDataJson: z.array(z.object({ key: z.string(), value: z.string() })).nullable().optional(),
     id: z.number().int().nonnegative(),
     idPaypad: z.number().int().nullable().optional(),
+    idUserCreated: z.number().int().nonnegative().optional(),
     meiPort: z.string().nullable().optional(),
     paypad: z.string().nullable().optional(),
     printerPort: z.string().nullable().optional(),
@@ -230,10 +237,10 @@ export const paypadConfigurationMutationSchema = z.object({
   dispenserDenominations: z.string().min(1),
   dispenserPort: z.string().min(1),
   extraDataJson: z.array(z.object({ key: z.string().min(1), value: z.string() })),
-  id: z.number().int().nonnegative(),
+  id: z.number().int().nonnegative().optional(),
   idPaypad: z.number().int().positive(),
+  idUserCreated: z.number().int().nonnegative().optional(),
   meiPort: z.string().min(1),
-  paypad: z.string().nullable(),
   printerPort: z.string().min(1),
   scannerPort: z.string().min(1),
   validatePeripherals: z.boolean(),

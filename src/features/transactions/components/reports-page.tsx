@@ -11,6 +11,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { usePaypads } from "@/features/paypads/hooks";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import { ExcelExportButton } from "@/features/transactions/components/excel-export-button";
 import { TransactionFilters, type TransactionFiltersValues } from "@/features/transactions/components/transaction-filters";
 import { TransactionStateBadge } from "@/features/transactions/components/transaction-state-badge";
@@ -25,10 +26,6 @@ function text(value: string | null | undefined, fallback = "—"): string {
   return value?.trim() || fallback;
 }
 
-function paypadName(paypad: { id: number; username?: string | null }): string {
-  return paypad.username?.trim() || `Pay+ ${paypad.id}`;
-}
-
 export function ReportsPage() {
   const session = useDashboardSession();
   const canReadTransactions = hasPermission(session, "ReadTransactions");
@@ -40,7 +37,7 @@ export function ReportsPage() {
   const data = transactionsQuery.data;
   const selectedPaypad = search?.paypadId ? paypadsQuery.data?.find((item) => item.id === search.paypadId) : undefined;
   const excelFileName = search && search.paypadId
-    ? `Reporte_${selectedPaypad ? paypadName(selectedPaypad).replaceAll(" ", "") : search.paypadId}_${dateForFileName(search.from)}_a_${dateForFileName(search.to)}.xlsx`
+    ? `Reporte_${selectedPaypad ? getPaypadDisplayName(selectedPaypad).replaceAll(" ", "") : search.paypadId}_${dateForFileName(search.from)}_a_${dateForFileName(search.to)}.xlsx`
     : "Reporte_transacciones.xlsx";
 
   function submitSearch(values: TransactionFiltersValues): void {

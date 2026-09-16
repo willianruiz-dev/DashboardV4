@@ -1,6 +1,6 @@
 "use client";
 
-import { Banknote, CircleDollarSign, Edit3, Eye, KeyRound, Plus, Scale, Search, Settings2, Trash2 } from "lucide-react";
+import { Banknote, Building2, CircleDollarSign, Edit3, Eye, KeyRound, MapPin, Plus, Scale, Search, Settings2, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -14,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
+import { useOffices } from "@/features/offices/hooks";
+import type { DashboardOffice } from "@/features/offices/schemas";
 import { ChangePaypadPasswordDialog } from "@/features/paypads/components/change-paypad-password-dialog";
 import { PayPadBalanceDialog } from "@/features/paypads/components/paypad-balance-dialog";
 import { PayPadConfigurationDialog } from "@/features/paypads/components/paypad-configuration-dialog";
@@ -22,6 +24,7 @@ import { PayPadLoadDialog } from "@/features/paypads/components/paypad-load-dial
 import { PayPadStorageDialog } from "@/features/paypads/components/paypad-storage-dialog";
 import { PayPadTonnageDialog } from "@/features/paypads/components/paypad-tonnage-dialog";
 import { useDeletePaypad, usePaypads } from "@/features/paypads/hooks";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { PayPad } from "@/features/paypads/schemas";
 
 interface ActionButtonProps {
@@ -48,10 +51,6 @@ function ActionButton({ children, disabled = false, onClick, tooltip, ...props }
   return <Tooltip><TooltipTrigger asChild><Button disabled={disabled} onClick={onClick} size="icon" type="button" variant="ghost" {...props}>{children}</Button></TooltipTrigger><TooltipContent>{tooltip}</TooltipContent></Tooltip>;
 }
 
-function paypadName(paypad: PayPad): string {
-  return paypad.username?.trim() || `Pay+ ${paypad.id}`;
-}
-
 function normalizeSearch(value: string): string {
   return value
     .normalize("NFD")
@@ -60,7 +59,12 @@ function normalizeSearch(value: string): string {
     .trim();
 }
 
-function matchesPaypadFilter(paypad: PayPad, query: string, status: "active" | "all" | "inactive"): boolean {
+function matchesPaypadFilter(
+  paypad: PayPad,
+  office: DashboardOffice | undefined,
+  query: string,
+  status: "active" | "all" | "inactive",
+): boolean {
   if (status === "active" && paypad.status !== 1) {
     return false;
   }
@@ -76,9 +80,11 @@ function matchesPaypadFilter(paypad: PayPad, query: string, status: "active" | "
 
   const searchableValues = [
     String(paypad.id),
-    paypadName(paypad),
+    getPaypadDisplayName(paypad),
     paypad.description ?? "",
     paypad.office ?? "",
+    office?.name ?? "",
+    office?.address ?? "",
     paypad.currency ?? "",
     String(paypad.idOffice),
   ];
@@ -86,36 +92,59 @@ function matchesPaypadFilter(paypad: PayPad, query: string, status: "active" | "
   return searchableValues.some((value) => normalizeSearch(value).includes(normalizedQuery));
 }
 
-function PayPadCard({ canDelete, canReadOperations, canWrite, onAction, paypad }: { canDelete: boolean; canReadOperations: boolean; canWrite: boolean; onAction: (dialog: ActiveDialog) => void; paypad: PayPad }) {
+function PayPadCard({
+  canDelete,
+  canReadOperations,
+  canWrite,
+  office,
+  onAction,
+  paypad,
+}: {
+  canDelete: boolean;
+  canReadOperations: boolean;
+  canWrite: boolean;
+  office: DashboardOffice | undefined;
+  onAction: (dialog: ActiveDialog) => void;
+  paypad: PayPad;
+}) {
   const active = paypad.status === 1;
+  const officeName = office?.name?.trim() || paypad.office?.trim() || `Sucursal ${paypad.idOffice}`;
+  const officeAddress = office?.address?.trim() || "Dirección no disponible";
 
   return (
     <Card className="flex min-w-0 flex-col">
       <CardHeader className="gap-3">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0"><CardTitle className="break-words">{paypadName(paypad)}</CardTitle><CardDescription>ID {paypad.id}</CardDescription></div>
+          <div className="min-w-0">
+            <CardTitle className="break-words">{getPaypadDisplayName(paypad)}</CardTitle>
+            <CardDescription>ID {paypad.id}</CardDescription>
+          </div>
           <Badge variant={active ? "default" : "secondary"}>{active ? "Activo" : "Inactivo"}</Badge>
         </div>
-        <p className="min-h-10 text-sm text-muted-foreground">{paypad.description?.trim() || "Sin descripción"}</p>
       </CardHeader>
       <CardContent className="grid gap-2 text-sm">
-        <div className="flex items-center gap-2"><Banknote aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" /><span className="truncate">{paypad.office?.trim() || `Sucursal ${paypad.idOffice}`}</span></div>
-        <div className="flex items-center gap-2"><CircleDollarSign aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" /><span className="truncate">{paypad.currency?.trim() || `Moneda ${paypad.idCurrency}`}</span></div>
-        <p className="font-numeric text-xs text-muted-foreground">{paypad.latitude && paypad.longitude ? `${paypad.latitude}, ${paypad.longitude}` : "Ubicación no disponible"}</p>
+        <div className="flex items-center gap-2">
+          <Building2 aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+          <span className="truncate">{officeName}</span>
+        </div>
+        <div className="flex items-start gap-2 text-muted-foreground">
+          <MapPin aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+          <span className="break-words">{officeAddress}</span>
+        </div>
       </CardContent>
       <CardFooter className="mt-auto flex flex-wrap gap-1 border-t pt-4">
         {canReadOperations ? <>
-          <ActionButton aria-label={`Configurar denominaciones de ${paypadName(paypad)}`} onClick={() => onAction({ kind: "storage", paypad })} tooltip="Configurar denominaciones"><Banknote aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Realizar arqueo de ${paypadName(paypad)}`} onClick={() => onAction({ kind: "tonnage", paypad })} tooltip="Realizar arqueo"><Scale aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Registrar cargue de ${paypadName(paypad)}`} onClick={() => onAction({ kind: "load", paypad })} tooltip="Registrar cargue"><CircleDollarSign aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Ver cargues y arqueos de ${paypadName(paypad)}`} onClick={() => onAction({ kind: "balance", paypad })} tooltip="Ver cargues y arqueos"><Eye aria-hidden="true" className="size-4" /></ActionButton>
+          <ActionButton aria-label={`Configurar denominaciones de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "storage", paypad })} tooltip="Configurar denominaciones"><Banknote aria-hidden="true" className="size-4" /></ActionButton>
+          <ActionButton aria-label={`Realizar arqueo de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "tonnage", paypad })} tooltip="Realizar arqueo"><Scale aria-hidden="true" className="size-4" /></ActionButton>
+          <ActionButton aria-label={`Registrar cargue de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "load", paypad })} tooltip="Registrar cargue"><CircleDollarSign aria-hidden="true" className="size-4" /></ActionButton>
+          <ActionButton aria-label={`Ver cargues y arqueos de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "balance", paypad })} tooltip="Ver cargues y arqueos"><Eye aria-hidden="true" className="size-4" /></ActionButton>
         </> : null}
         {canWrite ? <>
-          <ActionButton aria-label={`Configurar ${paypadName(paypad)}`} onClick={() => onAction({ kind: "configuration", paypad })} tooltip="Configuración técnica"><Settings2 aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Cambiar contraseña de ${paypadName(paypad)}`} onClick={() => onAction({ kind: "change-password", paypad })} tooltip="Cambiar contraseña"><KeyRound aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Editar ${paypadName(paypad)}`} onClick={() => onAction({ kind: "edit", paypad })} tooltip="Editar Pay+"><Edit3 aria-hidden="true" className="size-4" /></ActionButton>
+          <ActionButton aria-label={`Configurar ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "configuration", paypad })} tooltip="Configuración técnica"><Settings2 aria-hidden="true" className="size-4" /></ActionButton>
+          <ActionButton aria-label={`Cambiar contraseña de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "change-password", paypad })} tooltip="Cambiar contraseña"><KeyRound aria-hidden="true" className="size-4" /></ActionButton>
+          <ActionButton aria-label={`Editar ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "edit", paypad })} tooltip="Editar Pay+"><Edit3 aria-hidden="true" className="size-4" /></ActionButton>
         </> : null}
-        {canDelete ? <ActionButton aria-label={`Eliminar ${paypadName(paypad)}`} onClick={() => onAction({ kind: "delete", paypad })} tooltip="Eliminar Pay+"><Trash2 aria-hidden="true" className="size-4 text-destructive" /></ActionButton> : null}
+        {canDelete ? <ActionButton aria-label={`Eliminar ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "delete", paypad })} tooltip="Eliminar Pay+"><Trash2 aria-hidden="true" className="size-4 text-destructive" /></ActionButton> : null}
       </CardFooter>
     </Card>
   );
@@ -128,15 +157,17 @@ export function PaypadsPage() {
   const canDelete = hasPermission(session, "DelPayPads");
   const canReadOperations = hasPermission(session, "ReadTonnagesAndLoads");
   const paypadsQuery = usePaypads(canRead);
+  const officesQuery = useOffices(canRead);
   const deleteMutation = useDeletePaypad();
   const [activeDialog, setActiveDialog] = useState<ActiveDialog>(null);
   const [deleteTarget, setDeleteTarget] = useState<PayPad | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"active" | "all" | "inactive">("all");
   const paypads = useMemo(() => paypadsQuery.data ?? [], [paypadsQuery.data]);
+  const officesById = useMemo(() => new Map((officesQuery.data ?? []).map((office) => [office.id, office] as const)), [officesQuery.data]);
   const filteredPaypads = useMemo(
-    () => paypads.filter((paypad) => matchesPaypadFilter(paypad, searchQuery, statusFilter)),
-    [paypads, searchQuery, statusFilter],
+    () => paypads.filter((paypad) => matchesPaypadFilter(paypad, officesById.get(paypad.idOffice), searchQuery, statusFilter)),
+    [officesById, paypads, searchQuery, statusFilter],
   );
 
   function selectAction(dialog: ActiveDialog): void {
@@ -224,6 +255,7 @@ export function PaypadsPage() {
                   canReadOperations={canReadOperations}
                   canWrite={canWrite}
                   key={paypad.id}
+                  office={officesById.get(paypad.idOffice)}
                   onAction={selectAction}
                   paypad={paypad}
                 />
@@ -235,7 +267,7 @@ export function PaypadsPage() {
 
       {activeDialog?.kind === "create" ? <PayPadEditorDialog mode="create" onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open /> : null}
       {activeDialog?.kind === "edit" ? <PayPadEditorDialog mode="edit" onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open paypadId={activeDialog.paypad.id} /> : null}
-      {activeDialog?.kind === "change-password" ? <ChangePaypadPasswordDialog onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open paypadId={activeDialog.paypad.id} username={activeDialog.paypad.username} /> : null}
+      {activeDialog?.kind === "change-password" ? <ChangePaypadPasswordDialog onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open paypadId={activeDialog.paypad.id} username={getPaypadDisplayName(activeDialog.paypad)} /> : null}
       {activeDialog?.kind === "storage" ? <PayPadStorageDialog onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open paypad={activeDialog.paypad} /> : null}
       {activeDialog?.kind === "load" ? <PayPadLoadDialog onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open paypad={activeDialog.paypad} /> : null}
       {activeDialog?.kind === "tonnage" ? <PayPadTonnageDialog onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open paypad={activeDialog.paypad} /> : null}
@@ -246,7 +278,7 @@ export function PaypadsPage() {
         onConfirm={() => void confirmDelete()}
         onOpenChange={(open) => { if (!open && !deleteMutation.isPending) setDeleteTarget(null); }}
         open={deleteTarget !== null}
-        recordLabel={deleteTarget ? `${paypadName(deleteTarget)} (ID ${deleteTarget.id})` : "el Pay+ seleccionado"}
+        recordLabel={deleteTarget ? `${getPaypadDisplayName(deleteTarget)} (ID ${deleteTarget.id})` : "el Pay+ seleccionado"}
         verificationText={deleteTarget ? String(deleteTarget.id) : undefined}
       />
     </div>

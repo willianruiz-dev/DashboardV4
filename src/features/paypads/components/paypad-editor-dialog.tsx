@@ -17,6 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import { useLookupClients, useLookupCurrencies, useLookupOffices } from "@/features/lookups/hooks";
 import { useOffice } from "@/features/offices/hooks";
 import { useCreatePaypad, usePaypad, usePaypads, useUpdatePaypad } from "@/features/paypads/hooks";
+import { getPaypadMachineName } from "@/features/paypads/paypad-display";
 import type { PayPad, PayPadCreateRequest, PayPadEditorFormValues, PayPadMutation } from "@/features/paypads/schemas";
 import { paypadEditorFormSchema } from "@/features/paypads/schemas";
 
@@ -44,7 +45,7 @@ function defaults(mode: "create" | "edit", paypad?: PayPad, clientId?: number): 
     latitude: paypad?.latitude ?? "",
     longitude: paypad?.longitude ?? "",
     status: Boolean(paypad?.status ?? 1),
-    username: paypad?.username ?? "",
+    username: getPaypadMachineName(paypad) ?? "",
   };
 
   return mode === "create"
@@ -107,7 +108,9 @@ export function PayPadEditorDialog({ mode, onOpenChange, open, paypadId }: PayPa
       return;
     }
 
-    const duplicate = paypadsQuery.data?.some((item) => item.id !== paypad?.id && item.username?.trim().toLocaleLowerCase() === values.username.trim().toLocaleLowerCase());
+    const duplicate = paypadsQuery.data?.some(
+      (item) => item.id !== paypad?.id && getPaypadMachineName(item)?.toLocaleLowerCase() === values.username.trim().toLocaleLowerCase(),
+    );
     if (duplicate) {
       form.setError("username", { message: "Ya existe un Pay+ con este nombre." });
       return;
