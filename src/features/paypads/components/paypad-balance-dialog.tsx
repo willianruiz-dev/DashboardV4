@@ -42,6 +42,11 @@ function historyErrorMessage(error: unknown, fallback: string): string | null {
     return null;
   }
 
+  if (error instanceof ClientApiError && error.validationIssues.length > 0) {
+    const fields = error.validationIssues.map((issue) => `${issue.path} (${issue.code})`).join(", ");
+    return `${error.message} Diagnóstico de compatibilidad: ${fields}.`;
+  }
+
   return error instanceof Error ? error.message : fallback;
 }
 

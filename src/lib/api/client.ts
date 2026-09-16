@@ -2,15 +2,34 @@
 
 import { z } from "zod";
 
+const MAX_VALIDATION_ISSUES = 3;
+
+export interface ClientValidationIssue {
+  code: string;
+  path: string;
+}
+
 export class ClientApiError extends Error {
   readonly code: number | null;
   readonly status: number;
+  readonly validationIssues: readonly ClientValidationIssue[];
 
-  constructor({ code, message, status }: { code?: number | null; message: string; status: number }) {
+  constructor({
+    code,
+    message,
+    status,
+    validationIssues = [],
+  }: {
+    code?: number | null;
+    message: string;
+    status: number;
+    validationIssues?: readonly ClientValidationIssue[];
+  }) {
     super(message);
     this.name = "ClientApiError";
     this.code = code ?? null;
     this.status = status;
+    this.validationIssues = validationIssues;
   }
 }
 
@@ -25,6 +44,19 @@ function parseErrorCode(message: string): { code: number | null; message: string
     code: Number.isInteger(possibleCode) ? possibleCode : null,
     message: message.slice(separatorIndex + 1).trim() || message,
   };
+}
+
+function sanitizeValidationIssuePath(path: readonly PropertyKey[]): string {
+  return path.length === 0
+    ? "<root>"
+    : path.map((segment) => typeof segment === "number" ? "[]" : String(segment)).join(".");
+}
+
+function getSanitizedValidationIssues(error: z.ZodError): ClientValidationIssue[] {
+  return error.issues.slice(0, MAX_VALIDATION_ISSUES).map((issue) => ({
+    code: issue.code,
+    path: sanitizeValidationIssuePath(issue.path),
+  }));
 }
 
 async function readError(response: Response): Promise<ClientApiError> {
@@ -63,13 +95,24 @@ export async function requestApi<TSchema extends z.ZodType>(
     throw await readError(response);
   }
 
-  const payload: unknown = await response.json();
+  let payload: unknown;
+
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ClientApiError({
+      message: "La aplicación recibió una respuesta JSON incompleta o inválida.",
+      status: 502,
+    });
+  }
+
   const parsedPayload = responseSchema.safeParse(payload);
 
   if (!parsedPayload.success) {
     throw new ClientApiError({
       message: "La aplicación recibió una respuesta con formato inesperado.",
       status: 502,
+      validationIssues: getSanitizedValidationIssues(parsedPayload.error),
     });
   }
 

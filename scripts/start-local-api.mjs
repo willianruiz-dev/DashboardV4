@@ -77,6 +77,13 @@ const serverEnvironment = {
     localEnvironment.get("DASHBOARD_RSA_PUBLIC_KEY"),
     legacyEnvironment.get("REACT_APP_PUBKEY"),
   ),
+  // Local development records a value-free shape and Zod-path diagnostic for the
+  // two legacy history readers. Production remains opt-in.
+  DASHBOARD_HISTORY_DIAGNOSTICS: firstConfiguredValue(
+    process.env.DASHBOARD_HISTORY_DIAGNOSTICS,
+    localEnvironment.get("DASHBOARD_HISTORY_DIAGNOSTICS"),
+    isDevelopment ? "true" : "false",
+  ),
   SESSION_COOKIE_SECURE: firstConfiguredValue(
     process.env.SESSION_COOKIE_SECURE,
     localEnvironment.get("SESSION_COOKIE_SECURE"),

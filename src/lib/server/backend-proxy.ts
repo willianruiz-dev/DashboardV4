@@ -10,14 +10,17 @@ import {
   getBackendConfig,
   getStaticFilesConfig,
 } from "@/lib/server/backend-config";
+import { getHistoryEndpoint, logHistoryResponseDiagnostic } from "@/lib/server/history-response-diagnostics";
 
 const BODYLESS_METHODS = new Set(["GET", "HEAD"]);
 const REQUEST_HEADERS_TO_FORWARD = ["accept", "content-type", "if-none-match", "range"] as const;
+// `fetch` may decode an upstream compressed representation. Its original
+// Content-Length would then describe different bytes, so never relay it with the
+// decoded stream sent by this BFF.
 const RESPONSE_HEADERS_TO_FORWARD = [
   "accept-ranges",
   "cache-control",
   "content-disposition",
-  "content-length",
   "content-range",
   "content-type",
   "etag",
@@ -25,6 +28,7 @@ const RESPONSE_HEADERS_TO_FORWARD = [
 ] as const;
 
 interface ProxyBackendRequestOptions {
+  historyEndpoint?: ReturnType<typeof getHistoryEndpoint>;
   redirect?: "follow" | "manual";
 }
 
@@ -73,8 +77,9 @@ async function proxyUpstreamRequest(
   request: NextRequest,
   targetUrl: URL,
   headers: Headers,
-  { redirect = "manual" }: ProxyBackendRequestOptions = {},
+  options: ProxyBackendRequestOptions = {},
 ): Promise<NextResponse> {
+  const { historyEndpoint = null, redirect = "manual" } = options;
   const requestInit: RequestInit = {
     cache: "no-store",
     headers,
@@ -90,6 +95,8 @@ async function proxyUpstreamRequest(
   }
 
   const upstreamResponse = await fetch(targetUrl, requestInit);
+  await logHistoryResponseDiagnostic(historyEndpoint, upstreamResponse);
+
   const responseHeaders = new Headers({
     "Cache-Control": "no-store",
   });
@@ -116,7 +123,10 @@ export async function proxyBackendRequest(
   try {
     const backendConfig = getBackendConfig();
     const targetUrl = createBackendUrl(backendConfig, pathSegments, request.nextUrl.search);
-    return await proxyUpstreamRequest(request, targetUrl, createBackendHeaders(request, backendConfig.apiKeyId, token), options);
+    return await proxyUpstreamRequest(request, targetUrl, createBackendHeaders(request, backendConfig.apiKeyId, token), {
+      ...options,
+      historyEndpoint: getHistoryEndpoint(pathSegments),
+    });
   } catch (error) {
     if (error instanceof BackendConfigurationError) {
       return createProxyError("The Dashboard API proxy is not configured on the server.");
