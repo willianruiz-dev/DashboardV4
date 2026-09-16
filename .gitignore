@@ -7,9 +7,8 @@ node_modules/
 *.tsbuildinfo
 
 # Local environment and credentials for the new application
-.env
-.env.local
-.env.*.local
+/.env*
+!/.env.example
 *.pem
 
 # Test and diagnostic output

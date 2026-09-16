@@ -15,7 +15,7 @@
 | Fase | Entrega | Estado | Depende de |
 | --- | --- | --- | --- |
 | 0 | Sistema de Diseño | **PENDIENTE DE CONFIRMACIÓN** | — |
-| 1 | Tipos e Infraestructura | **NO INICIADO** | Confirmación Fase 0; B-01, B-06 y B-10 para el borde API/auth completo. |
+| 1 | Tipos e Infraestructura | **NO INICIADO** — excepción: proxy de transporte solicitado | Confirmación Fase 0; B-01, B-06, B-10 y B-13 para el borde API/auth completo. |
 | 2 | Usuarios | **NO INICIADO** | Fase 1; contrato User/Auth y decisión sobre paginación. |
 | 3 | Cargues | **NO INICIADO / BLOQUEADO PARCIALMENTE** | Fase 2; B-01, B-03, B-04, B-07 y confirmación del alcance Pay+/storage dependiente. |
 | 4 | Arqueos | **NO INICIADO / BLOQUEADO PARCIALMENTE** | Fase 3; B-01, B-04, B-05, B-07. |
@@ -124,15 +124,18 @@ Los IDs `B-*` se detallan en `docs/ARCHITECTURE_BLUEPRINT_AND_INVENTORY.md`, sec
 
 ### F1-02 · Implementar BFF de autenticación y sesión segura
 
-**Estado:** BLOQUEADO por B-10; no iniciado.
+**Estado:** transporte base **PASA** por solicitud de apuntar al API productivo; autenticación/sesión sigue **BLOQUEADA** por B-10 y B-13.
+
+**Resultado ya incorporado:** `/api/backend/[...path]` reenvía rutas relativas al API configurado, añade `DashboardKeyId` exclusivamente desde `DASHBOARD_API_KEY_ID` del entorno servidor, y preserva JSON/multipart/binario sin filtrar secretos al navegador. `.env.example` usa `https://apidashboardv2.e-city.co/` como base pública no secreta y deja el API key vacío.
 
 **Acción concreta al desbloquear**
 
-1. Crear Route Handlers relativos para login, sesión, logout y proxy autorizado.
+1. Crear Route Handlers específicos para login, sesión y logout sobre el proxy ya existente.
 2. Reproducir RSA-OAEP/Base64 de credenciales únicamente si el contrato backend lo exige y es interoperable en servidor.
 3. Transferir JWT backend a cookie HttpOnly/Secure/SameSite apropiada, nunca `localStorage`.
-4. Mantener `DashboardKeyId` y material de clave sólo en configuración de servidor; añadir ejemplo de variables sin secretos.
+4. Mantener `DashboardKeyId` y material de clave sólo en configuración de servidor; configurar el valor real mediante secret manager, sin versionarlo.
 5. Propagar 401/códigos de expiración a una sesión cerrada controlada.
+6. Probar el proxy desde la red del servidor de despliegue, porque Arena no completó TLS contra el upstream.
 
 **Aceptación:** navegador no llama backend por `localhost`; no expone token/header/clave sensible; logout backend y borrado cookie se verifican; rutas públicas/protegidas responden de forma accesible.
 
@@ -444,10 +447,12 @@ El mandato global dice “migrar el frontend legado”, pero la secuencia de ent
 9. **B-10:** configuración y compatibilidad BFF/cookies/RSA/header.
 10. **B-11:** endpoints Transaction ambiguos y contrato binario de vídeo.
 11. **B-12:** asignación de áreas legado no nombradas a fases de entrega.
+12. **B-13:** prueba de conectividad API desde la red del servidor de despliegue; Arena no completó TLS contra el upstream.
 
 ## ESTADO DEL BACKLOG
 
 - **Fase 0:** técnicamente **PASA**; **PENDIENTE DE CONFIRMACIÓN EXPLÍCITA** para abrir Fase 1.
-- **Fase 1:** **NO INICIADO**; varias tareas quedan bloqueadas hasta contratos B-01, B-06 y B-10.
+- **Conexión API solicitada:** proxy server-only hacia `https://apidashboardv2.e-city.co/` incorporado; falta configurar el secret `DASHBOARD_API_KEY_ID` en el entorno servidor y validar conectividad desde esa red.
+- **Fase 1:** no se ha iniciado un módulo funcional; varias tareas quedan bloqueadas hasta contratos B-01, B-06, B-10 y B-13.
 - **Fases 2–5:** **NO INICIADAS**; no se ha migrado módulo funcional alguno.
-- **Acción autorizada ahora:** revisión/confirmación de Fase 0 y suministro o decisión de los bloqueos. No se iniciará Fase 1 automáticamente.
+- **Acción autorizada ahora:** revisión/confirmación de Fase 0 y prueba del proxy desde el entorno de despliegue. No se iniciará una fase funcional automáticamente.

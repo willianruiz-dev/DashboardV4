@@ -41,12 +41,42 @@ La decisión de actualizar a Next 16.3.5 no cambia ningún comportamiento de neg
 | `src/app/page.tsx` | Página de fundación visual de la Fase 0, no un módulo legado migrado. |
 | `src/app/globals.css` | Tokens de marca, tema claro/oscuro, tipografías, focus visible y garantías base de ancho/respuesta. |
 | `src/lib/utils.ts` | Utilidad tipada `cn()` para combinar clases semánticas. |
+| `src/lib/server/backend-config.ts` | Configuración server-only del API Dashboard V2 y validación de URL HTTPS/secret requerido. |
+| `src/lib/server/backend-proxy.ts` | Proxy BFF de transporte: añade `DashboardKeyId` en servidor, reenvía body/Authorization permitidos y no expone secretos al navegador. |
+| `src/app/api/backend/[...path]/route.ts` | Route Handler dinámico para consumir el API productivo de forma relativa: `/api/backend/{ruta-legado}`. |
 | `src/components/ui/` | Primitivos de interfaz accesibles y tematizados descritos a continuación. |
+| `.env.example` | Plantilla sin secretos para configurar el servidor de API y el API key en el entorno de ejecución. |
 | `components.json` | Alias/configuración de componentes Shadcn. |
 | `next.config.mjs`, `postcss.config.mjs`, `eslint.config.mjs`, `tsconfig.json` | Configuración de Next, Tailwind v4, lint y compilación estricta. |
 | `.gitignore` | Excluye salida de Next, dependencias, entornos y PEM para la nueva aplicación. |
 
-### 2.3 Sistema de tokens y accesibilidad implementado
+### 2.3 Conexión con el API productivo solicitada
+
+La nueva aplicación queda apuntada por defecto a `https://apidashboardv2.e-city.co/` **desde el servidor Next**, no desde el navegador. Las llamadas futuras deberán usar rutas relativas como:
+
+```text
+/api/backend/api/User
+/api/backend/Auth/Login
+/api/backend/api/Load
+```
+
+El Route Handler conserva el path y query string, reenvía métodos `GET`, `HEAD`, `POST`, `PUT`, `PATCH` y `DELETE`, soporta payload JSON o multipart, y entrega respuestas JSON/binarias sin asumir que todo es JSON. El header `DashboardKeyId` se añade desde `DASHBOARD_API_KEY_ID` del entorno de ejecución; no usa `NEXT_PUBLIC_`, no entra al bundle cliente y no se guarda en Git.
+
+Para ejecutar la app en modo producción contra ese servidor:
+
+```bash
+cp .env.example .env.local
+# Configurar DASHBOARD_API_KEY_ID mediante el secret manager o el entorno del servidor.
+npm ci
+npm run build
+npm start
+```
+
+`internalLogin` no se consume en la app Next porque no hay evidencia en los servicios frontend de que sea requerido para las llamadas Dashboard API. No se incorporará ni se expondrá al cliente sin un contrato que demuestre su uso. El proxy actual es sólo transporte: aún no implementa login, cifrado RSA, cookie HttpOnly ni un módulo que haga solicitudes reales.
+
+> **Verificación de conectividad:** el entorno Arena no logró completar el handshake TLS hacia el host productivo (`SSL_ERROR_SYSCALL`). Esto no demuestra una caída del API; debe verificarse desde el servidor/red de despliegue antes de declarar conectividad aprobada.
+
+### 2.4 Sistema de tokens y accesibilidad implementado
 
 `src/app/globals.css` usa `@import "tailwindcss"`, `@theme` y `@theme inline`, según el modo CSS-first de Tailwind v4. Contiene:
 
@@ -60,7 +90,7 @@ No se detectaron colores hex/RGB/HSL ni paletas de color Tailwind directas fuera
 
 > **Decisión de contraste:** el cian `accent` del manual tiene foreground blanco en claro, combinación que no se debe usar para texto normal hasta contar con una variante AA validada. Los botones existentes usan `primary` o superficies semánticas, no esa pareja de acento.
 
-### 2.4 Primitivos disponibles
+### 2.5 Primitivos disponibles
 
 | Categoría | Primitivos |
 | --- | --- |
@@ -284,19 +314,20 @@ src/
 
 **Regla de dependencia:** `app` orquesta rutas; `features` contiene el caso de uso; `schemas` y `lib` no importan desde UI; `components/ui` no conoce negocio. La comunicación con backend se centraliza, no se replica con `fetch`/Axios ad hoc por vista.
 
-### 5.2 BFF y sesión propuesta (pendiente de confirmación)
+### 5.2 BFF y sesión — transporte inicial implementado, auth pendiente
 
-El navegador debe comunicarse por URLs relativas con los Route Handlers de Next. El BFF:
+El navegador debe comunicarse por URLs relativas con los Route Handlers de Next. Ya existe el proxy de transporte `/api/backend/[...path]`, que enruta al API productivo configurado, inyecta `DashboardKeyId` exclusivamente en servidor y evita que las llamadas browser-facing dependan de un host localhost o expongan la clave.
 
-1. recibe credenciales por HTTPS en login;
-2. cifra con RSA-OAEP si el backend continúa exigiéndolo;
-3. llama al backend con el header requerido configurado en servidor;
-4. guarda el JWT de backend exclusivamente en cookie HttpOnly, Secure y SameSite apropiada;
-5. añade Bearer JWT al reenviar llamadas autorizadas;
-6. normaliza envelope/error de backend sin esconder `statusCode` ni código semántico;
-7. borra cookie y llama logout backend cuando corresponda.
+La sesión segura aún debe completar estos puntos:
 
-Antes de implementarlo, se debe confirmar que el despliegue BFF puede enviar el `DashboardKeyId`, que el endpoint acepta la representación cifrada que produzca Node/Web Crypto, el dominio/cookies objetivo y la política CORS/backend. Si no se confirma, se detiene la implementación auth y se registra el resultado.
+1. recibir credenciales por HTTPS en login;
+2. cifrar con RSA-OAEP si el backend continúa exigiéndolo;
+3. guardar el JWT de backend exclusivamente en cookie HttpOnly, Secure y SameSite apropiada;
+4. añadir Bearer JWT desde sesión de servidor al reenviar llamadas autorizadas;
+5. normalizar envelope/error de backend sin esconder `statusCode` ni código semántico;
+6. borrar cookie y llamar logout backend cuando corresponda.
+
+Antes de implementar esos pasos, se debe confirmar la interoperabilidad RSA Node/Web Crypto, el dominio/política de cookies y el acceso de red del servidor de despliegue al API. `DashboardKeyId` ya tiene una ubicación server-only prevista, pero su valor debe configurarse por secret manager en cada entorno; no se copia desde configuraciones o mensajes al repositorio.
 
 ### 5.3 Tipos, validación y borde de API
 
@@ -354,9 +385,10 @@ Los siguientes puntos no se han inferido como requisitos; quedan registrados par
 | B-07 | Currency/currency formatting se fija a `USD` en varias vistas, mientras Pay+ tiene moneda. | Mostrar importes y denominaciones correctamente. | Confirmar si el sistema admite múltiples monedas o el USD es regla explícita. |
 | B-08 | Manual de marca no define asset/logo reutilizable, escala de spacing ni escala tipográfica. | Terminación de diseño. | Entregar assets y/o aprobar las derivaciones de tokens actuales. |
 | B-09 | Contraste claro de `accent` + foreground blanco parece insuficiente para texto AA. | Accesibilidad. | Aprobar foreground/variante alternativa antes de usar el acento como fondo textual. |
-| B-10 | BFF/cookies y envío server-side de header/clave pública no están validados contra entorno backend. | Fase 1 auth/infraestructura. | Confirmar host, CORS, cookies, cifrado y configuración de secretos. |
+| B-10 | Existe proxy server-only para `DashboardKeyId`, pero BFF/cookies, RSA, host/cookies y acceso de red desde el entorno de despliegue no están validados. | Fase 1 auth/infraestructura. | Confirmar host, CORS, cookies, cifrado y configuración de secretos. |
 | B-11 | Varios endpoints de Transaction tienen nombres/rutas ambiguas y vídeo puede responder binario. | Schemas de transacción/monitoring. | Capturar fixtures o ejecutar pruebas de contrato. |
 | B-12 | La secuencia de fases no asigna Roles, Routes, Clientes, Oficinas, Pay+ CRUD/configuración, Maestros, Alertas ni Reportes, aunque el mandato global pide migrar todo el frontend. | Planificación completa y dependencias de Cargues/Arqueos/Monitoreo. | Confirmar en qué fase entra cada área o autorizar fases adicionales. |
+| B-13 | Arena no pudo completar TLS hacia `https://apidashboardv2.e-city.co/` durante la comprobación sin credenciales. | Verificación de conectividad, no la configuración del proxy. | Probar `/api/backend/...` desde el servidor/red de despliegue con `DASHBOARD_API_KEY_ID` configurado. |
 
 ## 7. Validación ejecutada de Fase 0
 
@@ -364,13 +396,15 @@ Los siguientes puntos no se han inferido como requisitos; quedan registrados par
 | --- | --- |
 | `npm run typecheck` | **PASA** — TypeScript estricto sin errores. |
 | `npm run lint` | **PASA** — ESLint sin warnings. |
-| `npm run build` | **PASA** — Next.js 16.3.5 compiló y generó `/` y `/_not-found`. |
+| `npm run build` | **PASA** — Next.js 16.3.5 compiló y generó `/`, `/_not-found` y `/api/backend/[...path]`. |
 | `npm audit --omit=dev --json` | **PASA** — 0 vulnerabilidades. |
 | `git diff --check` | **PASA** — sin errores de whitespace. |
+| Proxy sin secret configurado | **PASA** — responde 502 tipado/no-store sin revelar configuración. |
+| Conexión desde Arena al API productivo | **PENDIENTE** — el handshake TLS del sandbox falló; ver B-13. |
 | Colores no semánticos fuera de CSS global | **PASA** — búsqueda focalizada sin hex/RGB/HSL/paletas directas en `src/` fuera de `globals.css`. |
 | Mobile dialog/drawer | **PASA por implementación estática** — fullscreen bajo `sm`; prueba manual visual posterior queda incluida por módulo. |
 | Funcionalidad de dominio | **NO APLICA aún** — ningún módulo legado ha sido migrado antes de la confirmación de Fase 0. |
 
 ## 8. Límites explícitos de esta entrega
 
-Esta fase **no** migra autenticación, TanStack Query provider, BFF, rutas privadas, usuarios, cargues, arqueos, monitoreo, datos reales ni WebSocket. Es una base de diseño y un inventario para permitir que esos módulos se implementen sin reescribir el sistema de interfaz ni adivinar contratos.
+Esta fase **no** migra autenticación funcional, TanStack Query provider, sesión BFF con cookie, rutas privadas, usuarios, cargues, arqueos, monitoreo, datos reales ni WebSocket. Por solicitud posterior se añadió únicamente el proxy de transporte server-only hacia el API productivo; no ejecuta todavía una consulta de dominio ni reemplaza los contratos pendientes. La base de diseño e inventario permite implementar módulos sin reescribir la interfaz ni adivinar contratos.
