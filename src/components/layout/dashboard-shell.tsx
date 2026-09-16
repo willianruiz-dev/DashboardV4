@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { LogoutButton } from "@/components/layout/logout-button";
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { DashboardSession } from "@/features/auth/schemas";
@@ -81,6 +82,7 @@ export function DashboardShell({ children, session }: DashboardShellProps) {
           </div>
 
           <div className="flex min-w-0 items-center gap-2">
+            <ThemeToggle />
             <div className="hidden min-w-0 text-right sm:block">
               <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
               <p className="truncate text-xs text-muted-foreground">{roleName}</p>

@@ -9,9 +9,9 @@ import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/componen
 import { PageHeader } from "@/components/shared/page-header";
 import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
 import { DestructiveConfirmationDialog } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
+import { RoleDetailsDialog, type RoleDetailView } from "@/features/roles/components/role-details-dialog";
 import { RoleEditorDialog } from "@/features/roles/components/role-editor-dialog";
 import { useDeleteRole, useRoles } from "@/features/roles/hooks";
 import type { DashboardRole } from "@/features/roles/schemas";
@@ -29,6 +29,7 @@ export function RolesPage() {
   const deleteRoleMutation = useDeleteRole();
   const [editor, setEditor] = useState<{ mode: "create" | "edit"; roleId?: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DashboardRole | null>(null);
+  const [details, setDetails] = useState<{ role: DashboardRole; view: RoleDetailView } | null>(null);
   const roles = rolesQuery.data ?? [];
 
   async function deleteRole(): Promise<void> {
@@ -53,13 +54,31 @@ export function RolesPage() {
     },
     {
       id: "routes",
-      cell: ({ row }) => <Badge variant="secondary">{row.original.routes.length} rutas</Badge>,
+      cell: ({ row }) => (
+        <Button
+          aria-label={`Ver las ${row.original.routes.length} rutas de ${text(row.original.role)}`}
+          onClick={() => setDetails({ role: row.original, view: "routes" })}
+          type="button"
+          variant="outline"
+        >
+          {row.original.routes.length} rutas
+        </Button>
+      ),
       header: "Rutas",
       meta: { mobileLabel: "Rutas" },
     },
     {
       id: "permissions",
-      cell: ({ row }) => <Badge variant="secondary">{row.original.permissions.length} permisos</Badge>,
+      cell: ({ row }) => (
+        <Button
+          aria-label={`Ver los ${row.original.permissions.length} permisos de ${text(row.original.role)}`}
+          onClick={() => setDetails({ role: row.original, view: "permissions" })}
+          type="button"
+          variant="outline"
+        >
+          {row.original.permissions.length} permisos
+        </Button>
+      ),
       header: "Permisos",
       meta: { mobileLabel: "Permisos" },
     },
@@ -86,6 +105,7 @@ export function RolesPage() {
       {!rolesQuery.isPending && rolesQuery.isError ? <ErrorState description={rolesQuery.error instanceof Error ? rolesQuery.error.message : "No fue posible cargar los roles."} onRetry={() => void rolesQuery.refetch()} /> : null}
       {!rolesQuery.isPending && !rolesQuery.isError && roles.length === 0 ? <EmptyState description="No hay roles registrados." title="No hay roles" /> : null}
       {!rolesQuery.isPending && !rolesQuery.isError && roles.length > 0 ? <ResponsiveDataTable columns={columns} data={roles} getCardDescription={(role) => `${role.routes.length} rutas · ${role.permissions.length} permisos`} getCardTitle={(role) => text(role.role, "Rol sin nombre")} getRowId={(role) => String(role.id)} label="Listado de roles" /> : null}
+      {details ? <RoleDetailsDialog onOpenChange={(open) => { if (!open) setDetails(null); }} onViewChange={(view) => setDetails((current) => current ? { ...current, view } : null)} open role={details.role} view={details.view} /> : null}
       {editor ? <RoleEditorDialog mode={editor.mode} onOpenChange={(open) => { if (!open) setEditor(null); }} open roleId={editor.roleId} /> : null}
       <DestructiveConfirmationDialog
         isPending={deleteRoleMutation.isPending}

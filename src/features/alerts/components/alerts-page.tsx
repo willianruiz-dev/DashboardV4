@@ -16,10 +16,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { alertDefinitions, subscriptionFormSchema, type AlertSubscription, type AlertSubscriptionFormValues } from "@/features/alerts/schemas";
 import { useCreateSubscription, useDeleteSubscription, useSubscriptions } from "@/features/alerts/hooks";
+import { SearchablePaypadSelect } from "@/features/paypads/components/searchable-paypad-select";
 import { usePaypads } from "@/features/paypads/hooks";
 import type { PayPad } from "@/features/paypads/schemas";
 
@@ -130,7 +132,34 @@ export function AlertsPage() {
     <div className="grid gap-6">
       <PageHeader description="Administra los correos suscritos a alertas de escasez por cada equipo Pay+." title="Alertas" />
       {!canReadPaypads ? <ForbiddenState description="Tu rol puede consultar suscripciones, pero no tiene permiso para listar los Pay+ requeridos por este módulo." /> : null}
-      {canReadPaypads ? <Card><CardContent className="grid gap-3 p-5"><FormLabel htmlFor="alert-paypad">Pay+ a consultar</FormLabel>{paypadsQuery.isPending ? <ListSkeleton rows={1} /> : null}{!paypadsQuery.isPending && paypadsQuery.isError ? <ErrorState description={paypadsQuery.error instanceof Error ? paypadsQuery.error.message : "No fue posible cargar los Pay+."} onRetry={() => void paypadsQuery.refetch()} /> : null}{!paypadsQuery.isPending && !paypadsQuery.isError && paypadsQuery.data?.length === 0 ? <EmptyState description="No hay equipos Pay+ disponibles para administrar alertas." title="No hay Pay+" /> : null}{!paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) > 0 ? <Select onValueChange={(value) => { setSelectedPaypadId(value); setShowForm(false); }} value={selectedPaypadId}><SelectTrigger id="alert-paypad"><SelectValue placeholder="Selecciona un Pay+" /></SelectTrigger><SelectContent>{paypadsQuery.data?.map((paypad) => <SelectItem key={paypad.id} value={String(paypad.id)}>{paypadName(paypad)}</SelectItem>)}</SelectContent></Select> : null}</CardContent></Card> : null}
+      {canReadPaypads ? (
+        <Card>
+          <CardContent className="grid gap-3 p-5">
+            <Label htmlFor="alert-paypad">Pay+ a consultar</Label>
+            {paypadsQuery.isPending ? <ListSkeleton rows={1} /> : null}
+            {!paypadsQuery.isPending && paypadsQuery.isError ? (
+              <ErrorState
+                description={paypadsQuery.error instanceof Error ? paypadsQuery.error.message : "No fue posible cargar los Pay+."}
+                onRetry={() => void paypadsQuery.refetch()}
+              />
+            ) : null}
+            {!paypadsQuery.isPending && !paypadsQuery.isError && paypadsQuery.data?.length === 0 ? (
+              <EmptyState description="No hay equipos Pay+ disponibles para administrar alertas." title="No hay Pay+" />
+            ) : null}
+            {!paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) > 0 ? (
+              <SearchablePaypadSelect
+                id="alert-paypad"
+                onValueChange={(value) => {
+                  setSelectedPaypadId(value);
+                  setShowForm(false);
+                }}
+                paypads={paypadsQuery.data ?? []}
+                value={selectedPaypadId}
+              />
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
       {selectedPaypad && canWriteSubscriptions ? <div className="flex justify-end"><Button onClick={() => setShowForm((current) => !current)} type="button">{showForm ? "Ocultar formulario" : <><Plus aria-hidden="true" className="size-4" />Nueva suscripción</>}</Button></div> : null}
       {selectedPaypad && canWriteSubscriptions && showForm ? <SubscriptionForm key={selectedPaypad.id} onComplete={() => setShowForm(false)} paypad={selectedPaypad} /> : null}
       {!selectedPaypad && canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError ? <EmptyState description="Selecciona un Pay+ para consultar y administrar sus suscripciones." title="Elige un Pay+" /> : null}

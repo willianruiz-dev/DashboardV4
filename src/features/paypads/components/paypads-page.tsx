@@ -1,7 +1,7 @@
 "use client";
 
-import { Banknote, CircleDollarSign, Edit3, Eye, KeyRound, Plus, Scale, Settings2, Trash2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { Banknote, CircleDollarSign, Edit3, Eye, KeyRound, Plus, Scale, Search, Settings2, Trash2 } from "lucide-react";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
@@ -10,6 +10,8 @@ import { DestructiveConfirmationDialog } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { ChangePaypadPasswordDialog } from "@/features/paypads/components/change-paypad-password-dialog";
@@ -48,6 +50,40 @@ function ActionButton({ children, disabled = false, onClick, tooltip, ...props }
 
 function paypadName(paypad: PayPad): string {
   return paypad.username?.trim() || `Pay+ ${paypad.id}`;
+}
+
+function normalizeSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("es-CO")
+    .trim();
+}
+
+function matchesPaypadFilter(paypad: PayPad, query: string, status: "active" | "all" | "inactive"): boolean {
+  if (status === "active" && paypad.status !== 1) {
+    return false;
+  }
+
+  if (status === "inactive" && paypad.status === 1) {
+    return false;
+  }
+
+  const normalizedQuery = normalizeSearch(query);
+  if (normalizedQuery.length === 0) {
+    return true;
+  }
+
+  const searchableValues = [
+    String(paypad.id),
+    paypadName(paypad),
+    paypad.description ?? "",
+    paypad.office ?? "",
+    paypad.currency ?? "",
+    String(paypad.idOffice),
+  ];
+
+  return searchableValues.some((value) => normalizeSearch(value).includes(normalizedQuery));
 }
 
 function PayPadCard({ canDelete, canReadOperations, canWrite, onAction, paypad }: { canDelete: boolean; canReadOperations: boolean; canWrite: boolean; onAction: (dialog: ActiveDialog) => void; paypad: PayPad }) {
@@ -95,7 +131,13 @@ export function PaypadsPage() {
   const deleteMutation = useDeletePaypad();
   const [activeDialog, setActiveDialog] = useState<ActiveDialog>(null);
   const [deleteTarget, setDeleteTarget] = useState<PayPad | null>(null);
-  const paypads = paypadsQuery.data ?? [];
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"active" | "all" | "inactive">("all");
+  const paypads = useMemo(() => paypadsQuery.data ?? [], [paypadsQuery.data]);
+  const filteredPaypads = useMemo(
+    () => paypads.filter((paypad) => matchesPaypadFilter(paypad, searchQuery, statusFilter)),
+    [paypads, searchQuery, statusFilter],
+  );
 
   function selectAction(dialog: ActiveDialog): void {
     if (dialog?.kind === "delete") {
@@ -124,11 +166,72 @@ export function PaypadsPage() {
 
   return (
     <div className="grid gap-6">
-      <PageHeader actions={canWrite ? <Button onClick={() => setActiveDialog({ kind: "create" })} type="button"><Plus aria-hidden="true" className="size-4" />Crear Pay+</Button> : undefined} description="Administra los equipos Pay+, sus denominaciones, movimientos y configuración operativa." title="Pay+" />
+      <PageHeader
+        actions={canWrite ? <Button onClick={() => setActiveDialog({ kind: "create" })} type="button"><Plus aria-hidden="true" className="size-4" />Crear Pay+</Button> : undefined}
+        description="Administra los equipos Pay+, sus denominaciones, movimientos y configuración operativa."
+        title="Pay+"
+      />
       {paypadsQuery.isPending ? <ListSkeleton rows={8} /> : null}
-      {!paypadsQuery.isPending && paypadsQuery.isError ? <ErrorState description={paypadsQuery.error instanceof Error ? paypadsQuery.error.message : "No fue posible cargar los Pay+."} onRetry={() => void paypadsQuery.refetch()} /> : null}
-      {!paypadsQuery.isPending && !paypadsQuery.isError && paypads.length === 0 ? <EmptyState description="Crea el primer equipo Pay+ para iniciar su configuración." title="No hay Pay+ registrados" /> : null}
-      {!paypadsQuery.isPending && !paypadsQuery.isError && paypads.length > 0 ? <div aria-label="Listado de Pay+" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">{paypads.map((paypad) => <PayPadCard canDelete={canDelete} canReadOperations={canReadOperations} canWrite={canWrite} key={paypad.id} onAction={selectAction} paypad={paypad} />)}</div> : null}
+      {!paypadsQuery.isPending && paypadsQuery.isError ? (
+        <ErrorState
+          description={paypadsQuery.error instanceof Error ? paypadsQuery.error.message : "No fue posible cargar los Pay+."}
+          onRetry={() => void paypadsQuery.refetch()}
+        />
+      ) : null}
+      {!paypadsQuery.isPending && !paypadsQuery.isError && paypads.length === 0 ? (
+        <EmptyState description="Crea el primer equipo Pay+ para iniciar su configuración." title="No hay Pay+ registrados" />
+      ) : null}
+      {!paypadsQuery.isPending && !paypadsQuery.isError && paypads.length > 0 ? (
+        <>
+          <Card>
+            <CardContent className="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_14rem] md:items-end">
+              <label className="grid gap-2 text-sm font-medium text-foreground" htmlFor="paypad-search">
+                Buscar equipos Pay+
+                <span className="relative">
+                  <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    aria-describedby="paypad-filter-count"
+                    id="paypad-search"
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Nombre, ID, sucursal, moneda o descripción"
+                    value={searchQuery}
+                  />
+                </span>
+              </label>
+              <div className="grid gap-2 text-sm font-medium text-foreground">
+                <span id="paypad-status-filter-label">Estado</span>
+                <Select onValueChange={(value) => setStatusFilter(value as "active" | "all" | "inactive")} value={statusFilter}>
+                  <SelectTrigger aria-labelledby="paypad-status-filter-label" id="paypad-status-filter"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="active">Activos</SelectItem>
+                    <SelectItem value="inactive">Inactivos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-sm text-muted-foreground md:col-span-2" id="paypad-filter-count" role="status">
+                {filteredPaypads.length} de {paypads.length} equipo{paypads.length === 1 ? "" : "s"} Pay+.
+              </p>
+            </CardContent>
+          </Card>
+          {filteredPaypads.length === 0 ? (
+            <EmptyState description="Cambia el texto o el estado para encontrar otro equipo." title="No hay equipos que coincidan con el filtro" />
+          ) : (
+            <div aria-label="Listado de Pay+ filtrado" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              {filteredPaypads.map((paypad) => (
+                <PayPadCard
+                  canDelete={canDelete}
+                  canReadOperations={canReadOperations}
+                  canWrite={canWrite}
+                  key={paypad.id}
+                  onAction={selectAction}
+                  paypad={paypad}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      ) : null}
 
       {activeDialog?.kind === "create" ? <PayPadEditorDialog mode="create" onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open /> : null}
       {activeDialog?.kind === "edit" ? <PayPadEditorDialog mode="edit" onOpenChange={(open) => { if (!open) setActiveDialog(null); }} open paypadId={activeDialog.paypad.id} /> : null}

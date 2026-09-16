@@ -1,9 +1,7 @@
 "use client";
 
-import { FileSpreadsheet, LoaderCircle } from "lucide-react";
-import { useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { toast } from "sonner";
+import { useState } from "react";
 
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
@@ -13,11 +11,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { usePaypads } from "@/features/paypads/hooks";
+import { ExcelExportButton } from "@/features/transactions/components/excel-export-button";
 import { TransactionDetailDialog } from "@/features/transactions/components/transaction-detail-dialog";
 import { TransactionFilters, type TransactionFiltersValues } from "@/features/transactions/components/transaction-filters";
 import { TransactionStateBadge } from "@/features/transactions/components/transaction-state-badge";
 import { TransactionSummaryCards } from "@/features/transactions/components/transaction-summary";
-import { useDownloadExcel, useTransactionSearch } from "@/features/transactions/hooks";
+import { useTransactionSearch } from "@/features/transactions/hooks";
 import type { DashboardTransaction, TransactionSearchRequest, TransactionSortKey } from "@/features/transactions/schemas";
 import { createTodayDateRange, dateForFileName, formatDashboardDateTime } from "@/lib/formatters/date";
 import { formatDashboardMoney } from "@/lib/formatters/money";
@@ -41,13 +40,17 @@ export function TransactionsPage() {
   const [search, setSearch] = useState<TransactionSearchRequest | null>(null);
   const [selectedTransaction, setSelectedTransaction] = useState<DashboardTransaction | null>(null);
   const transactionsQuery = useTransactionSearch(search);
-  const downloadExcelMutation = useDownloadExcel();
   const data = transactionsQuery.data;
+  const selectedPaypad = search?.paypadId ? paypadsQuery.data?.find((item) => item.id === search.paypadId) : undefined;
+  const excelFileName = search && search.paypadId
+    ? `Reporte_${selectedPaypad ? paypadName(selectedPaypad).replaceAll(" ", "") : search.paypadId}_${dateForFileName(search.from)}_a_${dateForFileName(search.to)}.xlsx`
+    : "Reporte_transacciones.xlsx";
 
   function submitSearch(values: TransactionFiltersValues): void {
     if (values.paypadId === null) {
       return;
     }
+
     setSearch({
       from: values.from,
       page: 1,
@@ -64,20 +67,6 @@ export function TransactionsPage() {
     setSearch((current) => current ? { ...current, ...update } : current);
   }
 
-  async function exportExcel(): Promise<void> {
-    if (!search?.paypadId || !data || data.transactionIds.length === 0) {
-      return;
-    }
-    const paypad = paypadsQuery.data?.find((item) => item.id === search.paypadId);
-    const fileName = `Reporte_${paypad ? paypadName(paypad).replaceAll(" ", "") : search.paypadId}_${dateForFileName(search.from)}_a_${dateForFileName(search.to)}.xlsx`;
-    try {
-      await downloadExcelMutation.mutateAsync({ fileName, paypadId: search.paypadId, transactionIds: data.transactionIds });
-      toast.success("El archivo Excel se descargó correctamente.");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Ocurrió un error generando el archivo.");
-    }
-  }
-
   const columns: ColumnDef<DashboardTransaction, unknown>[] = [
     { accessorKey: "id", cell: ({ row }) => row.original.id, header: "ID", meta: { mobileLabel: "ID" } },
     { accessorKey: "typeTransaction", cell: ({ row }) => text(row.original.typeTransaction), header: "Trámite", meta: { mobileLabel: "Trámite" } },
@@ -90,12 +79,136 @@ export function TransactionsPage() {
     { accessorKey: "returnAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.returnAmount)}</span>, header: "Devuelto", meta: { mobileLabel: "Devuelto" } },
     { accessorKey: "typePayment", cell: ({ row }) => text(row.original.typePayment), header: "Medio de pago", meta: { mobileLabel: "Medio de pago" } },
     { accessorKey: "stateTransaction", cell: ({ row }) => <TransactionStateBadge value={row.original.stateTransaction} />, header: "Estado", meta: { mobileLabel: "Estado" } },
-    { id: "actions", cell: ({ row }) => <Button aria-label={`Ver detalle de transacción ${row.original.id}`} onClick={() => setSelectedTransaction(row.original)} size="sm" type="button" variant="outline">Ver detalle</Button>, header: "Acciones" },
+    {
+      id: "actions",
+      cell: ({ row }) => (
+        <Button aria-label={`Ver detalle de transacción ${row.original.id}`} onClick={() => setSelectedTransaction(row.original)} size="sm" type="button" variant="outline">
+          Ver detalle
+        </Button>
+      ),
+      header: "Acciones",
+    },
   ];
 
   if (!canReadTransactions) {
     return <ForbiddenState description="Tu rol no tiene permiso para consultar transacciones." />;
   }
 
-  return <div className="grid gap-6"><PageHeader description="Consulta transacciones por Pay+ y rango de fechas, con resultados paginados y ordenados desde el servidor." title="Transacciones" />{!canReadPaypads ? <ForbiddenState description="Tu rol no tiene permiso para listar los Pay+ requeridos para consultar transacciones." /> : null}{canReadPaypads && paypadsQuery.isPending ? <ListSkeleton rows={2} /> : null}{canReadPaypads && !paypadsQuery.isPending && paypadsQuery.isError ? <ErrorState description={paypadsQuery.error instanceof Error ? paypadsQuery.error.message : "No fue posible cargar los Pay+."} onRetry={() => void paypadsQuery.refetch()} /> : null}{canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) === 0 ? <EmptyState description="No hay equipos Pay+ disponibles para consultar transacciones." title="No hay Pay+" /> : null}{canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) > 0 ? <TransactionFilters defaultRange={defaultRange} onSearch={submitSearch} paypads={paypadsQuery.data ?? []} /> : null}{search && transactionsQuery.isPending ? <ListSkeleton rows={5} /> : null}{search && !transactionsQuery.isPending && transactionsQuery.isError ? <ErrorState description={transactionsQuery.error instanceof Error ? transactionsQuery.error.message : "No fue posible consultar las transacciones."} onRetry={() => void transactionsQuery.refetch()} /> : null}{search && !transactionsQuery.isPending && !transactionsQuery.isError && data ? <><TransactionSummaryCards summary={data.summary} /><Card><CardContent className="grid gap-4 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">{data.total} resultado{data.total === 1 ? "" : "s"} encontrado{data.total === 1 ? "" : "s"}.</p><Button disabled={downloadExcelMutation.isPending || data.transactionIds.length === 0} onClick={() => void exportExcel()} type="button" variant="outline">{downloadExcelMutation.isPending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <FileSpreadsheet aria-hidden="true" className="size-4" />}{downloadExcelMutation.isPending ? "Generando…" : "Excel"}</Button></div><div className="grid gap-3 md:grid-cols-3"><div className="grid gap-2"><span className="text-sm font-medium">Ordenar por</span><Select onValueChange={(value) => updateSearch({ page: 1, sortKey: value as TransactionSortKey })} value={search.sortKey}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="dateCreated">Fecha</SelectItem><SelectItem value="id">ID</SelectItem><SelectItem value="totalAmount">Total</SelectItem><SelectItem value="typeTransaction">Trámite</SelectItem><SelectItem value="typePayment">Medio de pago</SelectItem><SelectItem value="stateTransaction">Estado</SelectItem><SelectItem value="product">Producto</SelectItem></SelectContent></Select></div><div className="grid gap-2"><span className="text-sm font-medium">Dirección</span><Select onValueChange={(value) => updateSearch({ page: 1, sortDirection: value as "asc" | "desc" })} value={search.sortDirection}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="desc">Descendente</SelectItem><SelectItem value="asc">Ascendente</SelectItem></SelectContent></Select></div><div className="grid gap-2"><span className="text-sm font-medium">Resultados por página</span><Select onValueChange={(value) => updateSearch({ page: 1, pageSize: Number(value) as (typeof pageSizeOptions)[number] })} value={String(search.pageSize)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{pageSizeOptions.map((option) => <SelectItem key={option} value={String(option)}>{option}</SelectItem>)}</SelectContent></Select></div></div></CardContent></Card>{data.items.length === 0 ? <EmptyState description="No se encontraron transacciones con los parámetros indicados." title="Resultados no encontrados" /> : <ResponsiveDataTable columns={columns} data={data.items} getCardDescription={(transaction) => `${text(transaction.typeTransaction)} · ${formatDashboardDateTime(transaction.dateCreated)}`} getCardTitle={(transaction) => `Transacción ${transaction.id}`} getRowId={(transaction) => String(transaction.id)} label="Resultados de transacciones" />}{data.total > 0 ? <div className="flex flex-wrap items-center justify-between gap-3"><Button disabled={search.page === 1} onClick={() => updateSearch({ page: search.page - 1 })} type="button" variant="outline">Anterior</Button><span className="text-sm text-muted-foreground">Página {search.page} de {Math.max(1, Math.ceil(data.total / search.pageSize))}</span><Button disabled={search.page * search.pageSize >= data.total} onClick={() => updateSearch({ page: search.page + 1 })} type="button" variant="outline">Siguiente</Button></div> : null}</> : null}<TransactionDetailDialog key={selectedTransaction?.id ?? "none"} onOpenChange={(open) => { if (!open) setSelectedTransaction(null); }} open={selectedTransaction !== null} transaction={selectedTransaction} /></div>;
+  return (
+    <div className="grid gap-6">
+      <PageHeader
+        actions={(
+          <ExcelExportButton
+            fileName={excelFileName}
+            paypadId={search?.paypadId ?? null}
+            transactionIds={data?.transactionIds ?? []}
+          />
+        )}
+        description="Consulta transacciones por Pay+ y rango de fechas. El botón Descargar Excel se habilita cuando la consulta tiene resultados."
+        title="Transacciones"
+      />
+
+      {!canReadPaypads ? (
+        <ForbiddenState description="Tu rol no tiene permiso para listar los Pay+ requeridos para consultar transacciones." />
+      ) : null}
+      {canReadPaypads && paypadsQuery.isPending ? <ListSkeleton rows={2} /> : null}
+      {canReadPaypads && !paypadsQuery.isPending && paypadsQuery.isError ? (
+        <ErrorState
+          description={paypadsQuery.error instanceof Error ? paypadsQuery.error.message : "No fue posible cargar los Pay+."}
+          onRetry={() => void paypadsQuery.refetch()}
+        />
+      ) : null}
+      {canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) === 0 ? (
+        <EmptyState description="No hay equipos Pay+ disponibles para consultar transacciones." title="No hay Pay+" />
+      ) : null}
+      {canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) > 0 ? (
+        <TransactionFilters defaultRange={defaultRange} onSearch={submitSearch} paypads={paypadsQuery.data ?? []} />
+      ) : null}
+
+      {search && transactionsQuery.isPending ? <ListSkeleton rows={5} /> : null}
+      {search && !transactionsQuery.isPending && transactionsQuery.isError ? (
+        <ErrorState
+          description={transactionsQuery.error instanceof Error ? transactionsQuery.error.message : "No fue posible consultar las transacciones."}
+          onRetry={() => void transactionsQuery.refetch()}
+        />
+      ) : null}
+      {search && !transactionsQuery.isPending && !transactionsQuery.isError && data ? (
+        <>
+          <TransactionSummaryCards summary={data.summary} />
+          <Card>
+            <CardContent className="grid gap-4 p-5">
+              <p className="text-sm text-muted-foreground">
+                {data.total} resultado{data.total === 1 ? "" : "s"} encontrado{data.total === 1 ? "" : "s"}. El Excel incluye todos los resultados de esta consulta, no sólo la página visible.
+              </p>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-2">
+                  <span className="text-sm font-medium">Ordenar por</span>
+                  <Select onValueChange={(value) => updateSearch({ page: 1, sortKey: value as TransactionSortKey })} value={search.sortKey}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="dateCreated">Fecha</SelectItem>
+                      <SelectItem value="id">ID</SelectItem>
+                      <SelectItem value="totalAmount">Total</SelectItem>
+                      <SelectItem value="typeTransaction">Trámite</SelectItem>
+                      <SelectItem value="typePayment">Medio de pago</SelectItem>
+                      <SelectItem value="stateTransaction">Estado</SelectItem>
+                      <SelectItem value="product">Producto</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <span className="text-sm font-medium">Dirección</span>
+                  <Select onValueChange={(value) => updateSearch({ page: 1, sortDirection: value as "asc" | "desc" })} value={search.sortDirection}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="desc">Descendente</SelectItem>
+                      <SelectItem value="asc">Ascendente</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <span className="text-sm font-medium">Resultados por página</span>
+                  <Select onValueChange={(value) => updateSearch({ page: 1, pageSize: Number(value) as (typeof pageSizeOptions)[number] })} value={String(search.pageSize)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {pageSizeOptions.map((option) => <SelectItem key={option} value={String(option)}>{option}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          {data.items.length === 0 ? (
+            <EmptyState description="No se encontraron transacciones con los parámetros indicados." title="Resultados no encontrados" />
+          ) : (
+            <ResponsiveDataTable
+              columns={columns}
+              data={data.items}
+              getCardDescription={(transaction) => `${text(transaction.typeTransaction)} · ${formatDashboardDateTime(transaction.dateCreated)}`}
+              getCardTitle={(transaction) => `Transacción ${transaction.id}`}
+              getRowId={(transaction) => String(transaction.id)}
+              label="Resultados de transacciones"
+            />
+          )}
+          {data.total > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Button disabled={search.page === 1} onClick={() => updateSearch({ page: search.page - 1 })} type="button" variant="outline">Anterior</Button>
+              <span className="text-sm text-muted-foreground">Página {search.page} de {Math.max(1, Math.ceil(data.total / search.pageSize))}</span>
+              <Button disabled={search.page * search.pageSize >= data.total} onClick={() => updateSearch({ page: search.page + 1 })} type="button" variant="outline">Siguiente</Button>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      <TransactionDetailDialog
+        key={selectedTransaction?.id ?? "none"}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedTransaction(null);
+          }
+        }}
+        open={selectedTransaction !== null}
+        transaction={selectedTransaction}
+      />
+    </div>
+  );
 }
