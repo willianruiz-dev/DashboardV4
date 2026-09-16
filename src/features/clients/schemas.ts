@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const optionalString = z.string().nullable().optional();
 const byteArraySchema = z.array(z.number().int().min(0).max(255));
+const nullableByteArraySchema = byteArraySchema.nullish().transform((value) => value ?? []);
 const allowedTextPattern = /^[^!#$%^&*(){}[\]:;<>,?~='\\/]*$/;
 const requiredAllowedTextPattern = /^[^!#$%^&*(){}[\]:;<>,?~='\\/]+$/;
 
@@ -16,7 +17,7 @@ export const clientSchema = z
     idUserUpdated: z.number().int().nonnegative().optional(),
     imgExt: optionalString,
     logoImg: optionalString,
-    logoImgList: byteArraySchema.optional(),
+    logoImgList: nullableByteArraySchema,
     name: optionalString,
     nit: optionalString,
     phone: optionalString,

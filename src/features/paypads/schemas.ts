@@ -139,7 +139,7 @@ export type LoadDetail = z.infer<typeof loadDetailSchema>;
 export const loadSchema = z
   .object({
     dateCreated: optionalString,
-    details: z.array(loadDetailSchema).default([]),
+    details: z.array(loadDetailSchema).nullish().transform((details) => details ?? []),
     id: z.number().int().nonnegative(),
     idPayPad: z.number().int().positive(),
     totalLoaded: decimalStringSchema,
@@ -175,7 +175,7 @@ export type TonnageDetail = z.infer<typeof tonnageDetailSchema>;
 export const tonnageSchema = z
   .object({
     dateCreated: optionalString,
-    details: z.array(tonnageDetailSchema).default([]),
+    details: z.array(tonnageDetailSchema).nullish().transform((details) => details ?? []),
     id: z.number().int().nonnegative(),
     idPayPad: z.number().int().positive(),
     total: decimalStringSchema,

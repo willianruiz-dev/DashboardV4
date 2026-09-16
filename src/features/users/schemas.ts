@@ -3,6 +3,7 @@ import { z } from "zod";
 const nullableString = z.string().nullable().optional();
 const nullablePositiveId = z.number().int().positive().nullable().optional();
 const byteArraySchema = z.array(z.number().int().min(0).max(255));
+const nullableByteArraySchema = byteArraySchema.nullish().transform((value) => value ?? []);
 const allowedTextPattern = /^[^!#$%^&*(){}[\]:;<>,?~='\\/]*$/;
 const requiredAllowedTextPattern = /^[^!#$%^&*(){}[\]:;<>,?~='\\/]+$/;
 
@@ -25,7 +26,7 @@ const userCommonSchema = z.object({
   idUserUpdated: z.number().int().nonnegative().optional(),
   img: nullableString,
   imgExt: nullableString,
-  imgList: byteArraySchema.optional(),
+  imgList: nullableByteArraySchema,
   lastName: nullableString,
   name: nullableString,
   phone: nullableString,

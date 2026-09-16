@@ -1,12 +1,12 @@
 "use client";
 
-import { Building2, Edit3, ExternalLink, Plus, Trash2 } from "lucide-react";
-import Image from "next/image";
+import { Edit3, ExternalLink, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 
+import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
 import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
@@ -23,15 +23,13 @@ function text(value: string | null | undefined, fallback = "—"): string {
 }
 
 function ClientLogo({ client }: { client: DashboardClient }) {
-  const source = backendStaticFilePath(client.logoImg);
-  if (source) {
-    return <Image alt={`Logo de ${text(client.name)}`} className="h-10 w-14 rounded-md border object-contain" height={40} src={source} unoptimized width={56} />;
-  }
-
   return (
-    <span aria-hidden="true" className="flex h-10 w-14 items-center justify-center rounded-md bg-secondary text-secondary-foreground">
-      <Building2 className="size-4" />
-    </span>
+    <BackendStaticImage
+      alt={`Logo de ${text(client.name)}`}
+      height={40}
+      src={backendStaticFilePath(client.logoImg)}
+      width={56}
+    />
   );
 }
 

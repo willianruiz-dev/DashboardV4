@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 
+import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/shared/query-states";
 import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import type { DashboardTransaction, DashboardTransactionDetail } from "@/feature
 import { TransactionStateBadge } from "@/features/transactions/components/transaction-state-badge";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { ClientApiError } from "@/lib/api/client";
+import { backendStaticFilePath } from "@/lib/api/backend";
 import { formatDashboardDateTime } from "@/lib/formatters/date";
 import { formatDashboardMoney } from "@/lib/formatters/money";
 
@@ -28,6 +30,7 @@ interface TransactionDetailDialogProps {
 
 interface GroupedDetail {
   denominationId: number;
+  denominationImage: string | null;
   denominationValue: string;
   operation: string;
   quantity: string;
@@ -50,6 +53,7 @@ function groupDetails(details: readonly DashboardTransactionDetail[], denominati
     }
     groups.set(key, {
       denominationId: detail.idCurrencyDenomination,
+      denominationImage: denomination?.img ?? null,
       denominationValue: denomination?.value ?? detail.currencyDenomination ?? "0",
       operation: text(detail.typeOperation, "Operación no informada"),
       quantity: quantity.toString(),
@@ -92,6 +96,19 @@ function DetailsPanel({ transactionId }: { transactionId: number }) {
   const denominations = useMemo(() => denominationsQuery.data ?? [], [denominationsQuery.data]);
   const rows = useMemo(() => groupDetails(details, denominations), [denominations, details]);
   const columns: ColumnDef<GroupedDetail, unknown>[] = [
+    {
+      id: "image",
+      cell: ({ row }) => (
+        <BackendStaticImage
+          alt={`Billete de ${formatDashboardMoney(row.original.denominationValue)}`}
+          height={40}
+          src={backendStaticFilePath(row.original.denominationImage)}
+          width={64}
+        />
+      ),
+      header: "Billete",
+      meta: { mobileLabel: "Billete" },
+    },
     { accessorKey: "operation", cell: ({ row }) => row.original.operation, header: "Tipo de operación", meta: { mobileLabel: "Tipo de operación" } },
     { accessorKey: "denominationValue", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.denominationValue)}</span>, header: "Denominación", meta: { mobileLabel: "Denominación" } },
     { accessorKey: "quantity", cell: ({ row }) => <span className="font-numeric">{row.original.quantity}</span>, header: "Cantidad", meta: { mobileLabel: "Cantidad" } },

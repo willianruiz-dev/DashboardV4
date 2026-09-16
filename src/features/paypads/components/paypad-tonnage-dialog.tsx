@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 
+import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/shared/query-states";
 import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
 import { CriticalConfirmationDialog } from "@/components/ui/alert-dialog";
@@ -13,8 +14,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
+import { useDenominations } from "@/features/denominations/hooks";
 import { usePaypadStorage, useSaveTonnage } from "@/features/paypads/hooks";
 import type { PayPad, PayPadStorage } from "@/features/paypads/schemas";
+import { backendStaticFilePath } from "@/lib/api/backend";
 import { formatDashboardMoney, sumMoneyStrings } from "@/lib/formatters/money";
 
 interface PayPadTonnageDialogProps {
@@ -27,8 +30,30 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "No fue posible cargar el almacenamiento del Pay+.";
 }
 
-function StorageTable({ label, rows, total }: { label: string; rows: PayPadStorage[]; total: string }) {
+function DenominationImage({ imagePath, value }: { imagePath: string | null; value: string }) {
+  return (
+    <BackendStaticImage
+      alt={`Billete de ${formatDashboardMoney(value)}`}
+      height={40}
+      src={backendStaticFilePath(imagePath)}
+      width={64}
+    />
+  );
+}
+
+function StorageTable({ denominationImageById, label, rows, total }: { denominationImageById: ReadonlyMap<number, string | null | undefined>; label: string; rows: PayPadStorage[]; total: string }) {
   const columns: ColumnDef<PayPadStorage, unknown>[] = [
+    {
+      id: "image",
+      cell: ({ row }) => (
+        <DenominationImage
+          imagePath={denominationImageById.get(row.original.idCurrencyDenomination) ?? row.original.imgDenom ?? null}
+          value={row.original.denominationValue}
+        />
+      ),
+      header: "Billete",
+      meta: { mobileLabel: "Billete" },
+    },
     { accessorKey: "denominationValue", cell: ({ row }) => <span className="font-numeric font-medium">{formatDashboardMoney(row.original.denominationValue)}</span>, header: "Denominación", meta: { mobileLabel: "Denominación" } },
     { id: "quantity", cell: ({ row }) => label === "Aceptadores" ? row.original.apStored : row.original.dpStored, header: "Unidades", meta: { mobileLabel: "Unidades" } },
     { id: "amount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(label === "Aceptadores" ? row.original.apTotal : row.original.dpTotal)}</span>, header: "Valor", meta: { mobileLabel: "Valor" } },
@@ -48,10 +73,16 @@ function StorageTable({ label, rows, total }: { label: string; rows: PayPadStora
 export function PayPadTonnageDialog({ onOpenChange, open, paypad }: PayPadTonnageDialogProps) {
   const session = useDashboardSession();
   const canWrite = hasPermission(session, "WriteTonnagesAndLoads");
+  const canReadMasters = hasPermission(session, "ReadMasters");
   const storageQuery = usePaypadStorage(paypad?.id ?? null);
+  const denominationsQuery = useDenominations(open && canReadMasters);
   const saveMutation = useSaveTonnage();
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const storage = useMemo(() => storageQuery.data ?? [], [storageQuery.data]);
+  const denominationImageById = useMemo(
+    () => new Map((denominationsQuery.data ?? []).map((denomination) => [denomination.id, denomination.img] as const)),
+    [denominationsQuery.data],
+  );
   const acceptedRows = useMemo(() => storage.filter((item) => item.apStored !== "0"), [storage]);
   const dispenserRows = useMemo(() => storage.filter((item) => item.dpStored !== "0"), [storage]);
   const totalAccepted = sumMoneyStrings(storage.map((item) => item.apTotal));
@@ -93,8 +124,8 @@ export function PayPadTonnageDialog({ onOpenChange, open, paypad }: PayPadTonnag
           {!storageQuery.isPending && !storageQuery.isError && storage.length === 0 ? <EmptyState description="No hay almacenamiento para arqueo en este Pay+." title="No hay efectivo almacenado" /> : null}
           {!storageQuery.isPending && !storageQuery.isError && storage.length > 0 ? (
             <div className="grid gap-4 lg:grid-cols-2">
-              <StorageTable label="Aceptadores" rows={acceptedRows} total={totalAccepted} />
-              <StorageTable label="Dispensadores" rows={dispenserRows} total={totalDispenser} />
+              <StorageTable denominationImageById={denominationImageById} label="Aceptadores" rows={acceptedRows} total={totalAccepted} />
+              <StorageTable denominationImageById={denominationImageById} label="Dispensadores" rows={dispenserRows} total={totalDispenser} />
               <Card className="lg:col-span-2"><CardContent className="flex items-center justify-between gap-3 p-5"><span className="flex items-center gap-2 text-sm font-medium"><Archive aria-hidden="true" className="size-4" />Baúl de rechazo</span><span className="font-numeric text-base font-semibold">{formatDashboardMoney(totalRejected)}</span></CardContent></Card>
             </div>
           ) : null}

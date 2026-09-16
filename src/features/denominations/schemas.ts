@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const optionalString = z.string().nullable().optional();
 const byteArraySchema = z.array(z.number().int().min(0).max(255));
+const nullableByteArraySchema = byteArraySchema.nullish().transform((value) => value ?? []);
 
 const monetaryIntegerSchema = z
   .union([z.number().int().nonnegative(), z.string().regex(/^\d+$/)])
@@ -18,7 +19,7 @@ export const denominationSchema = z
     idUserUpdated: z.number().int().nonnegative().optional(),
     img: optionalString,
     imgExt: optionalString,
-    imgList: byteArraySchema.optional(),
+    imgList: nullableByteArraySchema,
     userCreated: optionalString,
     userUpdated: optionalString,
     value: monetaryIntegerSchema,

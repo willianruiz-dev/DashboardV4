@@ -1,11 +1,11 @@
 "use client";
 
 import { Edit3, KeyRound, Plus, Trash2 } from "lucide-react";
-import Image from "next/image";
 import { useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 
+import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
 import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
@@ -39,23 +39,15 @@ function UserAvatar({ user }: { user: DashboardUser }) {
     .map((part) => part.charAt(0).toUpperCase())
     .join("");
 
-  if (source) {
-    return (
-      <Image
-        alt={`Perfil de ${displayText(user.userName)}`}
-        className="size-10 rounded-full border object-cover"
-        height={40}
-        src={source}
-        unoptimized
-        width={40}
-      />
-    );
-  }
-
   return (
-    <span aria-hidden="true" className="flex size-10 items-center justify-center rounded-full bg-secondary text-xs font-semibold text-secondary-foreground">
-      {initials || "U"}
-    </span>
+    <BackendStaticImage
+      alt={`Perfil de ${displayText(user.userName)}`}
+      className="rounded-full"
+      fallback={<span aria-hidden="true" className="text-xs font-semibold text-secondary-foreground">{initials || "U"}</span>}
+      height={40}
+      src={source}
+      width={40}
+    />
   );
 }
 

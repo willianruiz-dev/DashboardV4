@@ -6,10 +6,12 @@ import { useState, type ReactNode } from "react";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { LogoutButton } from "@/components/layout/logout-button";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
+import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { DashboardSession } from "@/features/auth/schemas";
 import { DashboardSessionProvider } from "@/features/auth/session-context";
+import { backendStaticFilePath } from "@/lib/api/backend";
 import { buildDashboardNavigation } from "@/lib/navigation/dashboard-navigation";
 
 interface DashboardShellProps {
@@ -87,9 +89,14 @@ export function DashboardShell({ children, session }: DashboardShellProps) {
               <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
               <p className="truncate text-xs text-muted-foreground">{roleName}</p>
             </div>
-            <span aria-hidden="true" className="flex size-10 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
-              {getInitials(displayName)}
-            </span>
+            <BackendStaticImage
+              alt={`Perfil de ${displayName}`}
+              className="rounded-full"
+              fallback={<span aria-hidden="true" className="text-xs font-semibold text-secondary-foreground">{getInitials(displayName)}</span>}
+              height={40}
+              src={backendStaticFilePath(session.user.img)}
+              width={40}
+            />
             <LogoutButton />
           </div>
         </header>

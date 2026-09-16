@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 
+import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/shared/query-states";
 import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
 import { CriticalConfirmationDialog } from "@/components/ui/alert-dialog";
@@ -13,8 +14,10 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
+import { useDenominations } from "@/features/denominations/hooks";
 import { usePaypadStorage, useSaveLoad } from "@/features/paypads/hooks";
 import type { LoadMutation, PayPad, PayPadStorage } from "@/features/paypads/schemas";
+import { backendStaticFilePath } from "@/lib/api/backend";
 import { formatDashboardMoney, multiplyMoneyString, sumMoneyStrings } from "@/lib/formatters/money";
 
 interface PayPadLoadDialogProps {
@@ -27,14 +30,31 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "No fue posible cargar las denominaciones disponibles.";
 }
 
+function DenominationImage({ imagePath, value }: { imagePath: string | null; value: string }) {
+  return (
+    <BackendStaticImage
+      alt={`Billete de ${formatDashboardMoney(value)}`}
+      height={40}
+      src={backendStaticFilePath(imagePath)}
+      width={64}
+    />
+  );
+}
+
 export function PayPadLoadDialog({ onOpenChange, open, paypad }: PayPadLoadDialogProps) {
   const session = useDashboardSession();
   const canWrite = hasPermission(session, "WriteTonnagesAndLoads");
+  const canReadMasters = hasPermission(session, "ReadMasters");
   const storageQuery = usePaypadStorage(paypad?.id ?? null);
+  const denominationsQuery = useDenominations(open && canReadMasters);
   const saveMutation = useSaveLoad();
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const storage = useMemo(() => (storageQuery.data ?? []).filter((item) => item.isDispensing), [storageQuery.data]);
+  const denominationImageById = useMemo(
+    () => new Map((denominationsQuery.data ?? []).map((denomination) => [denomination.id, denomination.img] as const)),
+    [denominationsQuery.data],
+  );
   const total = sumMoneyStrings(storage.map((item) => multiplyMoneyString(item.denominationValue, quantities[String(item.idCurrencyDenomination)] ?? "0")));
   const hasQuantity = storage.some((item) => (quantities[String(item.idCurrencyDenomination)] ?? "0") !== "0");
 
@@ -90,6 +110,17 @@ export function PayPadLoadDialog({ onOpenChange, open, paypad }: PayPadLoadDialo
   }
 
   const columns: ColumnDef<PayPadStorage, unknown>[] = [
+    {
+      id: "image",
+      cell: ({ row }) => (
+        <DenominationImage
+          imagePath={denominationImageById.get(row.original.idCurrencyDenomination) ?? row.original.imgDenom ?? null}
+          value={row.original.denominationValue}
+        />
+      ),
+      header: "Billete",
+      meta: { mobileLabel: "Billete" },
+    },
     { accessorKey: "denominationValue", cell: ({ row }) => <span className="font-numeric font-medium">{formatDashboardMoney(row.original.denominationValue)}</span>, header: "Denominación", meta: { mobileLabel: "Denominación" } },
     { accessorKey: "minDpQuantity", cell: ({ row }) => row.original.minDpQuantity, header: "Mínimo configurado", meta: { mobileLabel: "Mínimo configurado" } },
     {

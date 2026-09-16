@@ -47,7 +47,7 @@ export function ResponsiveDataTable<TData extends RowData>({
 
   return (
     <>
-      <div className="hidden 2xl:block">
+      <div className="hidden xl:block">
         <div className="rounded-lg border bg-card">
           <Table aria-label={label}>
             <TableHeader>
@@ -76,7 +76,7 @@ export function ResponsiveDataTable<TData extends RowData>({
         </div>
       </div>
 
-      <div className="grid gap-3 2xl:hidden">
+      <div className="grid gap-3 xl:hidden">
         {table.getRowModel().rows.map((row) => {
           const visibleCells = row
             .getVisibleCells()

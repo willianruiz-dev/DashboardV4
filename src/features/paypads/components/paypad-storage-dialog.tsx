@@ -1,11 +1,11 @@
 "use client";
 
 import { LoaderCircle, Save, Settings2 } from "lucide-react";
-import Image from "next/image";
 import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 
+import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/shared/query-states";
 import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -36,13 +36,15 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "No fue posible cargar la configuración de almacenamiento.";
 }
 
-function imageSource(denomination: CurrencyDenomination): string | null {
-  return backendStaticFilePath(denomination.img);
-}
-
 function DenominationPreview({ denomination }: { denomination: CurrencyDenomination }) {
-  const source = imageSource(denomination);
-  return source ? <Image alt={`Denominación ${formatDashboardMoney(denomination.value)}`} className="h-10 w-16 rounded-md border object-contain" height={40} src={source} unoptimized width={64} /> : <span className="font-numeric text-sm">{formatDashboardMoney(denomination.value)}</span>;
+  return (
+    <BackendStaticImage
+      alt={`Denominación ${formatDashboardMoney(denomination.value)}`}
+      height={40}
+      src={backendStaticFilePath(denomination.img)}
+      width={64}
+    />
+  );
 }
 
 function getStorageEntry(storage: readonly PayPadStorage[], denominationId: number): StorageEntry {
@@ -124,7 +126,7 @@ export function PayPadStorageDialog({ onOpenChange, open, paypad }: PayPadStorag
   }
 
   const columns: ColumnDef<CurrencyDenomination, unknown>[] = [
-    { id: "image", cell: ({ row }) => <DenominationPreview denomination={row.original} />, header: "Denominación", meta: { mobileHidden: true } },
+    { id: "image", cell: ({ row }) => <DenominationPreview denomination={row.original} />, header: "Billete", meta: { mobileLabel: "Billete" } },
     { accessorKey: "value", cell: ({ row }) => <span className="font-numeric font-medium">{formatDashboardMoney(row.original.value)}</span>, header: "Valor", meta: { mobileLabel: "Valor" } },
     {
       id: "dispensing",

@@ -1,11 +1,11 @@
 "use client";
 
-import { Banknote, Edit3, Plus, Trash2 } from "lucide-react";
-import Image from "next/image";
+import { Edit3, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 
+import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
 import { ResponsiveDataTable } from "@/components/shared/responsive-data-table";
@@ -23,12 +23,14 @@ function text(value: string | null | undefined, fallback = "—"): string {
 }
 
 function DenominationImage({ denomination }: { denomination: CurrencyDenomination }) {
-  const source = backendStaticFilePath(denomination.img);
-  if (source) {
-    return <Image alt={`Imagen de la denominación ${formatDashboardMoney(denomination.value)}`} className="h-10 w-16 rounded-md border object-contain" height={40} src={source} unoptimized width={64} />;
-  }
-
-  return <span aria-hidden="true" className="flex h-10 w-16 items-center justify-center rounded-md bg-secondary text-secondary-foreground"><Banknote className="size-4" /></span>;
+  return (
+    <BackendStaticImage
+      alt={`Imagen de la denominación ${formatDashboardMoney(denomination.value)}`}
+      height={40}
+      src={backendStaticFilePath(denomination.img)}
+      width={64}
+    />
+  );
 }
 
 export function DenominationsPage() {
@@ -56,7 +58,7 @@ export function DenominationsPage() {
   }
 
   const columns: ColumnDef<CurrencyDenomination, unknown>[] = [
-    { id: "image", cell: ({ row }) => <DenominationImage denomination={row.original} />, header: "Imagen", meta: { mobileHidden: true } },
+    { id: "image", cell: ({ row }) => <DenominationImage denomination={row.original} />, header: "Imagen", meta: { mobileLabel: "Imagen" } },
     { accessorKey: "currency", cell: ({ row }) => text(row.original.currency), header: "Moneda", meta: { mobileLabel: "Moneda" } },
     { accessorKey: "value", cell: ({ row }) => <span className="font-numeric font-medium">{formatDashboardMoney(row.original.value)}</span>, header: "Valor", meta: { mobileLabel: "Valor" } },
     {
