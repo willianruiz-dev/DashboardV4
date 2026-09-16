@@ -133,10 +133,22 @@ const historyRecordIdSchema = z
   .transform((value) => Number(value))
   .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER));
 
-const historyIntegerStringSchema = z
+const historyDenominationValueStringSchema = z
   .union([
     z.number().int().nonnegative(),
     z.string().trim().regex(/^\d+$/),
+  ])
+  .transform((value) => String(value));
+
+// The authenticated legacy history for Pay+ Prueba1 contains negative movement
+// quantities (for example `quantityDp` and `quantityTotal`). The legacy table
+// renders those values verbatim, so read-only history must preserve their sign.
+// This never applies to denominations, record IDs, inventory settings or write
+// payloads, all of which retain their non-negative/positive constraints.
+const historyQuantityStringSchema = z
+  .union([
+    z.number().int(),
+    z.string().trim().regex(/^-?\d+$/),
   ])
   .transform((value) => String(value));
 
@@ -158,6 +170,17 @@ const historyDenominationIdSchema = z.unknown().optional().transform((value): nu
   return parsed.success ? parsed.data : null;
 });
 
+// The deployed legacy table exposes a display-only “Responsable” column. Keep
+// its two legacy aliases resilient at the read boundary, but expose only a
+// finite numeric ID or non-empty text to the UI; unknown values become null.
+const historyResponsibleSchema = z.unknown().optional().transform((value): string | null => {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
+});
+
 /**
  * Read models deliberately include only the fields consumed by the historical
  * dashboard: IDs, date, totals, denominations, and quantities. Relationship IDs
@@ -166,9 +189,9 @@ const historyDenominationIdSchema = z.unknown().optional().transform((value): nu
  */
 export const loadDetailSchema = z
   .object({
-    denominationValue: historyIntegerStringSchema,
+    denominationValue: historyDenominationValueStringSchema,
     idCurrencyDenomination: historyDenominationIdSchema,
-    quantity: historyIntegerStringSchema,
+    quantity: historyQuantityStringSchema,
   })
   .passthrough();
 export type LoadDetail = z.infer<typeof loadDetailSchema>;
@@ -178,7 +201,9 @@ export const loadSchema = z
     dateCreated: optionalString,
     details: z.array(loadDetailSchema).nullish().transform((details) => details ?? []),
     id: historyRecordIdSchema,
+    idUserCreated: historyResponsibleSchema,
     totalLoaded: historyDecimalStringSchema,
+    userCreated: historyResponsibleSchema,
   })
   .passthrough();
 export type Load = z.infer<typeof loadSchema>;
@@ -204,12 +229,12 @@ export type LoadMutation = z.infer<typeof loadMutationSchema>;
 
 export const tonnageDetailSchema = z
   .object({
-    denominationValue: historyIntegerStringSchema,
+    denominationValue: historyDenominationValueStringSchema,
     idCurrencyDenomination: historyDenominationIdSchema,
-    quantityAp: historyIntegerStringSchema,
-    quantityDp: historyIntegerStringSchema,
-    quantityRj: historyIntegerStringSchema,
-    quantityTotal: historyIntegerStringSchema,
+    quantityAp: historyQuantityStringSchema,
+    quantityDp: historyQuantityStringSchema,
+    quantityRj: historyQuantityStringSchema,
+    quantityTotal: historyQuantityStringSchema,
   })
   .passthrough();
 export type TonnageDetail = z.infer<typeof tonnageDetailSchema>;
@@ -219,10 +244,12 @@ export const tonnageSchema = z
     dateCreated: optionalString,
     details: z.array(tonnageDetailSchema).nullish().transform((details) => details ?? []),
     id: historyRecordIdSchema,
+    idUserCreated: historyResponsibleSchema,
     total: historyDecimalStringSchema,
     totalAp: historyDecimalStringSchema,
     totalDp: historyDecimalStringSchema,
     totalRj: historyDecimalStringSchema,
+    userCreated: historyResponsibleSchema,
   })
   .passthrough();
 export type Tonnage = z.infer<typeof tonnageSchema>;
