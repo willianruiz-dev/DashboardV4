@@ -39,6 +39,25 @@ function hasUnsafePathSegment(path: readonly string[]): boolean {
   });
 }
 
+function shouldTryDirectImagePath(response: NextResponse, path: readonly string[]): boolean {
+  if (path[0]?.toLocaleLowerCase("en-US") !== "images") {
+    return false;
+  }
+
+  if (!response.ok) {
+    return true;
+  }
+
+  const contentType = response.headers.get("content-type")?.toLocaleLowerCase("en-US");
+  return contentType?.includes("json") === true || contentType?.includes("html") === true;
+}
+
+function discardResponseBody(response: NextResponse): void {
+  // Do not await cancellation: a streamed route response can wait for the browser to
+  // consume it, which would delay the direct-path compatibility request indefinitely.
+  void response.body?.cancel().catch(() => undefined);
+}
+
 async function proxyStaticFile(request: NextRequest, context: StaticFileRouteContext): Promise<NextResponse> {
   try {
     const { path } = await context.params;
@@ -53,7 +72,17 @@ async function proxyStaticFile(request: NextRequest, context: StaticFileRouteCon
     const token = await getDashboardToken();
     // Follow an upstream static redirect server-side. A legacy <img> follows it in the
     // browser; doing it here preserves that behavior without exposing the target URL.
-    return proxyBackendRequest(request, ["staticfiles", ...path], token, { redirect: "follow" });
+    const staticfilesResponse = await proxyBackendRequest(request, ["staticfiles", ...path], token, { redirect: "follow" });
+    if (!shouldTryDirectImagePath(staticfilesResponse, path)) {
+      return staticfilesResponse;
+    }
+
+    // Some historical IIS deployments mount the same database path directly at
+    // `/images/...` rather than the `/staticfiles/images/...` virtual directory.
+    // Try that server-side compatibility location only after the canonical contract
+    // failed or returned an error document; neither URL nor credentials reach <img>.
+    discardResponseBody(staticfilesResponse);
+    return proxyBackendRequest(request, path, token, { redirect: "follow" });
   } catch (error) {
     return createApiRouteError(error);
   }

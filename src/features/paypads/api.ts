@@ -16,6 +16,13 @@ import { deleteBackendResource, requestBackendApi, sendBackendJson } from "@/lib
 
 const actionResponseSchema = z.object({ message: z.string() });
 
+// The documented list envelopes allow `response: null` when a Pay+ has no stored
+// inventory or historical records. Normalize that legacy representation before it
+// reaches TanStack Query.
+const loadListResponseSchema = z.array(loadSchema).nullish().transform((loads) => loads ?? []);
+const paypadStorageListResponseSchema = z.array(paypadStorageSchema).nullish().transform((storage) => storage ?? []);
+const tonnageListResponseSchema = z.array(tonnageSchema).nullish().transform((tonnages) => tonnages ?? []);
+
 async function emptyWhenNotFound<T>(request: Promise<T>): Promise<T | []> {
   try {
     return await request;
@@ -46,7 +53,7 @@ export function getPaypad(id: number) {
 }
 
 export function getPaypadStorage(id: number) {
-  return emptyWhenNotFound(requestBackendApi(["api", "PayPad", "GetStorage", id], z.array(paypadStorageSchema)));
+  return emptyWhenNotFound(requestBackendApi(["api", "PayPad", "GetStorage", id], paypadStorageListResponseSchema));
 }
 
 export function getPaypadConfiguration(id: number) {
@@ -54,11 +61,11 @@ export function getPaypadConfiguration(id: number) {
 }
 
 export function getPaypadLoads(id: number) {
-  return emptyWhenNotFound(requestBackendApi(["api", "Load", "GetByPaypad", id], z.array(loadSchema)));
+  return emptyWhenNotFound(requestBackendApi(["api", "Load", "GetByPaypad", id], loadListResponseSchema));
 }
 
 export function getPaypadTonnages(id: number) {
-  return emptyWhenNotFound(requestBackendApi(["api", "Tonnage", "GetByPaypad", id], z.array(tonnageSchema)));
+  return emptyWhenNotFound(requestBackendApi(["api", "Tonnage", "GetByPaypad", id], tonnageListResponseSchema));
 }
 
 export function createPaypad(payload: PayPadCreateRequest) {

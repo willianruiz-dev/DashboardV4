@@ -8,8 +8,8 @@
 | 0 | Sistema de diseño | **PASA (código)** | Tailwind v4 CSS-first, tokens del manual, tema claro/oscuro y primitives. Falta inspección visual autenticada de todos los flujos. |
 | 1 | Tipos e infraestructura | **PASA (código)** | Zod, Query, BFF relativo, sesión HttpOnly y cifrado server-side. `/staticfiles/...` adjunta `DashboardKeyId` y sesión sólo desde servidor, porque el upstream protege los assets con el mismo middleware del API. |
 | 2 | Usuarios y administración habilitadora | **CORRECCIÓN DE IMÁGENES APLICADA; PENDIENTE E2E** | CRUD de Usuarios, Clientes, Sucursales, Roles, Rutas y Maestros implementado; rutas `img`/`logoImg` se solicitan automáticamente por `/staticfiles/...`, perfiles nulos usan el asset legado local y avatares/logos aparecen también en cards móviles. Falta comprobar archivos productivos reales. |
-| 3 | Cargues | **CORRECCIÓN DE PARIDAD APLICADA; PENDIENTE E2E** | `LoadDto.details` acepta sólo `null`/ausencia documentadas; el cargue conserva denominación, cantidad y total, usa el nombre de máquina y solicita el billete histórico automáticamente. Falta probar con un Pay+ productivo. |
-| 4 | Arqueos | **CORRECCIÓN DE PARIDAD APLICADA; PENDIENTE E2E** | El payload vuelve a enviar `total`, `totalAp`, `totalDp` y `totalRj`; el total general se toma de storage, el arqueo vacío sigue registrable y el historial presenta los resúmenes del legado. Falta prueba con un Pay+ productivo. |
+| 3 | Cargues | **CORRECCIÓN DE PARIDAD APLICADA; PENDIENTE E2E** | `LoadDto.details` y la respuesta nullable documentada se normalizan a listas; el cargue conserva denominación, cantidad y total, usa el nombre de máquina y solicita el billete histórico automáticamente. Falta probar con un Pay+ productivo. |
+| 4 | Arqueos | **CORRECCIÓN DE PARIDAD APLICADA; PENDIENTE E2E** | La respuesta nullable de arqueos se normaliza a lista; el payload vuelve a enviar `total`, `totalAp`, `totalDp` y `totalRj`, el total general se toma de storage y el historial presenta los resúmenes del legado. Falta prueba con un Pay+ productivo. |
 | 5 | Monitoreo y reportes | **PENDIENTE E2E** | Transacciones, detalle, vídeo, Excel, filtros/orden/paginación BFF y filtros de Pay+ por nombre, sucursal y dirección están implementados. Falta validar descargas y datos productivos reales. |
 
 ## Trabajo implementado
@@ -21,7 +21,7 @@
 - Transacciones y Reportes: consulta por fechas/Pay+, resumen, detalle por denominación, descarga de vídeo y exportación Excel.
 - Modo oscuro seleccionable y filtro por texto/estado para encontrar Pay+, incluida sucursal y dirección resueltas desde `GET /api/Office`.
 - El nombre de Pay+ se resuelve con `username`, luego el alias histórico `userName`; `description` no sustituye la identidad de máquina. El fallback `Pay+ <id>` se usa sólo al presentar un valor ausente, nunca al persistirlo.
-- Restauración de archivos estáticos: los campos `img`, `imgDenom`, `logoImg` e imagen de perfil se solicitan automáticamente mediante `/staticfiles/...`; el navegador no conoce el upstream, la API key ni el token. El BFF adjunta `DashboardKeyId` y, cuando existe, la sesión HttpOnly sólo en el servidor, que es necesario porque el upstream devuelve 403 sin la key; sigue redirects de assets dentro del BFF.
+- Restauración de archivos estáticos: los campos `img`, `imgDenom`, `logoImg` e imagen de perfil se solicitan automáticamente mediante `/staticfiles/...`; el navegador no conoce el upstream, la API key ni el token. El BFF adjunta `DashboardKeyId` y, cuando existe, la sesión HttpOnly sólo en el servidor, sigue redirects de assets y, si el virtual directory histórico falla, consulta automáticamente la ruta DB directa `/images/...` antes de marcar la imagen como fallida.
 - El comando de desarrollo usa el mismo launcher local que la ejecución de prueba para tomar automáticamente la configuración ya existente del frontend legado, sin trasladar valores de API al navegador.
 - Se migraron los assets locales históricos de `dashboardv2-frontend/public/images` a `public/images`, incluido `profile-default.png`; perfiles sin ruta, vacíos, `NULL` o recursos que fallen conservan el fallback visual del legado.
 
@@ -33,10 +33,11 @@
 | ESLint sin warnings | **PASA** — `npm run lint` (2026-09-16) |
 | Build de producción | **PASA** — `npm run build` (2026-09-16) |
 | Rutas relativas desde navegador | **PASA (código)** — BFF y `/staticfiles/...` same-origin |
-| Contrato de estáticos y path seguro | **PASA (integración local)** — mock HTTPS confirma `DashboardKeyId` en cada asset y Bearer sólo cuando existe sesión; rutas de usuarios/clientes llegan como `/staticfiles/images/...`, los redirects se siguen server-side y traversal/separadores doblemente codificados devuelven 400 |
+| Contrato de estáticos y path seguro | **PASA (integración local)** — mock HTTPS confirma `DashboardKeyId` en cada asset y Bearer sólo cuando existe sesión; ante un `/staticfiles/images/...` fallido, el BFF recupera automáticamente `/images/...`; redirects, traversal y separadores doblemente codificados se gestionan server-side |
 | Assets locales históricos | **PASA (local)** — `public/images/profile-default.png`, banners, logos y páginas de error se sirven automáticamente; el avatar ya no desaparece en la vista móvil |
 | Payload de cargue y almacenamiento | **PASA (integración local)** — mock recibe detalles de cargue, totales y `minDpQuantity` como números, con IDs/campos históricos intactos |
 | Payload de arqueo | **PASA (integración local)** — mock recibe `idPayPad`, `total`, `totalAp`, `totalDp`, `totalRj` como números finitos después de validar strings decimales |
+| Historial e inventario sin datos | **PASA (contrato)** — los envelopes Swagger nullable de cargues, arqueos y almacenamiento (`response: null`) se normalizan a `[]`, como requieren las vistas |
 | Payload de configuración Pay+ | **PASA (integración local)** — create omite `id`/`paypad`; update conserva `id` e `idUserCreated`, igual que el formulario legado |
 | Secretos y upstream sólo server-side | **PASA (código)** |
 | Cargues y arqueos con `details: null` de un Pay+ real | **PENDIENTE E2E** |
