@@ -133,19 +133,19 @@ const historyRecordIdSchema = z
   .transform((value) => Number(value))
   .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER));
 
-const historyDenominationValueStringSchema = z
+const historyNonnegativeIntegerStringSchema = z
   .union([
     z.number().int().nonnegative(),
     z.string().trim().regex(/^\d+$/),
   ])
   .transform((value) => String(value));
 
-// The authenticated legacy history for Pay+ Prueba1 contains negative movement
-// quantities (for example `quantityDp` and `quantityTotal`). The legacy table
-// renders those values verbatim, so read-only history must preserve their sign.
-// This never applies to denominations, record IDs, inventory settings or write
-// payloads, all of which retain their non-negative/positive constraints.
-const historyQuantityStringSchema = z
+// The authenticated legacy history for Pay+ Prueba1 specifically contains
+// negative `quantity`, `quantityDp`, and `quantityTotal` detail values. The
+// legacy table renders those values verbatim, so only those read-only fields
+// preserve their sign. Denominations, IDs, `quantityAp`, `quantityRj`, inventory
+// settings, and write payloads retain their non-negative/positive constraints.
+const historySignedQuantityStringSchema = z
   .union([
     z.number().int(),
     z.string().trim().regex(/^-?\d+$/),
@@ -189,9 +189,9 @@ const historyResponsibleSchema = z.unknown().optional().transform((value): strin
  */
 export const loadDetailSchema = z
   .object({
-    denominationValue: historyDenominationValueStringSchema,
+    denominationValue: historyNonnegativeIntegerStringSchema,
     idCurrencyDenomination: historyDenominationIdSchema,
-    quantity: historyQuantityStringSchema,
+    quantity: historySignedQuantityStringSchema,
   })
   .passthrough();
 export type LoadDetail = z.infer<typeof loadDetailSchema>;
@@ -229,12 +229,12 @@ export type LoadMutation = z.infer<typeof loadMutationSchema>;
 
 export const tonnageDetailSchema = z
   .object({
-    denominationValue: historyDenominationValueStringSchema,
+    denominationValue: historyNonnegativeIntegerStringSchema,
     idCurrencyDenomination: historyDenominationIdSchema,
-    quantityAp: historyQuantityStringSchema,
-    quantityDp: historyQuantityStringSchema,
-    quantityRj: historyQuantityStringSchema,
-    quantityTotal: historyQuantityStringSchema,
+    quantityAp: historyNonnegativeIntegerStringSchema,
+    quantityDp: historySignedQuantityStringSchema,
+    quantityRj: historyNonnegativeIntegerStringSchema,
+    quantityTotal: historySignedQuantityStringSchema,
   })
   .passthrough();
 export type TonnageDetail = z.infer<typeof tonnageDetailSchema>;
