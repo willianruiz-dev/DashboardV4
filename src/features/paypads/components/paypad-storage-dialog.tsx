@@ -19,7 +19,7 @@ import type { CurrencyDenomination } from "@/features/denominations/schemas";
 import { usePaypadStorage, useSavePaypadStorage } from "@/features/paypads/hooks";
 import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { PayPad, PayPadStorage, PayPadStorageMutation } from "@/features/paypads/schemas";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardMoney } from "@/lib/formatters/money";
 
 interface PayPadStorageDialogProps {

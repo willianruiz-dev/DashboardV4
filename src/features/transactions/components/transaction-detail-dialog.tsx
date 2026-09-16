@@ -18,7 +18,7 @@ import type { DashboardTransaction, DashboardTransactionDetail } from "@/feature
 import { TransactionStateBadge } from "@/features/transactions/components/transaction-state-badge";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { ClientApiError } from "@/lib/api/client";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardDateTime } from "@/lib/formatters/date";
 import { formatDashboardMoney } from "@/lib/formatters/money";
 

@@ -47,26 +47,13 @@ async function proxyStaticFile(request: NextRequest, context: StaticFileRouteCon
       return NextResponse.json({ message: "La ruta del archivo no es válida.", response: null, statusCode: 400 }, { status: 400 });
     }
 
-    // The legacy browser fetched static assets without an Authorization header. Preserve
-    // that exact request first. Some production gateways can require dashboard credentials,
-    // so retry only 401/403 responses with the server-side session as a compatibility path.
-    const publicResponse = await proxyBackendRequest(request, ["staticfiles", ...path], null, {
-      forwardDashboardCredentials: false,
-    });
-
-    if (publicResponse.status !== 401 && publicResponse.status !== 403) {
-      return publicResponse;
-    }
-
+    // The production static endpoint is guarded by the same DashboardKeyId middleware as
+    // the API. The legacy browser could rely on its co-hosted deployment, while this local
+    // Next app must attach the key and session server-side without exposing either to <img>.
     const token = await getDashboardToken();
-    if (!token) {
-      return publicResponse;
-    }
-
-    // Do not await cancellation here: Next's response stream can wait for the caller to
-    // consume it, which would prevent the compatibility retry from starting.
-    void publicResponse.body?.cancel().catch(() => undefined);
-    return proxyBackendRequest(request, ["staticfiles", ...path], token);
+    // Follow an upstream static redirect server-side. A legacy <img> follows it in the
+    // browser; doing it here preserves that behavior without exposing the target URL.
+    return proxyBackendRequest(request, ["staticfiles", ...path], token, { redirect: "follow" });
   } catch (error) {
     return createApiRouteError(error);
   }

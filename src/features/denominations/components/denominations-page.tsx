@@ -15,7 +15,7 @@ import { hasPermission, useDashboardSession } from "@/features/auth/session-cont
 import { DenominationEditorDialog } from "@/features/denominations/components/denomination-editor-dialog";
 import { useDeleteDenomination, useDenominations } from "@/features/denominations/hooks";
 import type { CurrencyDenomination } from "@/features/denominations/schemas";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardMoney } from "@/lib/formatters/money";
 
 function text(value: string | null | undefined, fallback = "—"): string {

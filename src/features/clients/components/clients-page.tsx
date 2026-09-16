@@ -16,7 +16,7 @@ import { hasPermission, useDashboardSession } from "@/features/auth/session-cont
 import { ClientEditorDialog } from "@/features/clients/components/client-editor-dialog";
 import { useClients, useDeleteClient } from "@/features/clients/hooks";
 import type { DashboardClient } from "@/features/clients/schemas";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 
 function text(value: string | null | undefined, fallback = "—"): string {
   return value?.trim() || fallback;
@@ -64,7 +64,7 @@ export function ClientsPage() {
       id: "logo",
       cell: ({ row }) => <ClientLogo client={row.original} />,
       header: "Logo",
-      meta: { mobileHidden: true },
+      meta: { mobileLabel: "Logo" },
     },
     {
       accessorKey: "name",

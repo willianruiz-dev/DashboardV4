@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { DashboardSession } from "@/features/auth/schemas";
 import { DashboardSessionProvider } from "@/features/auth/session-context";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { buildDashboardNavigation } from "@/lib/navigation/dashboard-navigation";
 
 interface DashboardShellProps {
@@ -93,6 +93,7 @@ export function DashboardShell({ children, session }: DashboardShellProps) {
               alt={`Perfil de ${displayName}`}
               className="rounded-full"
               fallback={<span aria-hidden="true" className="text-xs font-semibold text-secondary-foreground">{getInitials(displayName)}</span>}
+              fallbackSrc="/images/profile-default.png"
               height={40}
               src={backendStaticFilePath(session.user.img)}
               width={40}

@@ -11,6 +11,7 @@ interface BackendStaticImageProps {
   alt: string;
   className?: string;
   fallback?: ReactNode;
+  fallbackSrc?: string | null;
   height: number;
   src: string | null;
   width: number;
@@ -21,11 +22,21 @@ interface BackendStaticImageProps {
  * Next's optimizer is deliberately bypassed because it would change the legacy
  * `/staticfiles/...` request contract.
  */
-export function BackendStaticImage({ alt, className, fallback, height, src, width }: BackendStaticImageProps) {
-  const [failedSource, setFailedSource] = useState<string | null>(null);
-  const imageUnavailable = !src || failedSource === src;
+export function BackendStaticImage({ alt, className, fallback, fallbackSrc = null, height, src, width }: BackendStaticImageProps) {
+  const [failedSources, setFailedSources] = useState<readonly string[]>([]);
+  const displaySource = src && !failedSources.includes(src)
+    ? src
+    : fallbackSrc && !failedSources.includes(fallbackSrc)
+      ? fallbackSrc
+      : null;
 
-  if (imageUnavailable) {
+  function markSourceAsFailed(source: string): void {
+    setFailedSources((currentSources) => (
+      currentSources.includes(source) ? currentSources : [...currentSources, source]
+    ));
+  }
+
+  if (!displaySource) {
     return (
       <span
         aria-label={`${alt}: imagen no disponible`}
@@ -45,9 +56,8 @@ export function BackendStaticImage({ alt, className, fallback, height, src, widt
         className="absolute inset-0 h-full w-full object-contain"
         decoding="async"
         height={height}
-        loading="lazy"
-        onError={() => setFailedSource(src)}
-        src={src}
+        onError={() => markSourceAsFailed(displaySource)}
+        src={displaySource}
         width={width}
       />
     </span>

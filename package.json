@@ -6,10 +6,10 @@
     "node": ">=20.9.0"
   },
   "scripts": {
-    "dev": "next dev --hostname 0.0.0.0",
+    "dev": "node scripts/start-local-api.mjs --dev",
     "build": "next build",
-    "start": "next start --hostname 0.0.0.0",
-    "start:local-api": "npm run build && node scripts/start-local-api.mjs",
+    "start": "node scripts/start-local-api.mjs",
+    "start:local-api": "npm run build && npm run start",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run lint"

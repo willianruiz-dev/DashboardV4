@@ -15,7 +15,7 @@ import { usePaypadLoads, usePaypadTonnages } from "@/features/paypads/hooks";
 import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { Load, LoadDetail, PayPad, Tonnage, TonnageDetail } from "@/features/paypads/schemas";
 import { ClientApiError } from "@/lib/api/client";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardMoney } from "@/lib/formatters/money";
 
 type DenominationImageById = ReadonlyMap<number, string | null | undefined>;

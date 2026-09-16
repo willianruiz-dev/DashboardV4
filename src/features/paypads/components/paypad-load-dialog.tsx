@@ -18,7 +18,7 @@ import { useDenominations } from "@/features/denominations/hooks";
 import { usePaypadStorage, useSaveLoad } from "@/features/paypads/hooks";
 import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { LoadMutation, PayPad, PayPadStorage } from "@/features/paypads/schemas";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardMoney, multiplyMoneyString, sumMoneyStrings } from "@/lib/formatters/money";
 
 interface PayPadLoadDialogProps {

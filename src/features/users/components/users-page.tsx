@@ -19,7 +19,7 @@ import { UserEditorDialog } from "@/features/users/components/user-editor-dialog
 import { VerifyUserPasswordDialog } from "@/features/users/components/verify-user-password-dialog";
 import { useDeleteUser, useUpdateUser, useUsers } from "@/features/users/hooks";
 import type { DashboardUser, UserUpdateRequest } from "@/features/users/schemas";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 
 function displayText(value: string | null | undefined, fallback = "—"): string {
   return value?.trim() || fallback;
@@ -44,6 +44,7 @@ function UserAvatar({ user }: { user: DashboardUser }) {
       alt={`Perfil de ${displayText(user.userName)}`}
       className="rounded-full"
       fallback={<span aria-hidden="true" className="text-xs font-semibold text-secondary-foreground">{initials || "U"}</span>}
+      fallbackSrc="/images/profile-default.png"
       height={40}
       src={source}
       width={40}
@@ -129,7 +130,7 @@ export function UsersPage() {
         id: "profile",
         cell: ({ row }) => <UserAvatar user={row.original} />,
         header: "Perfil",
-        meta: { mobileHidden: true },
+        meta: { mobileLabel: "Perfil" },
       },
       {
         accessorKey: "userName",

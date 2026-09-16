@@ -9,44 +9,6 @@ export function backendPath(...segments: readonly (number | string)[]): string {
   return `/api/backend/${segments.map((segment) => encodeURIComponent(String(segment))).join("/")}`;
 }
 
-function decodeStaticPathSegment(segment: string): string {
-  let decodedSegment = segment;
-
-  // Treat repeatedly encoded path separators and traversal as unsafe too.
-  for (let index = 0; index < 4; index += 1) {
-    try {
-      const nextSegment = decodeURIComponent(decodedSegment);
-      if (nextSegment === decodedSegment) {
-        break;
-      }
-      decodedSegment = nextSegment;
-    } catch {
-      break;
-    }
-  }
-
-  return decodedSegment;
-}
-
-export function backendStaticFilePath(filePath: string | null | undefined): string | null {
-  if (!filePath) {
-    return null;
-  }
-
-  const normalizedPath = filePath.trim().replaceAll("\\", "/").split(/[?#]/u, 1)[0] ?? "";
-  const pathWithoutOrigin = normalizedPath.replace(/^https?:\/\/[^/]+/iu, "");
-  const allSegments = pathWithoutOrigin.split("/").filter(Boolean).map(decodeStaticPathSegment);
-  const staticfilesIndex = allSegments.findIndex((segment) => segment.toLocaleLowerCase("en-US") === "staticfiles");
-  const segments = staticfilesIndex >= 0 ? allSegments.slice(staticfilesIndex + 1) : allSegments;
-
-  if (segments.length === 0 || segments.some((segment) => segment === "." || segment === ".." || segment.includes("/") || segment.includes("\\"))) {
-    return null;
-  }
-
-  // This local route reproduces the legacy /staticfiles contract while resolving the upstream only server-side.
-  return `/staticfiles/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`;
-}
-
 export async function requestBackendApi<TSchema extends z.ZodType>(
   segments: readonly (number | string)[],
   responseSchema: TSchema,

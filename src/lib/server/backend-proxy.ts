@@ -22,20 +22,12 @@ const RESPONSE_HEADERS_TO_FORWARD = [
 ] as const;
 
 interface ProxyBackendRequestOptions {
-  forwardDashboardCredentials?: boolean;
+  redirect?: "follow" | "manual";
 }
 
-function createUpstreamHeaders(
-  request: NextRequest,
-  apiKeyId: string,
-  token: string | null,
-  forwardDashboardCredentials: boolean,
-): Headers {
+function createUpstreamHeaders(request: NextRequest, apiKeyId: string, token: string | null): Headers {
   const headers = new Headers();
-
-  if (forwardDashboardCredentials) {
-    headers.set(BACKEND_API_KEY_HEADER, apiKeyId);
-  }
+  headers.set(BACKEND_API_KEY_HEADER, apiKeyId);
 
   for (const headerName of REQUEST_HEADERS_TO_FORWARD) {
     const headerValue = request.headers.get(headerName);
@@ -45,7 +37,7 @@ function createUpstreamHeaders(
     }
   }
 
-  if (forwardDashboardCredentials && token) {
+  if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
@@ -72,16 +64,16 @@ export async function proxyBackendRequest(
   request: NextRequest,
   pathSegments: readonly string[],
   token: string | null,
-  { forwardDashboardCredentials = true }: ProxyBackendRequestOptions = {},
+  { redirect = "manual" }: ProxyBackendRequestOptions = {},
 ): Promise<NextResponse> {
   try {
     const backendConfig = getBackendConfig();
     const targetUrl = createBackendUrl(backendConfig, pathSegments, request.nextUrl.search);
     const requestInit: RequestInit = {
       cache: "no-store",
-      headers: createUpstreamHeaders(request, backendConfig.apiKeyId, token, forwardDashboardCredentials),
+      headers: createUpstreamHeaders(request, backendConfig.apiKeyId, token),
       method: request.method,
-      redirect: "manual",
+      redirect,
     };
 
     if (!BODYLESS_METHODS.has(request.method)) {

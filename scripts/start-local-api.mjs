@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const workingDirectory = process.cwd();
+const isDevelopment = process.argv.slice(2).includes("--dev");
 const legacyEnvironmentPath = resolve(workingDirectory, "dashboardv2-frontend", ".env.production");
 const localEnvironmentPath = resolve(workingDirectory, ".env.local");
 
@@ -92,7 +93,8 @@ if (missingConfiguration.length > 0) {
 }
 
 const nextCliPath = resolve(workingDirectory, "node_modules", "next", "dist", "bin", "next");
-const nextProcess = spawn(process.execPath, [nextCliPath, "start", "--hostname", "0.0.0.0"], {
+const nextCommand = isDevelopment ? "dev" : "start";
+const nextProcess = spawn(process.execPath, [nextCliPath, nextCommand, "--hostname", "0.0.0.0"], {
   cwd: workingDirectory,
   env: serverEnvironment,
   stdio: "inherit",

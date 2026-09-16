@@ -6,8 +6,8 @@
 | Fase | Entrega | Estado | Evidencia / pendiente |
 | --- | --- | --- | --- |
 | 0 | Sistema de diseño | **PASA (código)** | Tailwind v4 CSS-first, tokens del manual, tema claro/oscuro y primitives. Falta inspección visual autenticada de todos los flujos. |
-| 1 | Tipos e infraestructura | **PASA (código)** | Zod, Query, BFF relativo, sesión HttpOnly y cifrado server-side. `/staticfiles/...` preserva primero el request público del legado y mantiene el upstream sólo en servidor. |
-| 2 | Usuarios y administración habilitadora | **PENDIENTE E2E** | CRUD de Usuarios, Clientes, Sucursales, Roles, Rutas y Maestros implementado; las rutas `img`/`logoImg` se solicitan automáticamente por `/staticfiles/...`, pero imágenes y mutaciones requieren sesión real para cierre. |
+| 1 | Tipos e infraestructura | **PASA (código)** | Zod, Query, BFF relativo, sesión HttpOnly y cifrado server-side. `/staticfiles/...` adjunta `DashboardKeyId` y sesión sólo desde servidor, porque el upstream protege los assets con el mismo middleware del API. |
+| 2 | Usuarios y administración habilitadora | **CORRECCIÓN DE IMÁGENES APLICADA; PENDIENTE E2E** | CRUD de Usuarios, Clientes, Sucursales, Roles, Rutas y Maestros implementado; rutas `img`/`logoImg` se solicitan automáticamente por `/staticfiles/...`, perfiles nulos usan el asset legado local y avatares/logos aparecen también en cards móviles. Falta comprobar archivos productivos reales. |
 | 3 | Cargues | **CORRECCIÓN DE PARIDAD APLICADA; PENDIENTE E2E** | `LoadDto.details` acepta sólo `null`/ausencia documentadas; el cargue conserva denominación, cantidad y total, usa el nombre de máquina y solicita el billete histórico automáticamente. Falta probar con un Pay+ productivo. |
 | 4 | Arqueos | **CORRECCIÓN DE PARIDAD APLICADA; PENDIENTE E2E** | El payload vuelve a enviar `total`, `totalAp`, `totalDp` y `totalRj`; el total general se toma de storage, el arqueo vacío sigue registrable y el historial presenta los resúmenes del legado. Falta prueba con un Pay+ productivo. |
 | 5 | Monitoreo y reportes | **PENDIENTE E2E** | Transacciones, detalle, vídeo, Excel, filtros/orden/paginación BFF y filtros de Pay+ por nombre, sucursal y dirección están implementados. Falta validar descargas y datos productivos reales. |
@@ -21,7 +21,9 @@
 - Transacciones y Reportes: consulta por fechas/Pay+, resumen, detalle por denominación, descarga de vídeo y exportación Excel.
 - Modo oscuro seleccionable y filtro por texto/estado para encontrar Pay+, incluida sucursal y dirección resueltas desde `GET /api/Office`.
 - El nombre de Pay+ se resuelve con `username`, luego el alias histórico `userName`; `description` no sustituye la identidad de máquina. El fallback `Pay+ <id>` se usa sólo al presentar un valor ausente, nunca al persistirlo.
-- Restauración de archivos estáticos del contrato legado: los campos `img`, `imgDenom`, `logoImg` e imagen de perfil se solicitan automáticamente mediante `/staticfiles/...`; el navegador no conoce el upstream ni el token. El proxy reproduce primero la petición pública que hacía el legado y reintenta con la sesión server-side únicamente si el upstream responde 401/403.
+- Restauración de archivos estáticos: los campos `img`, `imgDenom`, `logoImg` e imagen de perfil se solicitan automáticamente mediante `/staticfiles/...`; el navegador no conoce el upstream, la API key ni el token. El BFF adjunta `DashboardKeyId` y, cuando existe, la sesión HttpOnly sólo en el servidor, que es necesario porque el upstream devuelve 403 sin la key; sigue redirects de assets dentro del BFF.
+- El comando de desarrollo usa el mismo launcher local que la ejecución de prueba para tomar automáticamente la configuración ya existente del frontend legado, sin trasladar valores de API al navegador.
+- Se migraron los assets locales históricos de `dashboardv2-frontend/public/images` a `public/images`, incluido `profile-default.png`; perfiles sin ruta, vacíos, `NULL` o recursos que fallen conservan el fallback visual del legado.
 
 ## Validación actual
 
@@ -31,7 +33,8 @@
 | ESLint sin warnings | **PASA** — `npm run lint` (2026-09-16) |
 | Build de producción | **PASA** — `npm run build` (2026-09-16) |
 | Rutas relativas desde navegador | **PASA (código)** — BFF y `/staticfiles/...` same-origin |
-| Contrato de estáticos y path seguro | **PASA (integración local)** — mock HTTPS confirma que el primer fetch no lleva key/token y que 401/403 reintenta sólo server-side con sesión; traversal y separadores doblemente codificados devuelven 400 |
+| Contrato de estáticos y path seguro | **PASA (integración local)** — mock HTTPS confirma `DashboardKeyId` en cada asset y Bearer sólo cuando existe sesión; rutas de usuarios/clientes llegan como `/staticfiles/images/...`, los redirects se siguen server-side y traversal/separadores doblemente codificados devuelven 400 |
+| Assets locales históricos | **PASA (local)** — `public/images/profile-default.png`, banners, logos y páginas de error se sirven automáticamente; el avatar ya no desaparece en la vista móvil |
 | Payload de cargue y almacenamiento | **PASA (integración local)** — mock recibe detalles de cargue, totales y `minDpQuantity` como números, con IDs/campos históricos intactos |
 | Payload de arqueo | **PASA (integración local)** — mock recibe `idPayPad`, `total`, `totalAp`, `totalDp`, `totalRj` como números finitos después de validar strings decimales |
 | Payload de configuración Pay+ | **PASA (integración local)** — create omite `id`/`paypad`; update conserva `id` e `idUserCreated`, igual que el formulario legado |
@@ -52,4 +55,4 @@
 
 ## ESTADO DEL BACKLOG
 
-No se declara la migración terminada. La paridad de nombre de máquina, sucursal, cargues, arqueos, historial y rutas automáticas de imagen está implementada y pasa controles estáticos/locales, pero el cierre exige una sesión real que confirme que cada ruta `img`/`imgDenom`/`logoImg` devuelve su archivo y que Excel, vídeo y todas las acciones visibles mantengan la paridad funcional del legado.
+No se declara la migración terminada. La paridad de nombre de máquina, sucursal, cargues, arqueos, historial y rutas automáticas de imagen está implementada y pasa controles estáticos/locales. La ruta de imagen ahora transmite server-side la key que exige el upstream y los assets locales/fallback se entregan con la app; falta únicamente comprobar con una sesión real que cada archivo productivo `img`/`imgDenom`/`logoImg` responde y que Excel, vídeo y todas las acciones visibles mantienen paridad funcional.

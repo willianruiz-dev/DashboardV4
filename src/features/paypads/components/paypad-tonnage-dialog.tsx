@@ -18,7 +18,7 @@ import { useDenominations } from "@/features/denominations/hooks";
 import { usePaypadStorage, useSaveTonnage } from "@/features/paypads/hooks";
 import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import type { PayPad, PayPadStorage, TonnageMutation } from "@/features/paypads/schemas";
-import { backendStaticFilePath } from "@/lib/api/backend";
+import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardMoney, sumMoneyStrings } from "@/lib/formatters/money";
 
 interface PayPadTonnageDialogProps {
