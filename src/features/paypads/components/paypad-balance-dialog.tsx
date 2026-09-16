@@ -4,7 +4,7 @@ import { ChevronRight, History } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { BackendStaticImage } from "@/components/shared/backend-static-image";
-import { EmptyState, ErrorState, ListSkeleton } from "@/components/shared/query-states";
+import { ErrorState, ListSkeleton } from "@/components/shared/query-states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,7 +18,10 @@ import { ClientApiError } from "@/lib/api/client";
 import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardMoney } from "@/lib/formatters/money";
 
-type DenominationImageById = ReadonlyMap<number, string | null | undefined>;
+interface DenominationImages {
+  byId: ReadonlyMap<number, string | null | undefined>;
+  byValue: ReadonlyMap<string, string | null | undefined>;
+}
 
 interface PayPadBalanceDialogProps {
   onOpenChange: (open: boolean) => void;
@@ -34,18 +37,28 @@ function isNotFound(error: unknown): boolean {
   return error instanceof ClientApiError && error.status === 404;
 }
 
-function DenominationImage({ imageById, denominationId, value }: { denominationId: number; imageById: DenominationImageById; value: string }) {
+function historyErrorMessage(error: unknown, fallback: string): string | null {
+  if (!error || isNotFound(error)) {
+    return null;
+  }
+
+  return error instanceof Error ? error.message : fallback;
+}
+
+function DenominationImage({ denominationId, images, value }: { denominationId: number | null; images: DenominationImages; value: string }) {
+  const imagePath = (denominationId === null ? undefined : images.byId.get(denominationId)) ?? images.byValue.get(value) ?? null;
+
   return (
     <BackendStaticImage
       alt={`Billete de ${formatDashboardMoney(value)}`}
       height={40}
-      src={backendStaticFilePath(imageById.get(denominationId) ?? null)}
+      src={backendStaticFilePath(imagePath)}
       width={64}
     />
   );
 }
 
-function LoadDetails({ details, imageById }: { details: readonly LoadDetail[]; imageById: DenominationImageById }) {
+function LoadDetails({ details, images }: { details: readonly LoadDetail[]; images: DenominationImages }) {
   if (details.length === 0) {
     return <p className="text-sm text-muted-foreground">El API no devolvió detalle para este cargue.</p>;
   }
@@ -53,10 +66,10 @@ function LoadDetails({ details, imageById }: { details: readonly LoadDetail[]; i
   return (
     <div className="grid gap-2 sm:grid-cols-2">
       {details.map((detail, index) => (
-        <Card key={`${detail.idCurrencyDenomination}-${index}`}>
+        <Card key={`${detail.idCurrencyDenomination ?? detail.denominationValue}-${index}`}>
           <CardContent className="flex items-center justify-between gap-3 p-3 text-sm">
             <div className="flex min-w-0 items-center gap-3">
-              <DenominationImage denominationId={detail.idCurrencyDenomination} imageById={imageById} value={detail.denominationValue} />
+              <DenominationImage denominationId={detail.idCurrencyDenomination} images={images} value={detail.denominationValue} />
               <span className="font-numeric font-medium">{formatDashboardMoney(detail.denominationValue)}</span>
             </div>
             <span className="shrink-0">{detail.quantity} unidades</span>
@@ -67,7 +80,7 @@ function LoadDetails({ details, imageById }: { details: readonly LoadDetail[]; i
   );
 }
 
-function TonnageDetails({ details, imageById }: { details: readonly TonnageDetail[]; imageById: DenominationImageById }) {
+function TonnageDetails({ details, images }: { details: readonly TonnageDetail[]; images: DenominationImages }) {
   if (details.length === 0) {
     return <p className="text-sm text-muted-foreground">El API no devolvió detalle para este arqueo.</p>;
   }
@@ -75,10 +88,10 @@ function TonnageDetails({ details, imageById }: { details: readonly TonnageDetai
   return (
     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
       {details.map((detail, index) => (
-        <Card key={`${detail.idCurrencyDenomination}-${index}`}>
+        <Card key={`${detail.idCurrencyDenomination ?? detail.denominationValue}-${index}`}>
           <CardContent className="grid gap-2 p-3 text-sm">
             <div className="flex items-center gap-3">
-              <DenominationImage denominationId={detail.idCurrencyDenomination} imageById={imageById} value={detail.denominationValue} />
+              <DenominationImage denominationId={detail.idCurrencyDenomination} images={images} value={detail.denominationValue} />
               <span className="font-numeric font-medium">{formatDashboardMoney(detail.denominationValue)}</span>
             </div>
             <span>Aceptadores: {detail.quantityAp}</span>
@@ -92,7 +105,29 @@ function TonnageDetails({ details, imageById }: { details: readonly TonnageDetai
   );
 }
 
-function BalanceHistory({ imageById, loads, tonnages }: { imageById: DenominationImageById; loads: Load[]; tonnages: Tonnage[] }) {
+interface BalanceHistoryProps {
+  images: DenominationImages;
+  loads: Load[];
+  loadsError: string | null;
+  loadsPending: boolean;
+  onRetryLoads: () => void;
+  onRetryTonnages: () => void;
+  tonnages: Tonnage[];
+  tonnagesError: string | null;
+  tonnagesPending: boolean;
+}
+
+function BalanceHistory({
+  images,
+  loads,
+  loadsError,
+  loadsPending,
+  onRetryLoads,
+  onRetryTonnages,
+  tonnages,
+  tonnagesError,
+  tonnagesPending,
+}: BalanceHistoryProps) {
   const [openLoadIds, setOpenLoadIds] = useState<Set<number>>(new Set());
   const [openTonnageIds, setOpenTonnageIds] = useState<Set<number>>(new Set());
 
@@ -122,13 +157,15 @@ function BalanceHistory({ imageById, loads, tonnages }: { imageById: Denominatio
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
-      <section className="grid content-start gap-3 rounded-lg border p-4">
+      <section aria-labelledby="tonnages-heading" className="grid content-start gap-3 rounded-lg border p-4">
         <div className="flex items-center justify-between">
-          <h3 className="font-semibold">Arqueos</h3>
+          <h3 className="font-semibold" id="tonnages-heading">Arqueos</h3>
           <Badge variant="secondary">{tonnages.length}</Badge>
         </div>
-        {tonnages.length === 0 ? <p className="text-sm text-muted-foreground">No hay arqueos registrados.</p> : null}
-        {tonnages.length > 0 ? (
+        {tonnagesPending ? <ListSkeleton rows={3} /> : null}
+        {!tonnagesPending && tonnagesError ? <ErrorState description={tonnagesError} onRetry={onRetryTonnages} /> : null}
+        {!tonnagesPending && !tonnagesError && tonnages.length === 0 ? <p className="text-sm text-muted-foreground">No hay arqueos registrados.</p> : null}
+        {!tonnagesPending && !tonnagesError && tonnages.length > 0 ? (
           <div className="grid gap-3">
             {tonnages.map((tonnage) => {
               const isExpanded = openTonnageIds.has(tonnage.id);
@@ -150,7 +187,7 @@ function BalanceHistory({ imageById, loads, tonnages }: { imageById: Denominatio
                     <div><dt className="text-xs text-muted-foreground">Baúl de rechazo</dt><dd className="font-numeric font-medium">{formatDashboardMoney(tonnage.totalRj)}</dd></div>
                     <div><dt className="text-xs text-muted-foreground">Total</dt><dd className="font-numeric font-semibold">{formatDashboardMoney(tonnage.total)}</dd></div>
                   </dl>
-                  {isExpanded ? <TonnageDetails details={tonnage.details} imageById={imageById} /> : null}
+                  {isExpanded ? <TonnageDetails details={tonnage.details} images={images} /> : null}
                 </div>
               );
             })}
@@ -158,13 +195,15 @@ function BalanceHistory({ imageById, loads, tonnages }: { imageById: Denominatio
         ) : null}
       </section>
 
-      <section className="grid content-start gap-3 rounded-lg border p-4">
+      <section aria-labelledby="loads-heading" className="grid content-start gap-3 rounded-lg border p-4">
         <div className="flex items-center justify-between">
-          <h3 className="font-semibold">Cargues</h3>
+          <h3 className="font-semibold" id="loads-heading">Cargues</h3>
           <Badge variant="secondary">{loads.length}</Badge>
         </div>
-        {loads.length === 0 ? <p className="text-sm text-muted-foreground">No hay cargues registrados.</p> : null}
-        {loads.length > 0 ? (
+        {loadsPending ? <ListSkeleton rows={3} /> : null}
+        {!loadsPending && loadsError ? <ErrorState description={loadsError} onRetry={onRetryLoads} /> : null}
+        {!loadsPending && !loadsError && loads.length === 0 ? <p className="text-sm text-muted-foreground">No hay cargues registrados.</p> : null}
+        {!loadsPending && !loadsError && loads.length > 0 ? (
           <div className="grid gap-3">
             {loads.map((load) => {
               const isExpanded = openLoadIds.has(load.id);
@@ -183,7 +222,7 @@ function BalanceHistory({ imageById, loads, tonnages }: { imageById: Denominatio
                   <dl className="grid gap-1 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2"><dt className="text-muted-foreground">Valor total cargado</dt><dd className="font-numeric font-semibold">{formatDashboardMoney(load.totalLoaded)}</dd></div>
                   </dl>
-                  {isExpanded ? <LoadDetails details={load.details} imageById={imageById} /> : null}
+                  {isExpanded ? <LoadDetails details={load.details} images={images} /> : null}
                 </div>
               );
             })}
@@ -200,14 +239,17 @@ export function PayPadBalanceDialog({ onOpenChange, open, paypad }: PayPadBalanc
   const loadsQuery = usePaypadLoads(paypad?.id ?? null);
   const tonnagesQuery = usePaypadTonnages(paypad?.id ?? null);
   const denominationsQuery = useDenominations(open && canReadMasters);
-  const loading = loadsQuery.isPending || tonnagesQuery.isPending;
-  const blockingError = [loadsQuery.error, tonnagesQuery.error].find((error) => error && !isNotFound(error));
+  const loadsError = historyErrorMessage(loadsQuery.error, "No fue posible cargar los cargues.");
+  const tonnagesError = historyErrorMessage(tonnagesQuery.error, "No fue posible cargar los arqueos.");
   const loads = isNotFound(loadsQuery.error) ? [] : (loadsQuery.data ?? []);
   const tonnages = isNotFound(tonnagesQuery.error) ? [] : (tonnagesQuery.data ?? []);
-  const imageById = useMemo<DenominationImageById>(
-    () => new Map((denominationsQuery.data ?? []).map((denomination) => [denomination.id, denomination.img] as const)),
-    [denominationsQuery.data],
-  );
+  const images = useMemo<DenominationImages>(() => {
+    const denominations = denominationsQuery.data ?? [];
+    return {
+      byId: new Map(denominations.map((denomination) => [denomination.id, denomination.img] as const)),
+      byValue: new Map(denominations.map((denomination) => [denomination.value, denomination.img] as const)),
+    };
+  }, [denominationsQuery.data]);
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -219,19 +261,17 @@ export function PayPadBalanceDialog({ onOpenChange, open, paypad }: PayPadBalanc
           </DialogTitle>
           <DialogDescription>Consulta los movimientos registrados para {getPaypadDisplayName(paypad)}.</DialogDescription>
         </DialogHeader>
-        {loading ? <ListSkeleton rows={5} /> : null}
-        {!loading && blockingError ? (
-          <ErrorState
-            description={blockingError instanceof Error ? blockingError.message : "No fue posible cargar los movimientos."}
-            onRetry={() => void Promise.all([loadsQuery.refetch(), tonnagesQuery.refetch()])}
-          />
-        ) : null}
-        {!loading && !blockingError && loads.length === 0 && tonnages.length === 0 ? (
-          <EmptyState description="No hay cargues ni arqueos registrados para este Pay+." title="Sin movimientos" />
-        ) : null}
-        {!loading && !blockingError && (loads.length > 0 || tonnages.length > 0) ? (
-          <BalanceHistory imageById={imageById} loads={loads} tonnages={tonnages} />
-        ) : null}
+        <BalanceHistory
+          images={images}
+          loads={loads}
+          loadsError={loadsError}
+          loadsPending={loadsQuery.isPending}
+          onRetryLoads={() => void loadsQuery.refetch()}
+          onRetryTonnages={() => void tonnagesQuery.refetch()}
+          tonnages={tonnages}
+          tonnagesError={tonnagesError}
+          tonnagesPending={tonnagesQuery.isPending}
+        />
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
             Cerrar

@@ -55,10 +55,15 @@ export const transactionSortKeySchema = z.enum([
 ]);
 export type TransactionSortKey = z.infer<typeof transactionSortKeySchema>;
 
+export const transactionPaymentTypes = ["Efectivo", "Tarjeta"] as const;
+export const transactionPaymentTypeSchema = z.enum(transactionPaymentTypes);
+export type TransactionPaymentType = z.infer<typeof transactionPaymentTypeSchema>;
+
 export const transactionSearchRequestSchema = z.object({
   from: z.string().datetime({ offset: true }),
   page: z.number().int().positive(),
   pageSize: z.number().int().min(5).max(100),
+  paymentType: transactionPaymentTypeSchema.nullable().default(null),
   paypadId: z.number().int().positive().nullable(),
   product: z.string().nullable(),
   sortDirection: z.enum(["asc", "desc"]),
@@ -69,6 +74,7 @@ export type TransactionSearchRequest = z.infer<typeof transactionSearchRequestSc
 
 export const transactionSearchFormSchema = z.object({
   from: z.string().min(1, "Selecciona la fecha y hora inicial."),
+  paymentType: z.union([z.literal("all"), transactionPaymentTypeSchema]),
   paypadId: z.string().refine((value) => value === "all" || /^\d+$/.test(value), "Selecciona un Pay+."),
   to: z.string().min(1, "Selecciona la fecha y hora final."),
 });

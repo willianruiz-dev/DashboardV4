@@ -125,16 +125,50 @@ export const paypadStorageMutationSchema = z.object({
 });
 export type PayPadStorageMutation = z.infer<typeof paypadStorageMutationSchema>;
 
+const historyRecordIdSchema = z
+  .union([
+    z.number().int().nonnegative(),
+    z.string().trim().regex(/^\d+$/),
+  ])
+  .transform((value) => Number(value))
+  .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER));
+
+const historyIntegerStringSchema = z
+  .union([
+    z.number().int().nonnegative(),
+    z.string().trim().regex(/^\d+$/),
+  ])
+  .transform((value) => String(value));
+
+const historyDecimalStringSchema = z
+  .union([
+    z.number().finite(),
+    z.string().trim().regex(/^-?\d+(?:\.\d+)?$/),
+  ])
+  .transform((value) => String(value));
+
+/**
+ * `PayPadBalanceView` in the legacy dashboard renders a detail by its visible
+ * denomination value. Its relation ID is not required to read a movement, so it
+ * is treated only as an optional image lookup key; the denomination value is the
+ * deterministic fallback. It is never used by a financial mutation.
+ */
+const historyDenominationIdSchema = z.unknown().optional().transform((value): number | null => {
+  const parsed = historyRecordIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+});
+
+/**
+ * Read models deliberately include only the fields consumed by the historical
+ * dashboard: IDs, date, totals, denominations, and quantities. Relationship IDs
+ * such as `idPayPad`, `idLoad`, and `idTonnage` are not read by the legacy view and
+ * remain outside this compatibility boundary. Mutation schemas below stay strict.
+ */
 export const loadDetailSchema = z
   .object({
-    denominationValue: integerStringSchema,
-    id: z.number().int().nonnegative().optional(),
-    // Historical list procedures can omit this joined value; .NET then serializes
-    // the non-nullable DTO property as 0. It is only used to match an optional
-    // denomination image in the history view, never as a mutation identifier.
-    idCurrencyDenomination: z.number().int().nonnegative(),
-    idLoad: z.number().int().nonnegative().optional(),
-    quantity: integerStringSchema,
+    denominationValue: historyIntegerStringSchema,
+    idCurrencyDenomination: historyDenominationIdSchema,
+    quantity: historyIntegerStringSchema,
   })
   .passthrough();
 export type LoadDetail = z.infer<typeof loadDetailSchema>;
@@ -143,15 +177,19 @@ export const loadSchema = z
   .object({
     dateCreated: optionalString,
     details: z.array(loadDetailSchema).nullish().transform((details) => details ?? []),
-    id: z.number().int().nonnegative(),
-    // GetByPaypad procedures already receive the selected Pay+ ID and can return
-    // the DTO's default 0 when the ID_PAYPAD column is not included in their row.
-    // Do not reject otherwise valid historical movements for that non-displayed key.
-    idPayPad: z.number().int().nonnegative(),
-    totalLoaded: decimalStringSchema,
+    id: historyRecordIdSchema,
+    totalLoaded: historyDecimalStringSchema,
   })
   .passthrough();
 export type Load = z.infer<typeof loadSchema>;
+
+export const loadHistoryEnvelopeSchema = z
+  .object({
+    // The legacy client consumed `data.response` directly and did not require
+    // envelope metadata to render history. HTTP status still comes from fetch.
+    response: z.array(loadSchema).nullish().transform((loads) => loads ?? []),
+  })
+  .passthrough();
 
 export const loadMutationSchema = z.object({
   details: z.array(z.object({
@@ -166,16 +204,12 @@ export type LoadMutation = z.infer<typeof loadMutationSchema>;
 
 export const tonnageDetailSchema = z
   .object({
-    denominationValue: integerStringSchema,
-    id: z.number().int().nonnegative().optional(),
-    // See LoadDetail: 0 is a legacy read-model sentinel when a joined column was
-    // not selected. Create/update payloads remain strictly positive elsewhere.
-    idCurrencyDenomination: z.number().int().nonnegative(),
-    idTonnage: z.number().int().nonnegative().optional(),
-    quantityAp: integerStringSchema,
-    quantityDp: integerStringSchema,
-    quantityRj: integerStringSchema,
-    quantityTotal: integerStringSchema,
+    denominationValue: historyIntegerStringSchema,
+    idCurrencyDenomination: historyDenominationIdSchema,
+    quantityAp: historyIntegerStringSchema,
+    quantityDp: historyIntegerStringSchema,
+    quantityRj: historyIntegerStringSchema,
+    quantityTotal: historyIntegerStringSchema,
   })
   .passthrough();
 export type TonnageDetail = z.infer<typeof tonnageDetailSchema>;
@@ -184,17 +218,22 @@ export const tonnageSchema = z
   .object({
     dateCreated: optionalString,
     details: z.array(tonnageDetailSchema).nullish().transform((details) => details ?? []),
-    id: z.number().int().nonnegative(),
-    // The history endpoint can expose 0 for an omitted ID_PAYPAD join. The selected
-    // card owns the actual Pay+ ID; this value is not reused for a mutation.
-    idPayPad: z.number().int().nonnegative(),
-    total: decimalStringSchema,
-    totalAp: decimalStringSchema,
-    totalDp: decimalStringSchema,
-    totalRj: decimalStringSchema,
+    id: historyRecordIdSchema,
+    total: historyDecimalStringSchema,
+    totalAp: historyDecimalStringSchema,
+    totalDp: historyDecimalStringSchema,
+    totalRj: historyDecimalStringSchema,
   })
   .passthrough();
 export type Tonnage = z.infer<typeof tonnageSchema>;
+
+export const tonnageHistoryEnvelopeSchema = z
+  .object({
+    // See `loadHistoryEnvelopeSchema`: this mirrors the legacy list reader while
+    // still requiring the iterable payload used by the view.
+    response: z.array(tonnageSchema).nullish().transform((tonnages) => tonnages ?? []),
+  })
+  .passthrough();
 
 // The legacy screen sends the storage snapshot totals when it registers an arqueo.
 // The upstream procedure recalculates them as well, but preserving this payload is part

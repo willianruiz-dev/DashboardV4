@@ -8,13 +8,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchablePaypadSelect } from "@/features/paypads/components/searchable-paypad-select";
 import type { PayPad } from "@/features/paypads/schemas";
-import { transactionSearchFormSchema, type TransactionSearchFormValues } from "@/features/transactions/schemas";
+import {
+  transactionPaymentTypes,
+  transactionSearchFormSchema,
+  type TransactionPaymentType,
+  type TransactionSearchFormValues,
+} from "@/features/transactions/schemas";
 import { localDateTimeToApiIso } from "@/lib/formatters/date";
 
 export interface TransactionFiltersValues {
   from: string;
+  paymentType: TransactionPaymentType | null;
   paypadId: number | null;
   to: string;
 }
@@ -29,7 +36,7 @@ interface TransactionFiltersProps {
 
 export function TransactionFilters({ allowAllPaypads = false, defaultRange, disabled = false, onSearch, paypads }: TransactionFiltersProps) {
   const form = useForm<TransactionSearchFormValues>({
-    defaultValues: { from: defaultRange.from, paypadId: "", to: defaultRange.to },
+    defaultValues: { from: defaultRange.from, paymentType: "all", paypadId: "", to: defaultRange.to },
     resolver: zodResolver(transactionSearchFormSchema),
   });
 
@@ -39,8 +46,11 @@ export function TransactionFilters({ allowAllPaypads = false, defaultRange, disa
       return;
     }
 
+    // The legacy date picker initializes the day at 12:00 a. m. and closes it at
+    // 11:59:59.999 p. m. Keep that inclusive range even though datetime-local
+    // displays minutes only.
     const from = localDateTimeToApiIso(values.from);
-    const to = localDateTimeToApiIso(values.to);
+    const to = localDateTimeToApiIso(values.to, { endOfMinute: true });
 
     if (!from || !to) {
       form.setError("root", { message: "Las fechas deben tener un formato válido." });
@@ -59,7 +69,8 @@ export function TransactionFilters({ allowAllPaypads = false, defaultRange, disa
       return;
     }
 
-    onSearch({ from, paypadId, to });
+    const paymentType = values.paymentType === "all" ? null : values.paymentType;
+    onSearch({ from, paymentType, paypadId, to });
   }
 
   return (
@@ -67,18 +78,18 @@ export function TransactionFilters({ allowAllPaypads = false, defaultRange, disa
       <CardHeader>
         <CardTitle className="text-base">Parámetros de búsqueda</CardTitle>
         <CardDescription>
-          Busca un equipo por nombre o ID. Las fechas se envían al API en formato ISO 8601 con zona UTC explícita.
+          Busca un equipo por nombre o ID. Desde inicia hoy automáticamente a las 12:00 a. m.; las fechas se envían al API en formato ISO 8601 con zona UTC explícita.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <Form {...form}>
           <form
-            className="grid gap-4 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] xl:items-end"
+            className="grid gap-4 md:grid-cols-2 xl:grid-cols-5 xl:items-end"
             noValidate
             onSubmit={form.handleSubmit(submit)}
           >
             {form.formState.errors.root?.message ? (
-              <p className="text-sm text-destructive xl:col-span-4" role="alert">
+              <p className="text-sm text-destructive xl:col-span-5" role="alert">
                 {form.formState.errors.root.message}
               </p>
             ) : null}
@@ -97,6 +108,25 @@ export function TransactionFilters({ allowAllPaypads = false, defaultRange, disa
                       value={field.value}
                     />
                   </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="paymentType"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Medio de pago</FormLabel>
+                  <Select disabled={disabled} onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="all">Todos</SelectItem>
+                      {transactionPaymentTypes.map((paymentType) => <SelectItem key={paymentType} value={paymentType}>{paymentType}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                   <FormMessage />
                 </FormItem>
               )}

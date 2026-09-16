@@ -6,10 +6,12 @@ function toLocalDateTimeInputValue(value: Date): string {
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
 }
 
-export function createTodayDateRange(): { from: string; to: string } {
-  const from = new Date();
+export function createTodayDateRange(now = new Date()): { from: string; to: string } {
+  const from = new Date(now);
   from.setHours(0, 0, 0, 0);
-  const to = new Date();
+  const to = new Date(now);
+  // `datetime-local` has minute precision in this UI. The API still receives the
+  // legacy end-of-day value through `localDateTimeToApiIso(..., { endOfMinute: true })`.
   to.setHours(23, 59, 0, 0);
   return {
     from: toLocalDateTimeInputValue(from),
@@ -17,9 +19,17 @@ export function createTodayDateRange(): { from: string; to: string } {
   };
 }
 
-export function localDateTimeToApiIso(value: string): string | null {
+export function localDateTimeToApiIso(value: string, options: { endOfMinute?: boolean } = {}): string | null {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  if (options.endOfMinute) {
+    date.setSeconds(59, 999);
+  }
+
+  return date.toISOString();
 }
 
 export function formatDashboardDateTime(value: string | null | undefined): string {

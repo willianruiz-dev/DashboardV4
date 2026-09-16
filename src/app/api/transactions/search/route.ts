@@ -3,8 +3,9 @@ import { z } from "zod";
 
 import { getPaypadMachineName } from "@/features/paypads/paypad-display";
 import { paypadSchema, type PayPad } from "@/features/paypads/schemas";
-import { transactionSchema, transactionSearchRequestSchema, transactionSearchResponseSchema, type DashboardTransaction, type TransactionSearchRequest } from "@/features/transactions/schemas";
-import { compareMoneyStrings, subtractMoneyStrings, sumMoneyStrings } from "@/lib/formatters/money";
+import { transactionSchema, transactionSearchRequestSchema, transactionSearchResponseSchema, type DashboardTransaction } from "@/features/transactions/schemas";
+import { matchesTransactionPaymentType, sortTransactions } from "@/features/transactions/transaction-search";
+import { subtractMoneyStrings, sumMoneyStrings } from "@/lib/formatters/money";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
 import { requireDashboardToken } from "@/lib/server/require-dashboard-token";
 import { createApiRouteError } from "@/lib/server/route-error";
@@ -15,34 +16,6 @@ export const runtime = "nodejs";
 
 function text(value: string | null | undefined): string {
   return value ?? "";
-}
-
-function compareTransactions(left: DashboardTransaction, right: DashboardTransaction, search: TransactionSearchRequest): number {
-  let result: number;
-  switch (search.sortKey) {
-    case "id":
-      result = left.id - right.id;
-      break;
-    case "totalAmount":
-      result = compareMoneyStrings(left.totalAmount, right.totalAmount);
-      break;
-    case "product":
-      result = text(left.product).localeCompare(text(right.product));
-      break;
-    case "stateTransaction":
-      result = text(left.stateTransaction).localeCompare(text(right.stateTransaction));
-      break;
-    case "typePayment":
-      result = text(left.typePayment).localeCompare(text(right.typePayment));
-      break;
-    case "typeTransaction":
-      result = text(left.typeTransaction).localeCompare(text(right.typeTransaction));
-      break;
-    case "dateCreated":
-      result = text(left.dateCreated).localeCompare(text(right.dateCreated));
-      break;
-  }
-  return search.sortDirection === "asc" ? result : -result;
 }
 
 interface TransactionSearchPaypad {
@@ -122,9 +95,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         }];
     const resultSets = await Promise.all(searchPaypads.map((paypad) => getTransactions(paypad, search.from, search.to, token)));
     const allTransactions = resultSets.flat();
-    const products = [...new Set(allTransactions.flatMap((transaction) => transaction.product?.trim() ? [transaction.product] : []))].sort((left, right) => left.localeCompare(right));
-    const matchingTransactions = search.product === null ? allTransactions : allTransactions.filter((transaction) => transaction.product === search.product);
-    const sortedTransactions = [...matchingTransactions].sort((left, right) => compareTransactions(left, right, search));
+    const paymentFilteredTransactions = allTransactions.filter((transaction) => matchesTransactionPaymentType(transaction, search.paymentType));
+    const products = [...new Set(paymentFilteredTransactions.flatMap((transaction) => transaction.product?.trim() ? [transaction.product] : []))]
+      .sort((left, right) => left.localeCompare(right));
+    const matchingTransactions = search.product === null
+      ? paymentFilteredTransactions
+      : paymentFilteredTransactions.filter((transaction) => transaction.product === search.product);
+    const sortedTransactions = sortTransactions(matchingTransactions, search);
     const start = (search.page - 1) * search.pageSize;
     const response = transactionSearchResponseSchema.parse({
       items: sortedTransactions.slice(start, start + search.pageSize),

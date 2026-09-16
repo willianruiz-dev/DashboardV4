@@ -52,6 +52,7 @@ export function TransactionsPage() {
       from: values.from,
       page: 1,
       pageSize: 10,
+      paymentType: values.paymentType,
       paypadId: values.paypadId,
       product: null,
       sortDirection: "desc",
@@ -101,7 +102,7 @@ export function TransactionsPage() {
             transactionIds={data?.transactionIds ?? []}
           />
         )}
-        description="Consulta transacciones por Pay+ y rango de fechas. El botón Descargar Excel se habilita cuando la consulta tiene resultados."
+        description="Consulta transacciones por Pay+, rango de fechas y medio de pago. El botón Descargar Excel se habilita cuando la consulta tiene resultados."
         title="Transacciones"
       />
 
@@ -135,7 +136,7 @@ export function TransactionsPage() {
           <Card>
             <CardContent className="grid gap-4 p-5">
               <p className="text-sm text-muted-foreground">
-                {data.total} resultado{data.total === 1 ? "" : "s"} encontrado{data.total === 1 ? "" : "s"}. El Excel incluye todos los resultados de esta consulta, no sólo la página visible.
+                {data.total} resultado{data.total === 1 ? "" : "s"} encontrado{data.total === 1 ? "" : "s"}. {search.paymentType ? `Filtro activo: ${search.paymentType}. ` : ""}El Excel incluye todos los resultados de esta consulta, no sólo la página visible.
               </p>
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="grid gap-2">

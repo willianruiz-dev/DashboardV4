@@ -45,6 +45,7 @@ export function ReportsPage() {
       from: values.from,
       page: 1,
       pageSize: 10,
+      paymentType: values.paymentType,
       paypadId: values.paypadId,
       product: null,
       sortDirection: "desc",
@@ -85,7 +86,7 @@ export function ReportsPage() {
             transactionIds={data?.transactionIds ?? []}
           />
         )}
-        description="Consulta transacciones por Pay+ o por todos los equipos, intervalo de fechas y producto. Para descargar Excel selecciona un Pay+ específico."
+        description="Consulta transacciones por Pay+ o por todos los equipos, intervalo de fechas, producto y medio de pago. Para descargar Excel selecciona un Pay+ específico."
         title="Reportes"
       />
 
@@ -162,6 +163,7 @@ export function ReportsPage() {
               </div>
               <p className="text-sm text-muted-foreground">
                 {data.total} resultado{data.total === 1 ? "" : "s"} encontrado{data.total === 1 ? "" : "s"}.
+                {search.paymentType ? ` Filtro activo: ${search.paymentType}.` : ""}
                 {search.paypadId === null ? " Selecciona un equipo concreto si necesitas descargar Excel." : " El Excel incluye todos los resultados de esta consulta."}
               </p>
             </CardContent>
