@@ -78,7 +78,7 @@ function NavigationItem({ item, onNavigate }: { item: DashboardNavigationItem; o
   if (hasChildren) {
     return (
       <details className="group" open={hasCurrentChild}>
-        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-foreground hover:bg-secondary [&::-webkit-details-marker]:hidden">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-foreground transition-colors duration-300 hover:bg-secondary [&::-webkit-details-marker]:hidden">
           <NavigationIcon className="size-4 text-primary" href={item.href} />
           <span className="min-w-0 flex-1 truncate">{item.title}</span>
           <span aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-90">
@@ -96,7 +96,7 @@ function NavigationItem({ item, onNavigate }: { item: DashboardNavigationItem; o
 
   if (!item.href) {
     return (
-      <span className="flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground">
+      <span className="flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground">
         <NavigationIcon className="size-4" href={item.href} />
         <span className="min-w-0 truncate">{item.title}</span>
       </span>
@@ -107,9 +107,9 @@ function NavigationItem({ item, onNavigate }: { item: DashboardNavigationItem; o
     <Link
       aria-current={isCurrent ? "page" : undefined}
       className={cn(
-        "flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+        "flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-300",
         isCurrent
-          ? "bg-primary text-primary-foreground"
+          ? "bg-primary text-primary-foreground shadow-[0_8px_18px_-10px_rgba(59,130,246,0.7)]"
           : "text-foreground hover:bg-secondary hover:text-secondary-foreground",
       )}
       href={item.href}
@@ -126,7 +126,7 @@ export function AppSidebar({ navigation, onNavigate }: AppSidebarProps) {
 
   return (
     <aside aria-label="Navegación principal" className="grid h-full grid-rows-[auto_1fr] gap-6 bg-card p-4 text-card-foreground">
-      <Link aria-label="E-city Software: ir al inicio" className="flex min-h-11 items-center rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="/dashboard" onClick={onNavigate}>
+      <Link aria-label="E-city Software: ir al inicio" className="flex min-h-11 items-center rounded-lg px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="/dashboard" onClick={onNavigate}>
         <Image
           alt=""
           className="h-auto w-40 rounded-sm border bg-card p-1"
@@ -141,9 +141,9 @@ export function AppSidebar({ navigation, onNavigate }: AppSidebarProps) {
         <Link
           aria-current={pathname === "/dashboard" ? "page" : undefined}
           className={cn(
-            "flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+            "flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-300",
             pathname === "/dashboard"
-              ? "bg-primary text-primary-foreground"
+              ? "bg-primary text-primary-foreground shadow-[0_8px_18px_-10px_rgba(59,130,246,0.7)]"
               : "text-foreground hover:bg-secondary hover:text-secondary-foreground",
           )}
           href="/dashboard"

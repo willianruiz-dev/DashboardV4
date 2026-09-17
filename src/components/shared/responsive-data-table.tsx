@@ -45,10 +45,12 @@ export function ResponsiveDataTable<TData extends RowData>({
     getRowId,
   });
 
+  const maxRowDelay = 480;
+
   return (
     <>
       <div className="hidden xl:block">
-        <div className="rounded-lg border bg-card">
+        <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-card shadow-soft dark:border-slate-800">
           <Table aria-label={label}>
             <TableHeader>
               {table.getHeaderGroups().map((headerGroup) => (
@@ -64,8 +66,12 @@ export function ResponsiveDataTable<TData extends RowData>({
               ))}
             </TableHeader>
             <TableBody>
-              {table.getRowModel().rows.map((row) => (
-                <TableRow key={row.id}>
+              {table.getRowModel().rows.map((row, rowIndex) => (
+                <TableRow
+                  key={row.id}
+                  className="animate-row-in"
+                  style={{ animationDelay: `${Math.min(rowIndex * 40, maxRowDelay)}ms` }}
+                >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
                   ))}
@@ -77,13 +83,17 @@ export function ResponsiveDataTable<TData extends RowData>({
       </div>
 
       <div className="grid gap-3 xl:hidden">
-        {table.getRowModel().rows.map((row) => {
+        {table.getRowModel().rows.map((row, rowIndex) => {
           const visibleCells = row
             .getVisibleCells()
             .filter((cell) => !cell.column.columnDef.meta?.mobileHidden);
 
           return (
-            <Card key={row.id}>
+            <Card
+              key={row.id}
+              className="animate-rise transition-all duration-300 hover:shadow-lift"
+              style={{ animationDelay: `${Math.min(rowIndex * 60, maxRowDelay)}ms` }}
+            >
               <CardHeader className="gap-1">
                 <CardTitle className="text-base">{getCardTitle(row.original)}</CardTitle>
                 {getCardDescription ? <CardDescription>{getCardDescription(row.original)}</CardDescription> : null}

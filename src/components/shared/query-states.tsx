@@ -18,7 +18,7 @@ export function ListSkeleton({ rows = 5 }: { rows?: number }) {
 
 export function EmptyState({ description, title }: { description: string; title: string }) {
   return (
-    <div className="grid min-h-56 place-items-center rounded-lg border border-dashed p-6 text-center">
+    <div className="grid min-h-56 place-items-center rounded-xl border border-dashed p-6 text-center">
       <div className="grid max-w-sm justify-items-center gap-3">
         <span className="flex size-11 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
           <FileX2 aria-hidden="true" className="size-5" />

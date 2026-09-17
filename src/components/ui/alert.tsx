@@ -3,11 +3,11 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-const alertVariants = cva("relative w-full rounded-md border p-4 text-sm", {
+const alertVariants = cva("relative w-full rounded-lg border p-4 text-sm shadow-soft", {
   variants: {
     variant: {
       default: "border-border bg-card text-card-foreground",
-      destructive: "border-destructive bg-destructive/10 text-foreground",
+      destructive: "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300",
     },
   },
   defaultVariants: {

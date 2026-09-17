@@ -195,7 +195,7 @@ export function SearchablePaypadSelect({
       </div>
       {isOpen && !disabled ? (
         <div
-          className="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-md border bg-popover p-1 shadow-md"
+          className="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-lg border bg-popover p-1 shadow-lift"
           id={listboxId}
           role="listbox"
         >
@@ -204,7 +204,7 @@ export function SearchablePaypadSelect({
               <button
                 aria-selected={option.value === value}
                 className={cn(
-                  "flex min-h-11 w-full items-center justify-between gap-3 rounded-sm px-3 py-2 text-left text-sm text-popover-foreground hover:bg-secondary focus-visible:bg-secondary",
+                  "flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-popover-foreground transition-colors duration-300 hover:bg-secondary focus-visible:bg-secondary",
                   index === activeIndex ? "bg-secondary" : "",
                 )}
                 id={`${listboxId}-${option.value}`}

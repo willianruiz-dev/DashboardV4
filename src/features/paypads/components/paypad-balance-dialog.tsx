@@ -324,7 +324,7 @@ const loadColumns: ColumnDef<Load, unknown>[] = [
   },
   {
     accessorKey: "totalLoaded",
-    cell: ({ row }) => <span className="tabular break-words">{formatDashboardMoney(row.original.totalLoaded)}</span>,
+    cell: ({ row }) => <span className="tabular break-words font-medium text-blue-600 dark:text-blue-400">{formatDashboardMoney(row.original.totalLoaded)}</span>,
     header: "Valor total cargado",
   },
   {
@@ -363,7 +363,7 @@ const tonnageColumns: ColumnDef<Tonnage, unknown>[] = [
   },
   {
     accessorKey: "total",
-    cell: ({ row }) => <span className="tabular break-words font-semibold">{formatDashboardMoney(row.original.total)}</span>,
+    cell: ({ row }) => <span className="tabular break-words font-semibold text-blue-600 dark:text-blue-400">{formatDashboardMoney(row.original.total)}</span>,
     header: "Valor total",
   },
   {
@@ -433,7 +433,7 @@ function BalanceHistory({
               <div><dt className="text-xs text-muted-foreground">Aceptadores</dt><dd className="font-numeric font-medium">{formatDashboardMoney(tonnage.totalAp)}</dd></div>
               <div><dt className="text-xs text-muted-foreground">Dispensadores</dt><dd className="font-numeric font-medium">{formatDashboardMoney(tonnage.totalDp)}</dd></div>
               <div><dt className="text-xs text-muted-foreground">Baúl de rechazo</dt><dd className="font-numeric font-medium">{formatDashboardMoney(tonnage.totalRj)}</dd></div>
-              <div><dt className="text-xs text-muted-foreground">Total</dt><dd className="font-numeric font-semibold">{formatDashboardMoney(tonnage.total)}</dd></div>
+              <div><dt className="text-xs text-muted-foreground">Total</dt><dd className="font-numeric font-semibold text-blue-600 dark:text-blue-400">{formatDashboardMoney(tonnage.total)}</dd></div>
             </dl>
           )}
           title="Arqueos"
@@ -461,7 +461,7 @@ function BalanceHistory({
           renderMobileSummary={(load) => (
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
               <div><dt className="text-xs text-muted-foreground">Responsable</dt><dd>{getHistoryResponsible(load)}</dd></div>
-              <div><dt className="text-xs text-muted-foreground">Valor total cargado</dt><dd className="font-numeric font-semibold">{formatDashboardMoney(load.totalLoaded)}</dd></div>
+              <div><dt className="text-xs text-muted-foreground">Valor total cargado</dt><dd className="font-numeric font-semibold text-blue-600 dark:text-blue-400">{formatDashboardMoney(load.totalLoaded)}</dd></div>
             </dl>
           )}
           title="Cargues"

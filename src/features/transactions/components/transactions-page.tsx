@@ -1,7 +1,7 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
@@ -19,13 +19,21 @@ import { TransactionStateBadge } from "@/features/transactions/components/transa
 import { TransactionSummaryCards } from "@/features/transactions/components/transaction-summary";
 import { useTransactionSearch } from "@/features/transactions/hooks";
 import type { DashboardTransaction, TransactionSearchRequest, TransactionSortKey } from "@/features/transactions/schemas";
+import { getTransactionStateTone, transactionAmountToneClasses } from "@/features/transactions/transaction-state-tone";
 import { createTodayDateRange, dateForFileName, formatDashboardDateTime } from "@/lib/formatters/date";
 import { formatDashboardMoney } from "@/lib/formatters/money";
+import { cn } from "@/lib/utils";
 
 const pageSizeOptions = [5, 10, 25, 50] as const;
 
 function text(value: string | null | undefined, fallback = "—"): string {
   return value?.trim() || fallback;
+}
+
+/** Colores por estado: aprobadas → verde, canceladas → rojo, resto → azul. */
+function moneyCell(transaction: DashboardTransaction, value: string): ReactNode {
+  const tone = transactionAmountToneClasses[getTransactionStateTone(transaction.stateTransaction)];
+  return <span className={cn("font-numeric font-medium", tone)}>{formatDashboardMoney(value)}</span>;
 }
 
 export function TransactionsPage() {
@@ -71,16 +79,16 @@ export function TransactionsPage() {
     { accessorKey: "reference", cell: ({ row }) => text(row.original.reference), header: "Referencia cliente", meta: { mobileLabel: "Referencia" } },
     { accessorKey: "document", cell: ({ row }) => text(row.original.document), header: "Documento", meta: { mobileLabel: "Documento" } },
     { accessorKey: "dateCreated", cell: ({ row }) => formatDashboardDateTime(row.original.dateCreated), header: "Fecha", meta: { mobileLabel: "Fecha" } },
-    { accessorKey: "totalAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.totalAmount)}</span>, header: "Total", meta: { mobileLabel: "Total" } },
-    { accessorKey: "realAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.realAmount)}</span>, header: "Total sin redondear", meta: { mobileLabel: "Total sin redondear" } },
-    { accessorKey: "incomeAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.incomeAmount)}</span>, header: "Ingresado", meta: { mobileLabel: "Ingresado" } },
-    { accessorKey: "returnAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.returnAmount)}</span>, header: "Devuelto", meta: { mobileLabel: "Devuelto" } },
+    { accessorKey: "totalAmount", cell: ({ row }) => moneyCell(row.original, row.original.totalAmount), header: "Total", meta: { mobileLabel: "Total" } },
+    { accessorKey: "realAmount", cell: ({ row }) => moneyCell(row.original, row.original.realAmount), header: "Total sin redondear", meta: { mobileLabel: "Total sin redondear" } },
+    { accessorKey: "incomeAmount", cell: ({ row }) => moneyCell(row.original, row.original.incomeAmount), header: "Ingresado", meta: { mobileLabel: "Ingresado" } },
+    { accessorKey: "returnAmount", cell: ({ row }) => moneyCell(row.original, row.original.returnAmount), header: "Devuelto", meta: { mobileLabel: "Devuelto" } },
     { accessorKey: "typePayment", cell: ({ row }) => text(row.original.typePayment), header: "Medio de pago", meta: { mobileLabel: "Medio de pago" } },
     { accessorKey: "stateTransaction", cell: ({ row }) => <TransactionStateBadge value={row.original.stateTransaction} />, header: "Estado", meta: { mobileLabel: "Estado" } },
     {
       id: "actions",
       cell: ({ row }) => (
-        <Button aria-label={`Ver detalle de transacción ${row.original.id}`} onClick={() => setSelectedTransaction(row.original)} size="sm" type="button" variant="outline">
+        <Button aria-label={`Ver detalle de transacción ${row.original.id}`} onClick={() => setSelectedTransaction(row.original)} size="sm" type="button" variant="detail">
           Ver detalle
         </Button>
       ),

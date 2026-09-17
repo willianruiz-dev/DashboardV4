@@ -112,15 +112,20 @@
   --color-connection-reconnect: var(--connection-reconnect);
 }
 
+/* =========================================================
+   PASTEL 2026 — semántica de estados y superficies suaves
+   #10b981 emerald (aprobadas) · #ef4444 red (canceladas)
+   #3b82f6 blue (totales / generales) · #9ca3af gray (secundario)
+   ========================================================= */
 :root {
   color-scheme: light;
-  --background: var(--color-neutral-50);
+  --background: #F4F7FB;
   --foreground: var(--color-neutral-900);
   --card: var(--color-neutral-0);
   --card-foreground: var(--color-neutral-900);
   --popover: var(--color-neutral-0);
   --popover-foreground: var(--color-neutral-900);
-  --primary: var(--color-brand-500);
+  --primary: #3B82F6;
   --primary-foreground: var(--color-neutral-0);
   --secondary: var(--color-neutral-100);
   --secondary-foreground: var(--color-neutral-800);
@@ -128,11 +133,11 @@
   --muted-foreground: var(--color-neutral-500);
   --accent: var(--color-accent-400);
   --accent-foreground: var(--color-neutral-0);
-  --destructive: var(--color-danger-500);
+  --destructive: #EF4444;
   --destructive-foreground: var(--color-neutral-0);
-  --border: var(--color-neutral-200);
-  --input: var(--color-neutral-300);
-  --ring: var(--color-brand-500);
+  --border: #E4E9F1;
+  --input: #D8DFEA;
+  --ring: #3B82F6;
   --radius: var(--radius-md);
   --amount-positive: var(--color-success-700);
   --amount-negative: var(--color-danger-700);
@@ -147,25 +152,25 @@
 
 .dark {
   color-scheme: dark;
-  --background: var(--color-neutral-950);
+  --background: #0B1120;
   --foreground: var(--color-neutral-100);
-  --card: var(--color-neutral-900);
+  --card: #111827;
   --card-foreground: var(--color-neutral-100);
-  --popover: var(--color-neutral-900);
+  --popover: #111827;
   --popover-foreground: var(--color-neutral-100);
-  --primary: var(--color-brand-400);
-  --primary-foreground: var(--color-neutral-950);
+  --primary: #3B82F6;
+  --primary-foreground: var(--color-neutral-0);
   --secondary: var(--color-neutral-800);
   --secondary-foreground: var(--color-neutral-100);
   --muted: var(--color-neutral-800);
   --muted-foreground: var(--color-neutral-400);
   --accent: var(--color-accent-300);
   --accent-foreground: var(--color-neutral-950);
-  --destructive: var(--color-danger-dark-400);
+  --destructive: #F87171;
   --destructive-foreground: var(--color-neutral-950);
-  --border: var(--color-neutral-700);
-  --input: var(--color-neutral-700);
-  --ring: var(--color-brand-400);
+  --border: #26334A;
+  --input: #33415C;
+  --ring: #60A5FA;
   --amount-positive: var(--color-success-dark-500);
   --amount-negative: var(--color-danger-dark-300);
   --state-pending: var(--color-warning-dark-500);
@@ -191,10 +196,21 @@
   body {
     min-width: 20rem;
     overflow-x: clip;
-    background: var(--background);
+    background:
+      radial-gradient(1100px 480px at 85% -12%, rgb(59 130 246 / 0.07), transparent 60%),
+      radial-gradient(900px 420px at 8% -10%, rgb(16 185 129 / 0.06), transparent 55%),
+      var(--background);
+    background-attachment: fixed;
     color: var(--foreground);
     font-family: var(--font-sans);
     font-synthesis: none;
+  }
+
+  .dark body {
+    background:
+      radial-gradient(1100px 480px at 85% -12%, rgb(59 130 246 / 0.14), transparent 60%),
+      radial-gradient(900px 420px at 8% -10%, rgb(16 185 129 / 0.10), transparent 55%),
+      var(--background);
   }
 
   button,
@@ -212,10 +228,67 @@
   }
 }
 
-@layer utilities {
-  .tabular {
-    font-family: var(--font-numeric);
-    font-feature-settings: "tnum";
-    font-variant-numeric: tabular-nums;
+/* =========================================================
+   ANIMACIONES SUAVES 2026
+   ========================================================= */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
   }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@utility tabular {
+  font-family: var(--font-numeric);
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sombras suaves para profundidad */
+@utility shadow-soft {
+  box-shadow:
+    0 1px 2px rgb(15 23 42 / 0.04),
+    0 6px 20px -10px rgb(15 23 42 / 0.12);
+}
+
+@utility shadow-lift {
+  box-shadow:
+    0 2px 4px rgb(15 23 42 / 0.05),
+    0 20px 40px -16px rgb(15 23 42 / 0.24);
+}
+
+/* Brillo sutil para estados */
+@utility glow-emerald {
+  box-shadow: 0 10px 26px -10px rgb(16 185 129 / 0.55);
+}
+
+@utility glow-red {
+  box-shadow: 0 10px 26px -10px rgb(239 68 68 / 0.45);
+}
+
+@utility glow-blue {
+  box-shadow: 0 10px 26px -10px rgb(59 130 246 / 0.45);
+}
+
+@utility animate-rise {
+  animation: rise-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-row-in {
+  animation: row-in 0.4s ease-out both;
 }
