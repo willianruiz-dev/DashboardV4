@@ -1,6 +1,6 @@
 # Detección temprana de atascos (monederos/billeteros) — estudio e implementación
 
-> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C5)** dentro de *Control de dispensado*.
+> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C6)** dentro de *Control de dispensado*.
 > **Veredicto:** **VIABLE con la API y el dashboard actuales**, sin cambios en el backend .NET ni en la base de datos.
 > **Archivos nuevos:** `src/features/dispensing-control/dispensing-jams.ts` (motor puro), `src/app/api/dispensing/jams/route.ts` (BFF acotado + caché), `src/features/dispensing-control/components/jam-diagnostics.tsx` (panel), `src/features/dispensing-control/api.ts` (cliente) y extensiones en `schemas.ts`, `hooks.ts` y la página.
 > **Estado de validación:** TypeScript, ESLint y build **PASA** (2026-09-17) + tres fixtures locales del motor y uno del normalizador (`node --experimental-strip-types`): escenario de sustitución/devolución, **máquina real Pay+ Inder 2 (ID 71)** y caso ciego. La prueba E2E autenticada sigue pendiente (B-04/B-05 del backlog).
@@ -17,6 +17,7 @@ El operador reportó: **«empezó a dispensar todo en monedas de 100 porque se a
 | **C2** | **`isDispensing` bloqueaba la evidencia**: el monedero de 500 estaba marcado **«No dispensa»** en Pay+ → Configurar denominaciones, y el motor solo evaluaba esa bandera ⇒ la fila 500 quedaba sin señales… y también fuera de la combinación canónica, así que la sustitución por monedas de 100 no se habría detectado. | Captura: fila «$500 — No dispensa, saldo 34, caída física 97» | La configuración **informa pero no habilita ni bloquea**. El conjunto de denominaciones que pueden entregar cambio se deduce de la **evidencia**: configuración OR caída física positiva OR unidades dispensadas OR sustituciones. Nuevas señales `sustitucion_no_configurada` y `config_inconsistente`. |
 | **C3** | **El panel declaraba «limpio» estando ciego**: con 30/30 detalles fallidos el titular seguía siendo *«No se detectaron señales de atasco»*. | Captura | Nuevos campos `blind` y `failureReasons`: el titular pasa a *«Diagnóstico incompleto…»*, se muestra una alerta destructiva con el motivo sanitizado del fallo y el pie indica el método de inferencia usado. |
 | **C4** | **Se culpaba al que entrega, no al que no entrega.** El 100 cobraba `devuelto_con_saldo` (sus intentos fallidos aparecían en transacciones con error) y señales físicas porque su arqueo no cuadraba: era el **único** incidente reportado, mientras el 500 atascado quedaba invisible. | Reporte del operador: «me dice atasco en de 100 mientras que es en el de 500» | Nuevo concepto de **compensación**: si una denominación entrega *más* de su parte canónica (≥ 2 unidades y ≥ 2 pagos), se marca `compensando_entrega` (peso 0), **se suprimen todas sus señales de atasco** y el titular nombra al culpable: *«…el cambio se entrega con 100»*. Las filas muestran el rol **Implicada / Compensando / Normal**. |
+| **C6** | **Alerta por tendencia (predecía con el pasado en vez de mirar el presente).** En Pay+ Inder 2 el 2.000 salió como *«Posible atasco»* cuando esa denominación **entregó 17 unidades en el período y bajó 255 en el arqueo**: la única prueba era que pasó de participar en el 100 % de los pagos previos al 40 % de los recientes. Una caída parcial es una tendencia, no un atasco. | Captura del panel + reporte: «¿por qué me dice que posible atasco si hay en el momento, no si hubo?» | `participacion_perdida` pasa a **peso 0** (nunca genera incidente por sí sola), exige **participación reciente ≈ 0** (≤ 5 %, no una caída parcial), **participación previa ≥ 50 %** y **ausencia de movimiento en el arqueo**. Además, `inactiva_con_saldo` ahora exige que los pagos hayan **requerido** esa denominación (`wasRequired`): estar quieta porque nadie la necesitó no es evidencia. |
 | **C5** | **El análisis exigía pulsar un botón.** Sin clic, el motor no tenía detalles y no había alerta posible: el operador veía «Sin señales» hasta analizar manualmente. | Reporte: «primero debería lanzar la alerta apenas consulte la máquina» | El análisis se **dispara automáticamente** al seleccionar máquina o cambiar el período (clave de consulta por máquina+rango, `staleTime` 5 min y caché de detalles de 30 min en el BFF). El botón pasa a **«Re-analizar»**. |
 
 ### Por qué el 500 quedaba invisible aunque estuviera atascado
@@ -24,6 +25,21 @@ El operador reportó: **«empezó a dispensar todo en monedas de 100 porque se a
 Además de la compensación, había un problema de circularidad: para saber que el 500 *debía* participar se usaba la configuración (`isDispensing`) o el movimiento en el arqueo… pero un monedero atascado **no se mueve** y en Inder 2 estaba marcado «No dispensa». Era imposible que apareciera. Ahora la existencia del módulo se deduce del **saldo en el baúl dispensador** (actual o histórico en cualquier arqueo): 34 monedas guardadas significan que hay un monedero de 500 que puede entregar, esté bien configurado o no.
 
 Además: el tope de análisis subió de 30 a **60** transacciones (la máquina tenía 33 solo ese día) y `confirmado` ahora exige **evidencia independiente** (física o fallo explícito), no solo composición de pagos.
+
+### Verificación del falso positivo por tendencia (fixture `usuario-actual`)
+
+Réplica de la captura del reporte: 14 pagos, el 2.000 participa en el 100 % de los
+previos y en el 40 % de los recientes, entregó 18 unidades en el período y bajó 255 en el
+arqueo, sin sustituciones ni intentos fallidos.
+
+```
+HEADLINE: No se detectaron señales de atasco en la ventana analizada.
+INCIDENTES: 0
+d=2000 | saldo=94 | disp=18 | caída=255 | nivel=sin_evidencia score=0 | señales=[]
+```
+
+Antes de C6 el mismo dato producía *«Posible atasco · Posible atasco en la denominación
+2000»*, mientras la tabla mostraba que la denominación estaba entregando normalmente.
 
 ### Verificación del caso real (fixture `compensacion`)
 
@@ -190,13 +206,13 @@ BD). El motor no lo asume:
 | `devuelto_con_saldo` | 3 | `fallidos(d) ≥ 2` (umbral) y `dpStored(d) > 0` |
 | `sustitucion` | 3 | ≥ 2 pagos completados sin la denominación canónica teniendo saldo |
 | `sin_caida_fisica` | 3 | `sistemaTotal(d) > 0` y `caidaFisica(d) == 0` en la ventana del arqueo |
-| `participacion_perdida` | 2 | ≤ 1/3 de participación reciente vs ≥ 30 % previa, con saldo (mínimo 3 pagos por segmento) |
+| `participacion_perdida` | 0 | Participación reciente ≈ 0 (≤ 5 %) vs ≥ 50 % previa, con saldo, **sin movimiento en el arqueo** y ≥ 3 pagos por segmento. Contexto: nunca genera incidente sola |
 | `caida_corroborada` | 2 | `fallidos(d) ≥ 2`, `dispensado(d) > 0` y `caidaFisica(d) == dispensado(d)` |
 | `caida_insuficiente` | 1 | `caidaFisica(d) < dispensado(d)` |
 | `caida_sin_registro` | 1 | `caidaFisica(d) > sistemaTotal(d)` (extracción/liberación manual) |
 | `rafaga_salida` | 2 | ≥ 3 `Aprobada Error Devuelta` en el período (nivel máquina) |
 | `sustitucion_no_configurada` | 3 | Igual, pero la denominación está marcada «No dispensa»: posible atasco **o** configuración desactualizada |
-| `inactiva_con_saldo` | 2 (1 si el arqueo está fuera del período) | Ninguna otra denominación se movió en el intervalo de arqueo y esta tampoco, conservando saldo |
+| `inactiva_con_saldo` | 2 (1 si el arqueo está fuera del período) | Fue **requerida** por los pagos (hubo sustitución), no se movió en el intervalo de arqueo y conserva saldo; la máquina sí movió otras denominaciones |
 | `rechazo_con_unidades` | 1 | El baúl de rechazo tiene unidades y hubo rechazos/intentos fallidos |
 | `config_inconsistente` | 1 | Marcada «No dispensa», pero el arqueo muestra movimiento real del baúl |
 | `compensando_entrega` | 0 | Entregó más que su parte canónica (≥ 2 unidades, ≥ 2 pagos): **suprime el resto de señales de esa denominación** |
@@ -206,6 +222,12 @@ Niveles: `sin_evidencia` → `sospecha` (score ≥ 1) → `probable` (≥ 3) →
 (≥ 6 con ≥ 2 señales, una señal núcleo **y una evidencia independiente**: física
 —`sin_caida_fisica`, `caida_*`— o fallo explícito de entrega —`devuelto_con_saldo`—).
 Una denominación **compensadora nunca recibe nivel de atasco**: está entregando, no fallando.
+
+### Regla de oro de la temporización
+
+> El motor alerta con el **estado actual**: transacciones del período consultado o del
+> último intervalo de arqueos. Las **tendencias** (caídas de participación, uso
+> decreciente) son contexto con peso 0 y nunca generan un incidente por sí solas.
 
 ### Regla de oro de la atribución
 

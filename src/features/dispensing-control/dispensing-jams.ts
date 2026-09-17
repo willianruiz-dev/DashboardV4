@@ -133,8 +133,8 @@ export interface JamThresholds {
   minimumSubstitutionEvents: number;
   /** Score para "probable". */
   probableScore: number;
-  /** Caída de participación (previa − reciente) mínima para marcar participación perdida. */
-  participationDropRatio: number;
+  /** Participación reciente máxima (≈0) para considerar que dejó de usarse. */
+  participationRecentMaxRatio: number;
   /** Participación previa mínima para considerar que la denominación se usaba. */
   participationPreviousRatio: number;
 }
@@ -148,8 +148,8 @@ export const JAM_THRESHOLDS: JamThresholds = {
   minimumFailedUnits: 2,
   minimumRecentPayouts: 3,
   minimumSubstitutionEvents: 2,
-  participationDropRatio: 0.6,
-  participationPreviousRatio: 0.3,
+  participationPreviousRatio: 0.5,
+  participationRecentMaxRatio: 0.05,
   probableScore: 3,
 };
 
@@ -163,7 +163,7 @@ export const jamSignalWeights: Record<JamSignalCode, number> = {
   descuadre_inventario: 0,
   devuelto_con_saldo: 3,
   inactiva_con_saldo: 2,
-  participacion_perdida: 2,
+  participacion_perdida: 0,
   rafaga_salida: 2,
   rechazo_con_unidades: 1,
   sin_caida_fisica: 3,
@@ -180,7 +180,7 @@ export const jamSignalLabels: Record<JamSignalCode, string> = {
   descuadre_inventario: "Descuadre de inventario",
   devuelto_con_saldo: "Devolvió teniendo saldo",
   inactiva_con_saldo: "No participó con saldo (arqueo)",
-  participacion_perdida: "Dejó de usarse",
+  participacion_perdida: "No participó en la ventana reciente",
   rafaga_salida: "Ráfaga de error devuelta",
   rechazo_con_unidades: "Baúl de rechazo con unidades",
   sin_caida_fisica: "El arqueo no bajó nada",
@@ -1050,10 +1050,15 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
         const previousUses = aggregate.payoutTransactions.size - recentUses;
         const previousRatio = previousUses / previousPayoutCount;
         const recentRatio = recentUses / recentPayoutCount;
-        if (previousRatio >= thresholds.participationPreviousRatio && previousRatio - recentRatio >= thresholds.participationDropRatio) {
+        // Solo cuenta si dejó de usarse POR COMPLETO en la ventana reciente y el arqueo
+        // tampoco muestra movimiento. Una caída parcial (p. ej. del 100 % al 40 %) es
+        // una tendencia, no un atasco: la alerta debe describir el estado actual, no
+        // predecir con el histórico. Además aporta peso 0: nunca genera incidente sola.
+        const movedInArqueo = observedMovement !== null && observedMovement > 0;
+        if (!movedInArqueo && recentRatio <= thresholds.participationRecentMaxRatio && previousRatio >= thresholds.participationPreviousRatio) {
           signals.push({
             code: "participacion_perdida",
-            detail: `Participaba en el ${Math.round(previousRatio * 100)}% de los pagos previos y ahora en el ${Math.round(recentRatio * 100)}%, con ${stock} unidad(es) en el baúl.`,
+            detail: `No participó en ninguno de los ${recentPayoutCount} pago(s) recientes analizados, cuando antes estaba en el ${Math.round(previousRatio * 100)}% de los pagos; conserva ${stock} unidad(es) en el baúl.`,
             weight: jamSignalWeights.participacion_perdida,
           });
         }
@@ -1090,8 +1095,10 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
       // No participó en el intervalo del arqueo aunque la máquina sí movió otras
       // denominaciones y esta conserva saldo: es la única evidencia posible cuando el
       // Pay+ no devuelve error (entrega silenciosa con denominaciones menores).
+      const wasRequired = aggregate.substitutionEvents + aggregate.unconfiguredSubstitutionEvents > 0;
       if (
         !compensating &&
+        wasRequired &&
         observedMovement === 0 &&
         !empty &&
         dispenses &&
@@ -1137,6 +1144,8 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
         });
       }
 
+      // Una señal de peso 0 (tendencia o contexto) no puede sostener un incidente:
+      // el motor solo alerta con evidencia del período consultado o del arqueo.
       const score = signals.reduce((total, signal) => total + signal.weight, 0);
       let level = levelFromScore(score, signals, thresholds);
       if (compensating) {

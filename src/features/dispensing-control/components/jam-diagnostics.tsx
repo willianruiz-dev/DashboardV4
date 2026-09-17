@@ -77,12 +77,13 @@ export function JamDiagnosticsSection({
               Detección de atascos en monederos y billeteros
             </h2>
             <p className="text-sm text-muted-foreground">
-              Analiza solo al consultar la máquina. Cruza saldo del baúl, arqueos (conteo físico), cargues y las operaciones
-              de cada transacción para distinguir{" "}
+              Analiza solo al consultar la máquina. La alerta se emite únicamente con evidencia del período consultado o
+              del último intervalo de arqueos: distingue{" "}
               <strong className="font-medium text-foreground">atasco</strong> (hay saldo y no sale) de{" "}
-              <strong className="font-medium text-foreground">agotamiento</strong> (no hay saldo), e identifica qué
+              <strong className="font-medium text-foreground">agotamiento</strong> (no hay saldo), identifica qué
               denominación está{" "}
-              <strong className="font-medium text-foreground">compensando</strong> la entrega. Período: {rangeLabel}.
+              <strong className="font-medium text-foreground">compensando</strong> la entrega y no alerta por tendencias de
+              uso. Período: {rangeLabel}.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -250,6 +251,15 @@ export function JamDiagnosticsSection({
                       <TableCell className="text-right align-top">
                         <span className="font-numeric font-medium text-emerald-600 dark:text-emerald-400">{row.dispensedUnits}</span>
                         <span className="block text-xs text-muted-foreground">
+                          {row.dispensedUnits > 0
+                            ? row.lastEvidenceAt
+                              ? `última entrega: ${formatDashboardDateTime(row.lastEvidenceAt)}`
+                              : "entrega en el período"
+                            : (row.physicalDrop.units ?? 0) > 0
+                              ? "bajó en el arqueo, sin entrega en el período"
+                              : "sin movimiento"}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
                           {row.substitutionEvents + row.unconfiguredSubstitutionEvents > 0
                             ? `${row.substitutionEvents + row.unconfiguredSubstitutionEvents} sustitución(es)${row.unconfiguredSubstitutionEvents > 0 ? " (no config.)" : ""}`
                             : "sin sustituciones"}
@@ -323,6 +333,14 @@ export function JamDiagnosticsSection({
                       {row.compensating ? "Compensando" : jamLevelLabels[row.level]}
                     </Badge>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    Estado actual:{" "}
+                    {row.dispensedUnits > 0
+                      ? `entregó ${row.dispensedUnits} unidad(es) en el período`
+                      : (row.physicalDrop.units ?? 0) > 0
+                        ? "sin entrega en el período, con movimiento en el arqueo"
+                        : "sin movimiento en el período ni en el arqueo"}
+                  </p>
                   <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
                     <div><dt className="text-xs text-muted-foreground">Saldo</dt><dd className="font-numeric font-semibold">{row.stock}</dd></div>
                     <div><dt className="text-xs text-muted-foreground">Devuelto</dt><dd className="font-numeric font-medium text-red-500 dark:text-red-400">{row.failedUnits}</dd></div>
