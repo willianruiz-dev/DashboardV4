@@ -90,6 +90,21 @@ function findNavigationItem(items: readonly DashboardNavigationItem[], href: str
   return null;
 }
 
+function findNavigationItemByTitle(items: readonly DashboardNavigationItem[], normalizedTitle: string): DashboardNavigationItem | null {
+  for (const item of items) {
+    if ((item.title ?? "").trim().toLowerCase() === normalizedTitle) {
+      return item;
+    }
+
+    const child = findNavigationItemByTitle(item.children, normalizedTitle);
+    if (child) {
+      return child;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Inyecta el ítem "Control de dispensado" en la navegación para roles
  * SuperAdmin (sin depender de registros de ruta en datos): se anida bajo
@@ -113,9 +128,16 @@ export function withDispensingControl(items: readonly DashboardNavigationItem[],
     title: "Control de dispensado",
   };
 
-  const transactions = findNavigationItem(rootItems, "/dashboard/transactions");
-  if (transactions && !transactions.children.some((child) => child.href === DISPENSING_CONTROL_HREF)) {
-    transactions.children.push(dispensingItem);
+  // Preferencia de ubicación: la sección "Transacciones" por título (aunque
+  // su ruta maestra esté vacía), luego por enlace de la app; si no existe
+  // ninguna, el ítem va a nivel raíz (debajo de "Inicio").
+  const host =
+    findNavigationItemByTitle(rootItems, "transacciones") ??
+    findNavigationItem(rootItems, "/dashboard/transactions") ??
+    null;
+
+  if (host) {
+    host.children.push(dispensingItem);
   } else {
     rootItems.push(dispensingItem);
   }
