@@ -9,7 +9,7 @@
 | Capa | Implementación |
 | --- | --- |
 | Aplicación | Next.js 16.3.5 App Router, React 19 y TypeScript 5.9 con `strict` y `noUncheckedIndexedAccess`. |
-| Diseño | Tailwind CSS v4 CSS-first y tokens derivados de `ManualDeMarca.md` en `src/app/globals.css`; componentes Radix/Shadcn tematizados en `src/components/ui/`. El banner corporativo existente `public/images/banner_resized.jpg` se usa en login, cabecera y navegación. |
+| Diseño | Tailwind CSS v4 CSS-first y tokens derivados de `ManualDeMarca.md` en `src/app/globals.css`; componentes Radix/Shadcn tematizados en `src/components/ui/`. Las superficies de estado usan verdes/rojos/azules pastel con contraste AA, botones con elevación suave y cards de Pay+ con identidad de máquina. El banner corporativo existente `public/images/banner_resized.jpg` se usa en login, cabecera y navegación. |
 | Sesión | Login RSA-OAEP SHA-1/Base64 server-side, JWT exclusivamente en cookie HttpOnly, `SameSite=Strict`; logout y carga de usuario/rol server-side. |
 | API BFF | El navegador consume rutas relativas. `src/app/api/backend/[...path]/route.ts` agrega `DashboardKeyId` y token sólo al API productivo en el servidor; para métodos mutables valida el origen público desde `Host`/headers de proxy además del listener interno. |
 | Assets BFF | `src/app/staticfiles/[...path]/route.ts` resuelve los paths DB `/images/...` contra `https://dashboardv2.e-city.co/staticfiles/...`, el origen estático del dashboard legado verificado con archivos reales. Esta ruta no envía API key, Bearer ni cookies al host de archivos y devuelve al navegador únicamente bytes same-origin. |
@@ -54,16 +54,17 @@
 
 | Comprobación | Resultado |
 | --- | --- |
-| `npm run typecheck` | **PASA** — 2026-09-16 |
-| `npm run lint` | **PASA** — cero warnings, 2026-09-16 |
-| `npm run build` | **PASA** — rutas App Router y handlers compilados, 2026-09-16 |
-| `git diff --check` | **PASA** — 2026-09-16 |
+| `npm run typecheck` | **PASA** — 2026-09-17 |
+| `npm run lint` | **PASA** — cero warnings, 2026-09-17 |
+| `npm run build` | **PASA** — rutas App Router y handlers compilados, 2026-09-17 |
+| `git diff --check` | **PASA** — 2026-09-17 |
 | Reader de historial con cantidades firmadas | **PASA (contrato local basado en evidencia autenticada); PENDIENTE REPETIR E2E** — Prueba1 señaló `too_small` únicamente en cantidades negativas de detalle. Fixtures de cargues/arqueos conservan esas cantidades, el responsable y las rutas originales, sin permitir denominaciones negativas. |
 | Tabla y filtros de historial | **PASA (código + TypeScript)** — desktop usa TanStack Table con columnas de ID, responsable, importes, fecha y detalle; el filtro busca por ID/responsable/fecha/valor. Móvil usa cards sin scroll horizontal. Pendiente inspección autenticada. |
 | Relay de respuesta comprimida | **PASA (integración local)** — un upstream gzip con `Content-Length` comprimido llegó completo al navegador simulado a través del BFF, que respondió chunked sin un tamaño de bytes obsoleto. |
 | Diagnóstico seguro de historial | **PASA (local)** — fixture verificó rutas legacy exclusivas, paths Zod sanitizados y que ni un marcador financiero ni una fecha de payload se imprimen. |
 | Filtro, fecha y orden de transacciones | **PASA (integración local)** — mock HTTPS confirmó `Efectivo`/`Tarjeta`, nombre `PayPad.username`, orden de total/fecha antes de paginar y límites diarios `00:00:00.000`/`23:59:59.999`. |
 | Relay binario de Excel y origen | **PASA (integración local)** — fixture HTTPS recibió el `POST /api/Transaction/ExcelDoc` con el DTO legado, Bearer y `Content-Type` intactos; el BFF devolvió los bytes con firma XLSX `PK`, MIME y `Content-Disposition`. El mismo POST con `Origin` ajeno siguió en 403, y una simulación de host HTTPS detrás de proxy pasó sin depender del listener `0.0.0.0`. |
+| Sistema visual de Transacciones y Pay+ | **PASA (código + build)** — estados aprobados/cancelados/totales usan superficies verde/roja/azul semánticas; botones Consultar, Excel y detalle tienen las variantes solicitadas; cards Pay+ tienen elevación, estado e iconografía. Falta inspección visual autenticada. |
 | Banner E-city local | **PASA (render local)** — `/login` contiene `banner_resized.jpg` y el optimizador de Next devuelve el JPEG local HTTP 200. |
 | Payload de cargue y almacenamiento | **PASA (integración local)** — mock HTTPS recibió detalles/totales del cargue y `minDpQuantity` como números, preservando IDs y nombres de campo históricos. |
 | Payload de arqueo | **PASA (integración local)** — mock HTTPS recibió `idPayPad`, `total`, `totalAp`, `totalDp` y `totalRj` como números finitos, tras la validación de strings decimales del BFF. |
@@ -91,4 +92,4 @@
 
 ## ESTADO DEL BACKLOG
 
-La arquitectura no se presenta como cierre de producción. La captura autenticada permitió sustituir una hipótesis por un contrato concreto: los movimientos históricos de Prueba1 pueden tener cantidades negativas, que ahora se preservan sólo al leer. También se recuperó una presentación funcional de tabla, responsable, detalle y filtro para escritorio, con cards para móvil. La revisión de Excel encontró una causa reproducible: el guard CSRF del relay comparaba el `Origin` del navegador con el listener interno `0.0.0.0`, por lo que bloqueaba el POST binario válido antes de llamar al endpoint legado; la comparación ya considera el host público sin abrir el relay a orígenes ajenos. Falta la comprobación autenticada posterior que confirme ambos historiales, detalles y una descarga Excel de Prueba1. El error SQL de `VALIDATE_PERIPHERALS` permanece separado y visible como problema backend. Siguen siendo obligatorias esas pruebas, junto con billetes/denominaciones, vídeo y controles, antes de declarar paridad funcional completa.
+La arquitectura no se presenta como cierre de producción. El sistema visual ahora aplica superficies pastel semánticas, controles con transición/elevación de 300 ms y cards de Pay+ con estado e identidad de máquina, manteniendo tema oscuro seleccionable y el manual de marca como fuente de tokens. La captura autenticada permitió además sustituir una hipótesis por un contrato concreto: los movimientos históricos de Prueba1 pueden tener cantidades negativas, que ahora se preservan sólo al leer. La revisión de Excel encontró una causa reproducible: el guard CSRF del relay comparaba el `Origin` del navegador con el listener interno `0.0.0.0`, por lo que bloqueaba el POST binario válido antes de llamar al endpoint legado; la comparación ya considera el host público sin abrir el relay a orígenes ajenos. Faltan la inspección visual autenticada, la comprobación posterior de ambos historiales/detalles y una descarga Excel de Prueba1. El error SQL de `VALIDATE_PERIPHERALS` permanece separado y visible como problema backend. Siguen siendo obligatorias esas pruebas, junto con billetes/denominaciones, vídeo y controles, antes de declarar paridad funcional completa.

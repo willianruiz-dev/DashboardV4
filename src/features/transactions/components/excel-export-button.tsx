@@ -1,6 +1,6 @@
 "use client";
 
-import { FileSpreadsheet, LoaderCircle } from "lucide-react";
+import { Download, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -43,9 +43,9 @@ export function ExcelExportButton({ fileName, paypadId, transactionIds }: ExcelE
       onClick={() => void exportExcel()}
       title={readyToExport ? "Descargar resultados en Excel" : unavailableReason}
       type="button"
-      variant="outline"
+      variant="success"
     >
-      {downloadMutation.isPending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <FileSpreadsheet aria-hidden="true" className="size-4" />}
+      {downloadMutation.isPending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <Download aria-hidden="true" className="size-4" />}
       {downloadMutation.isPending ? "Generando Excel…" : "Descargar Excel"}
     </Button>
   );

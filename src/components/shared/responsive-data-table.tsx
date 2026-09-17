@@ -48,7 +48,7 @@ export function ResponsiveDataTable<TData extends RowData>({
   return (
     <>
       <div className="hidden xl:block">
-        <div className="rounded-lg border bg-card">
+        <div className="surface-card overflow-hidden rounded-xl border bg-card">
           <Table aria-label={label}>
             <TableHeader>
               {table.getHeaderGroups().map((headerGroup) => (

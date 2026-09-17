@@ -157,7 +157,7 @@ export function TransactionFilters({ allowAllPaypads = false, defaultRange, disa
                 </FormItem>
               )}
             />
-            <Button disabled={disabled} type="submit">
+            <Button disabled={disabled} type="submit" variant="success">
               <Search aria-hidden="true" className="size-4" />
               Consultar
             </Button>

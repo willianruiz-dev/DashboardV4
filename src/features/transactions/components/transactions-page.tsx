@@ -1,6 +1,7 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
+import { Eye } from "lucide-react";
 import { useState } from "react";
 
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
@@ -71,16 +72,17 @@ export function TransactionsPage() {
     { accessorKey: "reference", cell: ({ row }) => text(row.original.reference), header: "Referencia cliente", meta: { mobileLabel: "Referencia" } },
     { accessorKey: "document", cell: ({ row }) => text(row.original.document), header: "Documento", meta: { mobileLabel: "Documento" } },
     { accessorKey: "dateCreated", cell: ({ row }) => formatDashboardDateTime(row.original.dateCreated), header: "Fecha", meta: { mobileLabel: "Fecha" } },
-    { accessorKey: "totalAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.totalAmount)}</span>, header: "Total", meta: { mobileLabel: "Total" } },
-    { accessorKey: "realAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.realAmount)}</span>, header: "Total sin redondear", meta: { mobileLabel: "Total sin redondear" } },
-    { accessorKey: "incomeAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.incomeAmount)}</span>, header: "Ingresado", meta: { mobileLabel: "Ingresado" } },
-    { accessorKey: "returnAmount", cell: ({ row }) => <span className="font-numeric">{formatDashboardMoney(row.original.returnAmount)}</span>, header: "Devuelto", meta: { mobileLabel: "Devuelto" } },
+    { accessorKey: "totalAmount", cell: ({ row }) => <span className="font-numeric font-medium text-info-foreground">{formatDashboardMoney(row.original.totalAmount)}</span>, header: "Total", meta: { mobileLabel: "Total" } },
+    { accessorKey: "realAmount", cell: ({ row }) => <span className="font-numeric font-medium text-info-foreground">{formatDashboardMoney(row.original.realAmount)}</span>, header: "Total sin redondear", meta: { mobileLabel: "Total sin redondear" } },
+    { accessorKey: "incomeAmount", cell: ({ row }) => <span className="font-numeric font-medium text-info-foreground">{formatDashboardMoney(row.original.incomeAmount)}</span>, header: "Ingresado", meta: { mobileLabel: "Ingresado" } },
+    { accessorKey: "returnAmount", cell: ({ row }) => <span className="font-numeric font-medium text-info-foreground">{formatDashboardMoney(row.original.returnAmount)}</span>, header: "Devuelto", meta: { mobileLabel: "Devuelto" } },
     { accessorKey: "typePayment", cell: ({ row }) => text(row.original.typePayment), header: "Medio de pago", meta: { mobileLabel: "Medio de pago" } },
     { accessorKey: "stateTransaction", cell: ({ row }) => <TransactionStateBadge value={row.original.stateTransaction} />, header: "Estado", meta: { mobileLabel: "Estado" } },
     {
       id: "actions",
       cell: ({ row }) => (
-        <Button aria-label={`Ver detalle de transacción ${row.original.id}`} onClick={() => setSelectedTransaction(row.original)} size="sm" type="button" variant="outline">
+        <Button aria-label={`Ver detalle de transacción ${row.original.id}`} onClick={() => setSelectedTransaction(row.original)} size="sm" type="button" variant="detail">
+          <Eye aria-hidden="true" className="size-4" />
           Ver detalle
         </Button>
       ),

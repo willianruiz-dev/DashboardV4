@@ -21,7 +21,9 @@ function preferredTheme(): DashboardTheme {
     return storedTheme;
   }
 
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  // The operational console starts on the soft light surface. Dark mode remains
+  // an explicit, persisted choice through the visible theme control.
+  return "light";
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

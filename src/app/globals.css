@@ -110,6 +110,25 @@
   --color-connection-online: var(--connection-online);
   --color-connection-offline: var(--connection-offline);
   --color-connection-reconnect: var(--connection-reconnect);
+
+  /* Superficies semánticas: estados suaves con contraste AA. */
+  --color-success-surface: var(--success-surface);
+  --color-success-surface-hover: var(--success-surface-hover);
+  --color-success-border: var(--success-border);
+  --color-success-foreground: var(--success-foreground);
+  --color-danger-surface: var(--danger-surface);
+  --color-danger-surface-hover: var(--danger-surface-hover);
+  --color-danger-border: var(--danger-border);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-info-surface: var(--info-surface);
+  --color-info-surface-hover: var(--info-surface-hover);
+  --color-info-border: var(--info-border);
+  --color-info-foreground: var(--info-foreground);
+  --color-action-muted: var(--action-muted);
+  --color-action-muted-hover: var(--action-muted-hover);
+  --color-action-muted-border: var(--action-muted-border);
+  --color-action-muted-foreground: var(--action-muted-foreground);
+  --color-table-row-hover: var(--table-row-hover);
 }
 
 :root {
@@ -133,7 +152,7 @@
   --border: var(--color-neutral-200);
   --input: var(--color-neutral-300);
   --ring: var(--color-brand-500);
-  --radius: var(--radius-md);
+  --radius: var(--radius-lg);
   --amount-positive: var(--color-success-700);
   --amount-negative: var(--color-danger-700);
   --state-pending: var(--color-warning-500);
@@ -143,6 +162,29 @@
   --connection-online: var(--color-success-500);
   --connection-offline: var(--color-danger-500);
   --connection-reconnect: var(--color-warning-500);
+
+  /* Superficies pastel para estados y acciones operativas. */
+  --success-surface: var(--color-success-100);
+  --success-surface-hover: color-mix(in srgb, var(--color-success-100) 78%, var(--color-success-500));
+  --success-border: color-mix(in srgb, var(--color-success-500) 30%, var(--color-neutral-0));
+  --success-foreground: var(--color-success-700);
+  --danger-surface: var(--color-danger-100);
+  --danger-surface-hover: color-mix(in srgb, var(--color-danger-100) 78%, var(--color-danger-500));
+  --danger-border: color-mix(in srgb, var(--color-danger-500) 28%, var(--color-neutral-0));
+  --danger-foreground: var(--color-danger-700);
+  --info-surface: var(--color-info-100);
+  --info-surface-hover: color-mix(in srgb, var(--color-info-100) 78%, var(--color-info-500));
+  --info-border: color-mix(in srgb, var(--color-info-500) 26%, var(--color-neutral-0));
+  --info-foreground: var(--color-info-700);
+  --action-muted: color-mix(in srgb, var(--color-neutral-400) 68%, var(--color-neutral-0));
+  --action-muted-hover: color-mix(in srgb, var(--color-neutral-400) 80%, var(--color-neutral-0));
+  --action-muted-border: color-mix(in srgb, var(--color-neutral-400) 58%, var(--color-neutral-0));
+  --action-muted-foreground: var(--color-neutral-800);
+  --table-row-hover: color-mix(in srgb, var(--color-brand-50) 78%, var(--color-neutral-0));
+  --background-ambient: color-mix(in srgb, var(--color-brand-100) 50%, transparent);
+  --surface-shadow: 0 1px 2px color-mix(in srgb, var(--color-neutral-900) 7%, transparent), 0 12px 30px color-mix(in srgb, var(--color-neutral-900) 5%, transparent);
+  --surface-shadow-elevated: 0 4px 10px color-mix(in srgb, var(--color-neutral-900) 8%, transparent), 0 20px 42px color-mix(in srgb, var(--color-brand-700) 10%, transparent);
+  --control-shadow: 0 1px 2px color-mix(in srgb, var(--color-neutral-900) 7%, transparent);
 }
 
 .dark {
@@ -175,6 +217,28 @@
   --connection-online: var(--color-success-dark-500);
   --connection-offline: var(--color-danger-dark-400);
   --connection-reconnect: var(--color-warning-dark-500);
+
+  --success-surface: color-mix(in srgb, var(--color-success-dark-500) 16%, var(--color-neutral-900));
+  --success-surface-hover: color-mix(in srgb, var(--color-success-dark-500) 24%, var(--color-neutral-900));
+  --success-border: color-mix(in srgb, var(--color-success-dark-500) 42%, var(--color-neutral-900));
+  --success-foreground: var(--color-success-dark-500);
+  --danger-surface: color-mix(in srgb, var(--color-danger-dark-400) 16%, var(--color-neutral-900));
+  --danger-surface-hover: color-mix(in srgb, var(--color-danger-dark-400) 24%, var(--color-neutral-900));
+  --danger-border: color-mix(in srgb, var(--color-danger-dark-400) 42%, var(--color-neutral-900));
+  --danger-foreground: var(--color-danger-dark-300);
+  --info-surface: color-mix(in srgb, var(--color-info-dark-400) 16%, var(--color-neutral-900));
+  --info-surface-hover: color-mix(in srgb, var(--color-info-dark-400) 24%, var(--color-neutral-900));
+  --info-border: color-mix(in srgb, var(--color-info-dark-400) 42%, var(--color-neutral-900));
+  --info-foreground: var(--color-info-dark-400);
+  --action-muted: color-mix(in srgb, var(--color-neutral-500) 62%, var(--color-neutral-900));
+  --action-muted-hover: color-mix(in srgb, var(--color-neutral-500) 76%, var(--color-neutral-900));
+  --action-muted-border: color-mix(in srgb, var(--color-neutral-500) 58%, var(--color-neutral-900));
+  --action-muted-foreground: var(--color-neutral-100);
+  --table-row-hover: color-mix(in srgb, var(--color-brand-400) 11%, var(--color-neutral-900));
+  --background-ambient: color-mix(in srgb, var(--color-brand-400) 12%, transparent);
+  --surface-shadow: 0 1px 2px color-mix(in srgb, var(--color-neutral-950) 48%, transparent), 0 12px 30px color-mix(in srgb, var(--color-neutral-950) 32%, transparent);
+  --surface-shadow-elevated: 0 4px 12px color-mix(in srgb, var(--color-neutral-950) 56%, transparent), 0 20px 44px color-mix(in srgb, var(--color-brand-900) 28%, transparent);
+  --control-shadow: 0 1px 2px color-mix(in srgb, var(--color-neutral-950) 48%, transparent);
 }
 
 @layer base {
@@ -191,7 +255,7 @@
   body {
     min-width: 20rem;
     overflow-x: clip;
-    background: var(--background);
+    background: radial-gradient(circle at 100% 0, var(--background-ambient), transparent 38rem), var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
     font-synthesis: none;
@@ -209,6 +273,132 @@
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .surface-card {
+    box-shadow: var(--surface-shadow);
+  }
+
+  .field-control {
+    box-shadow: var(--control-shadow);
+    transition: border-color 300ms ease, box-shadow 300ms ease, background-color 300ms ease;
+  }
+
+  .summary-metric-card {
+    overflow: hidden;
+    animation: dashboard-rise 420ms ease-out both;
+    box-shadow: var(--surface-shadow);
+    transition: border-color 300ms ease, box-shadow 300ms ease, transform 300ms ease;
+  }
+
+  .surface-card.paypad-machine-card {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background: radial-gradient(circle at 100% 0, var(--info-surface), transparent 52%), var(--card);
+    box-shadow: var(--surface-shadow);
+    transition: border-color 300ms ease, box-shadow 300ms ease, transform 300ms ease;
+  }
+
+  .paypad-machine-card::before {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 0;
+    width: 0.25rem;
+    content: "";
+    background: var(--info-foreground);
+  }
+
+  .paypad-machine-card[data-status="active"]::before {
+    background: var(--success-foreground);
+  }
+
+  .surface-card.paypad-machine-card[data-status="inactive"] {
+    background: radial-gradient(circle at 100% 0, var(--action-muted), transparent 52%), var(--card);
+  }
+
+  .paypad-machine-card[data-status="inactive"]::before {
+    background: var(--muted-foreground);
+  }
+
+  .paypad-machine-card > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .paypad-machine-mark {
+    display: inline-flex;
+    width: 2.75rem;
+    height: 2.75rem;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--info-border);
+    border-radius: var(--radius-xl);
+    background: var(--info-surface);
+    color: var(--info-foreground);
+    box-shadow: var(--control-shadow);
+  }
+
+  .paypad-machine-card[data-status="active"] .paypad-machine-mark {
+    border-color: var(--success-border);
+    background: var(--success-surface);
+    color: var(--success-foreground);
+  }
+
+  .paypad-card-actions {
+    background: color-mix(in srgb, var(--secondary) 68%, transparent);
+  }
+}
+
+@keyframes dashboard-rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (hover: hover) {
+  .summary-metric-card:hover,
+  .paypad-machine-card:hover {
+    transform: translateY(-0.25rem);
+    box-shadow: var(--surface-shadow-elevated);
+  }
+
+  .summary-metric-card:hover {
+    border-color: var(--info-border);
+  }
+
+  .summary-metric-card[data-tone="success"]:hover {
+    border-color: var(--success-border);
+  }
+
+  .summary-metric-card[data-tone="danger"]:hover {
+    border-color: var(--danger-border);
+  }
+
+  .paypad-machine-card:hover {
+    border-color: var(--info-border);
+  }
+
+  .paypad-machine-card[data-status="active"]:hover {
+    border-color: var(--success-border);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .field-control,
+  .summary-metric-card,
+  .paypad-machine-card {
+    animation: none;
+    transition-duration: 0.01ms;
   }
 }
 

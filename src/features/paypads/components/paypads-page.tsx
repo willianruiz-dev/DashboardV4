@@ -1,6 +1,6 @@
 "use client";
 
-import { Banknote, Building2, CircleDollarSign, Edit3, Eye, KeyRound, MapPin, Plus, Scale, Search, Settings2, Trash2 } from "lucide-react";
+import { Banknote, Building2, CircleDollarSign, Cpu, Edit3, Eye, KeyRound, MapPin, Plus, Scale, Search, Settings2, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -48,7 +48,24 @@ type ActiveDialog =
   | null;
 
 function ActionButton({ children, disabled = false, onClick, tooltip, ...props }: ActionButtonProps) {
-  return <Tooltip><TooltipTrigger asChild><Button disabled={disabled} onClick={onClick} size="icon" type="button" variant="ghost" {...props}>{children}</Button></TooltipTrigger><TooltipContent>{tooltip}</TooltipContent></Tooltip>;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          className="border border-transparent text-muted-foreground hover:-translate-y-px hover:border-info-border hover:bg-info-surface hover:text-info-foreground hover:shadow-sm"
+          disabled={disabled}
+          onClick={onClick}
+          size="icon"
+          type="button"
+          variant="ghost"
+          {...props}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function normalizeSearch(value: string): string {
@@ -110,41 +127,60 @@ function PayPadCard({
   const active = paypad.status === 1;
   const officeName = office?.name?.trim() || paypad.office?.trim() || `Sucursal ${paypad.idOffice}`;
   const officeAddress = office?.address?.trim() || "Dirección no disponible";
+  const paypadName = getPaypadDisplayName(paypad);
 
   return (
-    <Card className="flex min-w-0 flex-col">
-      <CardHeader className="gap-3">
+    <Card className="paypad-machine-card flex min-w-0 flex-col" data-status={active ? "active" : "inactive"}>
+      <CardHeader className="gap-4 pb-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <CardTitle className="break-words">{getPaypadDisplayName(paypad)}</CardTitle>
-            <CardDescription>ID {paypad.id}</CardDescription>
+          <div className="flex min-w-0 items-start gap-3">
+            <span aria-hidden="true" className="paypad-machine-mark">
+              <Cpu className="size-5" />
+            </span>
+            <div className="min-w-0 pt-0.5">
+              <CardTitle className="break-words">{paypadName}</CardTitle>
+              <CardDescription className="mt-1 font-numeric text-xs">ID {paypad.id}</CardDescription>
+            </div>
           </div>
-          <Badge variant={active ? "default" : "secondary"}>{active ? "Activo" : "Inactivo"}</Badge>
+          <Badge className="shrink-0 gap-1.5" variant={active ? "success" : "secondary"}>
+            <span aria-hidden="true" className={active ? "size-1.5 rounded-full bg-success-foreground" : "size-1.5 rounded-full bg-muted-foreground"} />
+            {active ? "Activo" : "Inactivo"}
+          </Badge>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-2 text-sm">
-        <div className="flex items-center gap-2">
-          <Building2 aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
-          <span className="truncate">{officeName}</span>
-        </div>
-        <div className="flex items-start gap-2 text-muted-foreground">
-          <MapPin aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-          <span className="break-words">{officeAddress}</span>
-        </div>
+      <CardContent className="pb-5">
+        <dl className="grid gap-3 text-sm">
+          <div className="flex min-w-0 items-start gap-3">
+            <Building2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-info-foreground" />
+            <div className="min-w-0">
+              <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sucursal</dt>
+              <dd className="mt-0.5 truncate font-medium text-foreground">{officeName}</dd>
+            </div>
+          </div>
+          <div className="flex min-w-0 items-start gap-3">
+            <MapPin aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-info-foreground" />
+            <div className="min-w-0">
+              <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Ubicación</dt>
+              <dd className="mt-0.5 break-words text-muted-foreground">{officeAddress}</dd>
+            </div>
+          </div>
+        </dl>
       </CardContent>
-      <CardFooter className="mt-auto flex flex-wrap gap-1 border-t pt-4">
-        {canReadOperations ? <>
-          <ActionButton aria-label={`Configurar denominaciones de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "storage", paypad })} tooltip="Configurar denominaciones"><Banknote aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Realizar arqueo de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "tonnage", paypad })} tooltip="Realizar arqueo"><Scale aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Registrar cargue de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "load", paypad })} tooltip="Registrar cargue"><CircleDollarSign aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Ver cargues y arqueos de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "balance", paypad })} tooltip="Ver cargues y arqueos"><Eye aria-hidden="true" className="size-4" /></ActionButton>
-        </> : null}
-        {canWrite ? <>
-          <ActionButton aria-label={`Configurar ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "configuration", paypad })} tooltip="Configuración técnica"><Settings2 aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Cambiar contraseña de ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "change-password", paypad })} tooltip="Cambiar contraseña"><KeyRound aria-hidden="true" className="size-4" /></ActionButton>
-          <ActionButton aria-label={`Editar ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "edit", paypad })} tooltip="Editar Pay+"><Edit3 aria-hidden="true" className="size-4" /></ActionButton>
-        </> : null}
-        {canDelete ? <ActionButton aria-label={`Eliminar ${getPaypadDisplayName(paypad)}`} onClick={() => onAction({ kind: "delete", paypad })} tooltip="Eliminar Pay+"><Trash2 aria-hidden="true" className="size-4 text-destructive" /></ActionButton> : null}
+      <CardFooter className="paypad-card-actions mt-auto w-full border-t px-4 py-3">
+        <div aria-label={`Acciones de ${paypadName}`} className="flex flex-wrap gap-1.5" role="group">
+          {canReadOperations ? <>
+            <ActionButton aria-label={`Configurar denominaciones de ${paypadName}`} onClick={() => onAction({ kind: "storage", paypad })} tooltip="Configurar denominaciones"><Banknote aria-hidden="true" className="size-4" /></ActionButton>
+            <ActionButton aria-label={`Realizar arqueo de ${paypadName}`} onClick={() => onAction({ kind: "tonnage", paypad })} tooltip="Realizar arqueo"><Scale aria-hidden="true" className="size-4" /></ActionButton>
+            <ActionButton aria-label={`Registrar cargue de ${paypadName}`} onClick={() => onAction({ kind: "load", paypad })} tooltip="Registrar cargue"><CircleDollarSign aria-hidden="true" className="size-4" /></ActionButton>
+            <ActionButton aria-label={`Ver cargues y arqueos de ${paypadName}`} onClick={() => onAction({ kind: "balance", paypad })} tooltip="Ver cargues y arqueos"><Eye aria-hidden="true" className="size-4" /></ActionButton>
+          </> : null}
+          {canWrite ? <>
+            <ActionButton aria-label={`Configurar ${paypadName}`} onClick={() => onAction({ kind: "configuration", paypad })} tooltip="Configuración técnica"><Settings2 aria-hidden="true" className="size-4" /></ActionButton>
+            <ActionButton aria-label={`Cambiar contraseña de ${paypadName}`} onClick={() => onAction({ kind: "change-password", paypad })} tooltip="Cambiar contraseña"><KeyRound aria-hidden="true" className="size-4" /></ActionButton>
+            <ActionButton aria-label={`Editar ${paypadName}`} onClick={() => onAction({ kind: "edit", paypad })} tooltip="Editar Pay+"><Edit3 aria-hidden="true" className="size-4" /></ActionButton>
+          </> : null}
+          {canDelete ? <ActionButton aria-label={`Eliminar ${paypadName}`} onClick={() => onAction({ kind: "delete", paypad })} tooltip="Eliminar Pay+"><Trash2 aria-hidden="true" className="size-4 text-destructive" /></ActionButton> : null}
+        </div>
       </CardFooter>
     </Card>
   );
