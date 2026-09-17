@@ -64,6 +64,12 @@ export function useNow(intervalMs = 60_000): Date {
 
 export interface DispensingMetricsArgs {
   from: string;
+  /**
+   * Moneda declarada por el Pay+ seleccionado (`idCurrency` + etiqueta). Es el respaldo
+   * de etiqueta cuando el catálogo de denominaciones no responde; la separación real de
+   * monedas la da `idCurrency` del catálogo.
+   */
+  machineCurrency?: { id: number; label: string | null } | null;
   paypadId: number | null;
   to: string;
 }
@@ -76,6 +82,8 @@ export interface DispensingMetricsSources {
 }
 
 export interface DispensingMetricsQuery {
+  /** Moneda declarada por el Pay+ (etiqueta de respaldo). */
+  machineCurrency: { id: number; label: string | null } | null;
   denominations: CurrencyDenomination[];
   error: Error | null;
   isLoading: boolean;
@@ -179,14 +187,16 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
 
     return computeDispensingMetrics({
       byState: searchQuery.data?.summary.byState ?? {},
+      denominations: denominationsQuery.data ?? [],
       lastTonnage,
       loads: loadsQuery.data ?? [],
+      machineCurrency: args.machineCurrency ?? null,
       now,
       rangeFrom,
       rangeTo,
       storage: storageQuery.data ?? [],
     });
-  }, [args, paypadId, searchQuery.data, storageQuery.data, tonnagesQuery.data, loadsQuery.data, now]);
+  }, [args, paypadId, searchQuery.data, storageQuery.data, tonnagesQuery.data, loadsQuery.data, denominationsQuery.data, now]);
 
   const sources = useMemo<DispensingMetricsSources>(
     () =>
@@ -204,6 +214,7 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
   return {
     denominations: denominationsQuery.data ?? [],
     error: firstError,
+    machineCurrency: args?.machineCurrency ?? null,
     isLoading,
     metrics,
     now,

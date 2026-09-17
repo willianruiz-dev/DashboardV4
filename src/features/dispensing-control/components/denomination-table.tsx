@@ -10,7 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { CurrencyDenomination } from "@/features/denominations/schemas";
-import type { DispensingDenominationRow } from "@/features/dispensing-control/dispensing-metrics";
+import type { DispensingCurrencyTotal, DispensingDenominationRow } from "@/features/dispensing-control/dispensing-metrics";
 import { LOW_BALANCE_TOLERANCE } from "@/features/dispensing-control/dispensing-metrics";
 import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardMoney } from "@/lib/formatters/money";
@@ -41,6 +41,8 @@ interface DenominationTableProps {
   loading?: boolean;
   rangeLabel: string;
   rows: readonly DispensingDenominationRow[];
+  /** Inventario por moneda: sólo se usa para advertir que los totales no se suman. */
+  totalsByCurrency?: readonly DispensingCurrencyTotal[];
 }
 
 function denominationImage(denominations: readonly CurrencyDenomination[], row: DispensingDenominationRow): { alt: string; img: string | null; value: string } {
@@ -49,8 +51,10 @@ function denominationImage(denominations: readonly CurrencyDenomination[], row: 
   return { alt: `Billete de ${formatDashboardMoney(value)}`, img: meta?.img ?? null, value };
 }
 
-export function DenominationTable({ denominations, loading = false, rangeLabel, rows }: DenominationTableProps) {
+export function DenominationTable({ denominations, loading = false, rangeLabel, rows, totalsByCurrency = [] }: DenominationTableProps) {
   const lowRows = rows.filter((row) => row.low);
+  // Máquina de cambio divisa: los importes de monedas distintas no se suman entre sí.
+  const multiCurrency = rows.some((row) => row.currencyId !== (rows[0]?.currencyId ?? null));
 
   return (
     <Card className="animate-rise overflow-hidden p-0">
@@ -60,7 +64,16 @@ export function DenominationTable({ denominations, loading = false, rangeLabel, 
             <h2 className="text-base font-semibold tracking-tight">Desglose por denominaciones</h2>
             <p className="text-sm text-muted-foreground">
               Cargada: acumulado del período ({rangeLabel}) · Entregada/Rechazada: último arqueo (sin arqueo, inventario actual) · Saldo: dispensador (DP).
+              {multiCurrency ? " Cada baúl indica su moneda: los importes de monedas distintas no se suman." : ""}
             </p>
+            {multiCurrency && totalsByCurrency.length > 1 ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Inventario por moneda:{" "}
+                {totalsByCurrency
+                  .map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`)
+                  .join(" · ")}
+              </p>
+            ) : null}
           </div>
           {lowRows.length > 0 ? (
             <Badge variant="warning" className="gap-1.5">
@@ -110,7 +123,12 @@ export function DenominationTable({ denominations, loading = false, rangeLabel, 
                                 src={backendStaticFilePath(image.img)}
                                 width={64}
                               />
-                              <span className="font-numeric text-sm font-semibold">{formatDashboardMoney(image.value)}</span>
+                              <span className="font-numeric text-sm font-semibold">
+                                {row.currencyLabel ? (
+                                  <span className="mr-1.5 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-secondary-foreground">{row.currencyLabel}</span>
+                                ) : null}
+                                {formatDashboardMoney(image.value)}
+                              </span>
                             </div>
                           </TableCell>
                           <TableCell className={cn("text-right align-top", tinted)}>
@@ -165,7 +183,10 @@ export function DenominationTable({ denominations, loading = false, rangeLabel, 
                         width={64}
                       />
                       <div className="min-w-0">
-                        <p className="font-numeric font-semibold">{formatDashboardMoney(image.value)}</p>
+                        <p className="font-numeric font-semibold">
+                          {row.currencyLabel ? <span className="mr-1 text-xs font-medium text-muted-foreground">{row.currencyLabel}</span> : null}
+                          {formatDashboardMoney(image.value)}
+                        </p>
                         <p className="text-xs text-muted-foreground">{row.isDispensing ? "Dispensadora" : "No dispensa"}</p>
                       </div>
                       {row.low ? null : <Badge className="ml-auto" variant="secondary">OK</Badge>}

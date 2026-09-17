@@ -32,6 +32,20 @@
 - `STATIC_FILES_BASE_ADDRESS` es un override exclusivamente server-side; sin configuración adicional usa el origen histórico verificado. El proxy no reenvía `DashboardKeyId`, Bearer, cookies ni otros secretos al host público de archivos. El navegador sólo recibe bytes same-origin.
 - El helper de imágenes incorpora una revisión local que fuerza un reintento de recursos que hayan quedado marcados como fallidos por el proxy anterior; el BFF descarta esa query antes de pedir el archivo remoto.
 - Se migraron los assets locales históricos de `dashboardv2-frontend/public/images` a `public/images`, incluido `profile-default.png`; perfiles sin ruta, vacíos, `NULL` o recursos que fallen conservan el fallback visual local.
+- **Monedas separadas en el control de dispensado (C8):** las máquinas de cambio divisa
+  (COP ⇄ USD) se calculan **por moneda**: la combinación canónica, la sustitución, la
+  compensación y la participación solo comparan denominaciones de la misma moneda, los pagos
+  que mezclan monedas no se combinan (`mixedCurrencyPayouts`) y la conciliación por importes
+  se desactiva declarándolo cuando el período usa varias monedas. El valor de cada
+  denominación sale del catálogo ∪ storage (`denomination-currency.ts`), los totales de baúl
+  se publican por moneda (`storageTotalsByCurrency`, nunca sumados) y cada fila e incidente
+  lleva su etiqueta (`COP 100` ≠ `USD 100`). Además, una denominación solo se evalúa si la
+  máquina **la usa hoy** (configurada, con saldo, con existencia en el último arqueo o
+  entregando en el período): el histórico de arqueos ya no alcanza para alarmar, y lo
+  descartado se informa con su motivo (`ignoredDenominations`). Corrige dos casos reales:
+  el billete de USD 1 reportado como «Posible atasco» en una máquina de solo pesos y el
+  falso «Atasco probable en 100» de una máquina de divisa causado por planear un pago de
+  USD 100 con 1 × COP 100.
 - **Alerta del inicio (errores de devuelta):** `/dashboard` muestra arriba de todo, por máquina, las
   transacciones `Aprobada Error Devuelta` **del día en curso**, con actualización automática cada 30 s
   (solo con la pestaña visible). El BFF `POST /api/dispensing/return-alerts` resuelve todas las máquinas
@@ -65,6 +79,9 @@
 | Motor de atascos con fixture local | **PASA (fixture local)** — el escenario del negocio (billetero de 50.000 sustituido por 20.000+10.000 y monedero de 500 con saldo que no entrega) queda en **confirmado** con caída física 0, y un fallo único aislado no genera incidente. Reconciliación del detalle verificada contra `returnAmount`. |
 | Caso real Pay+ Inder 2 (ID 71) reproducido | **PASA (fixture local)** — con la configuración de la captura (500 «No dispensa», saldo 34, caída física 97, cero `Aprobada Error Devuelta`) y 12 pagos con cambio de 1.500 entregado en 15×100, el motor emite `sustitucion_no_configurada` + `config_inconsistente` ⇒ **incidente probable en el monedero de 500**, exactamente lo reportado por el operador. Antes de C1–C3 el mismo dato daba «sin señales». |
 | Consulta sin máquina no bloquea los filtros | **PASA (código + evidencia del runtime)** — `QueryObserver` con `enabled:false` confirma `status:"pending"`, `isPending:true`; la guarda `paypadId !== null` impide que ese estado se traduzca en filtros deshabilitados. Pendiente inspección autenticada. |
+| Monedas separadas (máquina de cambio divisa) | **PASA (fixture local)** — con catálogo COP/USD: dos pagos de **USD 100** entregados con un billete de USD 100 y un monedero de COP 100 con saldo ya **no** producen ninguna señal sobre el 100 (antes: `sustitucion` × 2 ⇒ «Atasco probable en la denominación 100»); la sustitución **real** dentro de USD (pagos de USD 10 entregados como 2 × USD 5) sigue detectándose con el titular «Posible atasco en la denominación **USD 10** — el cambio se entrega con USD 5», y las filas `COP 100` y `USD 100` quedan distinguibles. |
+| Denominación que la máquina no usa hoy (billete de USD 1 en máquina de pesos) | **PASA (fixture local)** — réplica de la captura reportada: la fila USD 1 (sin configuración, sin saldo, arqueo antiguo con caída de 6) generaba `config_inconsistente` ⇒ «Posible atasco» / «Implicada»; ahora queda fuera del diagnóstico y se explica en la lista de no evaluadas con el motivo («el histórico de arqueos sí la movió: módulo retirado, reconfigurado o unidades extraídas»). El titular pasa a «No se detectaron señales de atasco». |
+| Totales por moneda | **PASA (fixture local)** — `storageTotalsByCurrency` devuelve `COP 40000` y `USD 200` por separado; la suma plana (40.200) ya no se muestra en la UI. |
 | Alerta del inicio: errores de devuelta del día | **PASA (código + contrato local)** — `npm run check` y `npm run build` limpios (2026-09-17). `POST /api/dispensing/return-alerts` sin sesión responde **401** (no 500) y el rango construido en zona Bogotá es `00:00 → 23:59:59.999` locales. La respuesta se valida con `returnAlertsResponseSchema` (fixture: 2 máquinas, 1 con error) y una respuesta mal formada se rechaza. `Date.now()` durante el render y el `setState` en efecto se eliminaron (reglas `react-hooks/purity` y `set-state-in-effect`), por lo que la preselección por `?paypad=` sale del estado inicial. Pendiente: verlo con datos reales y sesión (B-04/B-05). |
 | Falso positivo por tendencia de uso | **PASA (fixture local)** — con el 2.000 entregando 18 unidades en el período, 255 en el arqueo y una caída de participación del 100 % al 40 %, el motor no emite incidentes (`0`); antes reportaba «Posible atasco en 2000». |
 | Atribución culpable vs compensador | **PASA (fixture local)** — con el 500 atascado (34 unidades, «No dispensa»), 10 pagos de cambio 1.000 entregados como 10×100, dos errores devuelta en monedas de 100 (24 unidades) y un arqueo del 100 que baja menos de lo dispensado, el titular es **«Posible atasco en la denominación 500 — el cambio se entrega con 100»** y el 100 queda como **Compensando** (sin señales de atasco). Antes de C4 el único incidente era «atasco en 100». |

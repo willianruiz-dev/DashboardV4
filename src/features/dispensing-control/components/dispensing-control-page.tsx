@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { usePaypads } from "@/features/paypads/hooks";
 import { isSuperAdminRole } from "@/lib/roles/super-admin";
+import { currencyShortLabel } from "@/features/dispensing-control/denomination-currency";
 import {
   buildJamScanRequest,
   createPresetRange,
@@ -48,12 +49,20 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
       : { paypadId: initialPaypadId, preset: "hoy", range: createPresetRange("hoy") },
   );
   const paypadId = selection?.paypadId ?? null;
+  // Moneda de la máquina seleccionada: etiqueta de respaldo cuando el catálogo de
+  // denominaciones no responde (la separación real de monedas usa `idCurrency`).
+  const selectedPaypad = selection === null ? null : (paypadsQuery.data?.find((paypad) => paypad.id === selection.paypadId) ?? null);
   const metricsArgs = useMemo(
     () =>
       selection === null || selection.paypadId === null
         ? null
-        : { from: selection.range.from, paypadId: selection.paypadId, to: selection.range.to },
-    [selection],
+        : {
+            from: selection.range.from,
+            machineCurrency: selectedPaypad ? { id: selectedPaypad.idCurrency, label: currencyShortLabel(selectedPaypad.currency) } : null,
+            paypadId: selection.paypadId,
+            to: selection.range.to,
+          },
+    [selection, selectedPaypad],
   );
   const metricsQuery = useDispensingMetrics(metricsArgs);
 
@@ -69,14 +78,16 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
     () =>
       computeJamDiagnostics({
         byState: metricsQuery.sources.byState,
+        denominations: metricsQuery.denominations,
         loads: metricsQuery.sources.loads,
+        machineCurrency: metricsQuery.machineCurrency,
         scan: jamScanQuery.data ?? null,
         rangeFrom: metricsArgs === null ? null : localDateTimeToApiIso(metricsArgs.from),
         rangeTo: metricsArgs === null ? null : localDateTimeToApiIso(metricsArgs.to, { endOfMinute: true }),
         storage: metricsQuery.sources.storage,
         tonnages: metricsQuery.sources.tonnages,
       }),
-    [jamScanQuery.data, metricsArgs, metricsQuery.sources],
+    [jamScanQuery.data, metricsArgs, metricsQuery.denominations, metricsQuery.machineCurrency, metricsQuery.sources],
   );
 
   function handleApply(next: DispensingFilterSelection): void {
@@ -89,6 +100,12 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
 
   const metrics = metricsQuery.metrics;
   const rangeLabel = selection ? dispensingPresetLabels[selection.preset] : "";
+  // Máquina de cambio divisa (COP ⇄ USD): los importes de cada moneda no se suman.
+  const currencyTotals = metrics?.storageTotalsByCurrency ?? [];
+  const currencyBreakdown =
+    currencyTotals.length > 1
+      ? currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
+      : null;
   const dpTotal = metrics?.dp.total ?? null;
   const lastLoadElapsed = metrics?.lastLoad.elapsedMs ?? null;
 
@@ -152,9 +169,9 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 loading={metricsQuery.isLoading && metrics === null}
                 subtitle={
                   metrics?.dp.at
-                    ? `Último arqueo: ${formatDashboardDateTime(metrics.dp.at)}`
+                    ? `Último arqueo: ${formatDashboardDateTime(metrics.dp.at)}${currencyBreakdown ? ` (total del backend; no separable por moneda) · inventario actual por moneda: ${currencyBreakdown}` : ""}`
                     : metrics
-                      ? `Sin arqueo · inventario: ${formatDashboardMoney(metrics.dp.storageTotal)}`
+                      ? `Sin arqueo · inventario${currencyBreakdown ? " por moneda" : ""}: ${currencyBreakdown ?? formatDashboardMoney(metrics.dp.storageTotal)}`
                       : null
                 }
                 tone="system"
@@ -189,6 +206,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               loading={metricsQuery.isLoading && metrics === null}
               rangeLabel={rangeLabel}
               rows={metrics?.rows ?? []}
+              totalsByCurrency={metrics?.storageTotalsByCurrency ?? []}
             />
 
             <JamDiagnosticsSection

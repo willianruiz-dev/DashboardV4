@@ -194,8 +194,30 @@ export function JamDiagnosticsSection({
           </ul>
         ) : null}
 
+        {diagnostics.ignoredDenominations.length > 0 ? (
+          <div className="grid gap-1 rounded-lg border border-dashed border-slate-300/80 p-3 dark:border-slate-700">
+            <p className="text-xs font-medium">
+              Denominaciones que la máquina no usa hoy · no evaluadas ({diagnostics.ignoredDenominations.length})
+            </p>
+            <ul className="grid gap-1 text-xs text-muted-foreground">
+              {diagnostics.ignoredDenominations.map((entry) => (
+                <li key={entry.denominationId}>
+                  • <span className="font-medium text-foreground">{entry.currencyLabel ? `${entry.currencyLabel} ` : ""}{formatDashboardMoney(entry.denominationValue)}</span>: {entry.reason}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-muted-foreground">
+              No generan señales ni incidentes: sin unidades en el baúl no hay módulo que pueda estar atascado hoy. Si esta denominación sí
+              debe dispensar, configúrala en Pay+ → Configurar denominaciones y registra su cargue.
+            </p>
+          </div>
+        ) : null}
+
         {diagnostics.rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Esta máquina no tiene denominaciones configuradas en el baúl dispensador.</p>
+          <p className="text-sm text-muted-foreground">
+            Esta máquina no tiene denominaciones en uso con los datos actuales (sin configuración de dispensado, sin saldo y sin entregas en el
+            período). Registra un cargue o revisa Pay+ → Configurar denominaciones.
+          </p>
         ) : (
           <>
             <div className="hidden overflow-hidden rounded-lg border border-slate-200/80 lg:block dark:border-slate-800">
@@ -218,13 +240,18 @@ export function JamDiagnosticsSection({
                       <TableCell className="align-top">
                         <div className="flex items-center gap-3">
                           <BackendStaticImage
-                            alt={`Denominación ${formatDashboardMoney(row.denominationValue)}`}
+                            alt={`Denominación ${row.currencyLabel ? `${row.currencyLabel} ` : ""}${formatDashboardMoney(row.denominationValue)}`}
                             height={40}
                             src={backendStaticFilePath(row.denominationImage)}
                             width={64}
                           />
                           <div className="min-w-0">
-                            <span className="font-numeric text-sm font-semibold">{formatDashboardMoney(row.denominationValue)}</span>
+                            <span className="font-numeric text-sm font-semibold">
+                              {row.currencyLabel ? (
+                                <span className="mr-1.5 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-secondary-foreground">{row.currencyLabel}</span>
+                              ) : null}
+                              {formatDashboardMoney(row.denominationValue)}
+                            </span>
                             <span className="block text-xs text-muted-foreground">
                               {row.configuredForDispensing
                                 ? "Dispensa (config)"
@@ -318,13 +345,16 @@ export function JamDiagnosticsSection({
                 <div className="grid gap-3 rounded-lg border border-slate-200/80 p-4 dark:border-slate-800" key={row.denominationId}>
                   <div className="flex items-center gap-3">
                     <BackendStaticImage
-                      alt={`Denominación ${formatDashboardMoney(row.denominationValue)}`}
+                      alt={`Denominación ${row.currencyLabel ? `${row.currencyLabel} ` : ""}${formatDashboardMoney(row.denominationValue)}`}
                       height={32}
                       src={backendStaticFilePath(row.denominationImage)}
                       width={52}
                     />
                     <div className="min-w-0">
-                      <p className="font-numeric font-semibold">{formatDashboardMoney(row.denominationValue)}</p>
+                      <p className="font-numeric font-semibold">
+                        {row.currencyLabel ? <span className="mr-1 text-xs font-medium text-muted-foreground">{row.currencyLabel}</span> : null}
+                        {formatDashboardMoney(row.denominationValue)}
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {row.configuredForDispensing ? "Dispensa" : row.dispensesByEvidence ? "No configurada, con evidencia de entrega" : "No dispensa"} · {jamCauseLabels[row.cause]}
                       </p>

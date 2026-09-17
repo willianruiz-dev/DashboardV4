@@ -1,5 +1,11 @@
+import type { CurrencyDenomination } from "@/features/denominations/schemas";
 import type { Load, PayPadStorage, Tonnage } from "@/features/paypads/schemas";
 import type { TransactionStateBucket } from "@/features/transactions/schemas";
+import {
+  buildDenominationCurrencyIndex,
+  buildDenominationValueIndex,
+  denominationCurrencyText,
+} from "./denomination-currency";
 
 /**
  * Detección temprana de atascos (monederos/billeteros) — cálculo PURO y testeable.
@@ -235,7 +241,15 @@ export interface JamScanPayload {
 
 export interface JamDiagnosticsInput {
   byState: Readonly<Record<string, TransactionStateBucket>>;
+  /**
+   * Catálogo de denominaciones (`/api/masters/denominations`). Aporta la MONEDA de cada
+   * denominación: una máquina de cambio divisa opera COP y USD con valores que se
+   * repiten (100, 1.000), y sin moneda el plan canónico mezclaba las dos.
+   */
+  denominations?: readonly CurrencyDenomination[];
   loads: readonly Load[];
+  /** Moneda declarada por el Pay+ (respaldo de etiqueta si el catálogo no responde). */
+  machineCurrency?: { id: number; label: string | null } | null;
   /** Período solicitado en la UI (ISO); delimita la validez de la caída física. */
   rangeFrom?: string | null;
   rangeTo?: string | null;
@@ -253,6 +267,10 @@ export interface JamSignalEvidence {
 
 export interface JamDenominationRow {
   cause: JamCause;
+  /** `idCurrency` del catálogo; `null` = moneda no declarada. */
+  currencyId: number | null;
+  /** Etiqueta de la moneda (p. ej. «USD»): distingue dos denominaciones del mismo valor. */
+  currencyLabel: string | null;
   denominationId: number;
   denominationImage: string | null;
   denominationValue: string;
@@ -295,6 +313,8 @@ export interface JamDenominationRow {
 
 export interface JamIncident {
   cause: JamCause;
+  currencyId: number | null;
+  currencyLabel: string | null;
   denominationId: number | null;
   denominationValue: string | null;
   detail: string;
@@ -318,6 +338,19 @@ export interface JamInterpretation {
   verified: boolean;
 }
 
+/**
+ * Denominación que la máquina NO usa hoy y por eso no se evaluó. Evita el falso
+ * positivo real: una máquina solo de pesos con una fila heredada de USD 1 (sin
+ * configuración, sin saldo) cuyo arqueo antiguo bajó 6 unidades se reportaba como
+ * «Configuración contradice el arqueo» y «Posible atasco en la denominación 1».
+ */
+export interface JamIgnoredDenomination {
+  currencyLabel: string | null;
+  denominationId: number;
+  denominationValue: string;
+  reason: string;
+}
+
 export interface JamDiagnostics {
   analyzed: boolean;
   /** Denominaciones que están compensando la entrega de otra (no son el módulo atascado). */
@@ -328,6 +361,12 @@ export interface JamDiagnostics {
   blind: boolean;
   failureReasons: readonly string[];
   headline: string;
+  /** Denominaciones descartadas por no estar en uso hoy (con el motivo, para poder auditarlo). */
+  ignoredDenominations: readonly JamIgnoredDenomination[];
+  /** Pagos cuya composición mezcló monedas: no se evaluó su combinación canónica. */
+  mixedCurrencyPayouts: number;
+  /** La máquina opera más de una moneda (cambio divisa): todo se calcula por moneda. */
+  multiCurrency: boolean;
   incidents: readonly JamIncident[];
   interpretation: JamInterpretation;
   rows: readonly JamDenominationRow[];
@@ -478,6 +517,73 @@ function createAggregate(): DenominationAggregate {
     substitutionEvents: 0,
     unconfiguredSubstitutionEvents: 0,
   };
+}
+
+interface JamDetailReading {
+  denominationId: number | null;
+  kind: JamOperationKind;
+  rawOperation: string | null;
+}
+
+/**
+ * Clasificación de un detalle: el nombre manda cuando es legible; si no, se usa el rol
+ * deducido de los importes para ese `idTypeOperation` (o del nombre literal).
+ */
+function readJamDetail(
+  detail: JamScanDetail,
+  inferredRoles: { roles: ReadonlyMap<string, JamOperationKind> },
+): JamDetailReading {
+  const rawOperation = detail.operation?.trim() || null;
+  const keywordKind = classifyJamOperation(rawOperation);
+  const roleKey = detail.operationId !== null ? `op:${detail.operationId}` : `name:${(rawOperation ?? "").toLowerCase()}`;
+  const kind: JamOperationKind = keywordKind !== "unknown" ? keywordKind : (inferredRoles.roles.get(roleKey) ?? "unknown");
+
+  return { denominationId: detail.denominationId, kind, rawOperation };
+}
+
+/**
+ * Evidencia de detalle ANTES del análisis por denominación: qué denominaciones entregó,
+ * intentó entregar o rechazó la máquina en el período. Sirve para decidir si una
+ * denominación está en uso hoy (una que dispensó hoy sigue siendo candidata aunque su
+ * baúl quede en cero o la configuración esté desactualizada).
+ */
+function collectDetailEvidence(
+  transactions: readonly JamScanTransaction[],
+  inferredRoles: { roles: ReadonlyMap<string, JamOperationKind> },
+): { dispensed: Set<number>; failed: Set<number> } {
+  const dispensed = new Set<number>();
+  const failed = new Set<number>();
+
+  for (const transaction of transactions) {
+    const errorState = isErrorReturnedState(transaction.stateTransaction);
+    const hasPayout = decimalToCents(transaction.returnAmount) > 0n;
+    for (const detail of transaction.details) {
+      if (detail.denominationId === null || Math.abs(toInt(detail.quantity)) === 0) {
+        continue;
+      }
+
+      const { kind } = readJamDetail(detail, inferredRoles);
+      if (kind === "accept") {
+        continue;
+      }
+      if (kind === "dispense") {
+        dispensed.add(detail.denominationId);
+        continue;
+      }
+      if (kind === "failed") {
+        if (errorState && hasPayout) {
+          failed.add(detail.denominationId);
+        }
+        continue;
+      }
+      if (!hasPayout) {
+        continue;
+      }
+      (errorState ? failed : dispensed).add(detail.denominationId);
+    }
+  }
+
+  return { dispensed, failed };
 }
 
 function loadQuantityForDenomination(
@@ -738,7 +844,24 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
 
   const errorReturnedCount = byState[RETURNED_ERROR_STATE]?.count ?? 0;
   const errorReturnedTotal = byState[RETURNED_ERROR_STATE]?.total ?? "0";
-  const denominationValueById = new Map(storage.map((entry) => [entry.idCurrencyDenomination, decimalToCents(entry.denominationValue)]));
+  // Índices de moneda y de valor. El valor sale del catálogo ∪ storage: un detalle de
+  // una denominación que no está en el storage de esta máquina valía 0 y descuadraba
+  // la reconciliación (máquinas de cambio divisa con varias monedas).
+  const currencyIndex = buildDenominationCurrencyIndex({
+    denominations: input.denominations ?? [],
+    machineCurrency: input.machineCurrency ?? null,
+    storage,
+  });
+  const currencyKeyOf = (denominationId: number): number | null => currencyIndex.get(denominationId)?.currencyId ?? null;
+  const currencyLabelOf = (denominationId: number): string | null => denominationCurrencyText(currencyIndex.get(denominationId));
+  const valueTextById = buildDenominationValueIndex({
+    denominations: input.denominations ?? [],
+    machineCurrency: input.machineCurrency ?? null,
+    storage,
+  });
+  const denominationValueById = new Map(
+    [...valueTextById].map(([denominationId, value]) => [denominationId, decimalToCents(value)]),
+  );
 
   const transactionsAsc = scan
     ? [...scan.transactions].sort((left, right) => toMillis(left.dateCreated) - toMillis(right.dateCreated))
@@ -754,11 +877,34 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
     }
   }
 
-  const interpretation = reconcileDetailInterpretation(transactionsAsc, denominationValueById);
-  const inferredRoles = inferOperationRoles(transactionsAsc, denominationValueById);
+  // La conciliación por importes compara `returnAmount` / `incomeAmount` con la suma de
+  // los detalles. Con varias monedas esa comparación no tiene sentido (no se pueden
+  // sumar pesos y dólares), así que se desactiva y se declara: el rol de las operaciones
+  // sin nombre queda por estado de la transacción, como manda el diseño.
+  const detailCurrencies = new Set<number | null>();
+  const detailCurrencyLabels = new Set<string>();
+  for (const transaction of transactionsAsc) {
+    for (const detail of transaction.details) {
+      if (detail.denominationId !== null) {
+        detailCurrencies.add(currencyKeyOf(detail.denominationId));
+        detailCurrencyLabels.add(currencyLabelOf(detail.denominationId) ?? "moneda no declarada");
+      }
+    }
+  }
+  const detailsMultiCurrency = detailCurrencies.size > 1;
+  const interpretation = detailsMultiCurrency
+    ? { incomeMatches: 0, inverted: false, returnMatches: 0, roleMethod: "ninguno" as const, verified: false }
+    : reconcileDetailInterpretation(transactionsAsc, denominationValueById);
+  const inferredRoles = detailsMultiCurrency ? { method: "ninguno" as const, roles: new Map<string, JamOperationKind>() } : inferOperationRoles(transactionsAsc, denominationValueById);
+  if (detailsMultiCurrency) {
+    warnings.push(
+      `Los pagos analizados usan ${detailCurrencies.size} monedas (${[...detailCurrencyLabels].join(", ")}): la combinación canónica y las sustituciones se evalúan por moneda y los roles sin nombre se atribuyen por el estado de la transacción.`,
+    );
+  }
   if (interpretation.inverted) {
     warnings.push("Los importes indican que las operaciones «de salida» del detalle describen lo aceptado: se desactivaron sustitución y participación para no inventar evidencia.");
-  } else if (transactionsAsc.length > 0 && !interpretation.verified) {
+  } else if (!detailsMultiCurrency && transactionsAsc.length > 0 && !interpretation.verified) {
+    // Con varias monedas la conciliación por importes no aplica y ya se declara aparte.
     warnings.push("No se pudo reconciliar el detalle con los importes (sin nombres de operación o sin devoluciones): la evidencia se apoya en el estado de la transacción.");
   }
 
@@ -766,7 +912,19 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
   // (`isDispensing`) ya no es la única fuente. Un monedero marcado «No dispensa» que
   // sí bajó en el arqueo o sí aparece dispensando es evidencia suficiente; si no está
   // marcado, la sustitución se registra como posible configuración desactualizada.
-  const planCandidates = new Map<number, { configured: boolean; units: number; valueCents: bigint }>();
+  // Evidencia de detalle del período (antes del análisis): qué denominaciones entregó
+  // o intentó entregar la máquina hoy.
+  const detailEvidence = collectDetailEvidence(transactionsAsc, inferredRoles);
+
+  // Una denominación se evalúa sólo si la máquina la USA HOY: está configurada, tiene
+  // unidades en el baúl del sistema, tenía unidades en el último arqueo o el período
+  // analizado la muestra entregando/intentando entregar. El histórico de arqueos ya NO
+  // basta: una fila heredada (p. ej. el billete de USD 1 en una máquina que sólo maneja
+  // pesos, sin configuración ni saldo) cuyo arqueo viejo bajó 6 unidades generaba
+  // «Configuración contradice el arqueo» y un «Posible atasco» falso. Esas
+  // denominaciones se informan aparte, con el motivo, en lugar de alarmar.
+  const planCandidates = new Map<number, { configured: boolean; currencyId: number | null; units: number; valueCents: bigint }>();
+  const ignoredDenominations: JamIgnoredDenomination[] = [];
   const previousQuantities = new Map<number, number | null>();
   const currentQuantities = new Map<number, number | null>();
   for (const entry of storage) {
@@ -780,21 +938,53 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
     const observedMovement = physicalMovement !== null && physicalMovement > 0;
     const configured = entry.isDispensing;
     const usableStock = toInt(entry.dpStored);
-    // Evidencia de que el módulo existe aunque esté atascado: tiene unidades guardadas
-    // en el baúl dispensador o las tuvo en algún arqueo histórico.
-    const hasDispenserStock = usableStock > 0;
-    const everHadDispenserStock = tonnages.some((tonnage) => (tonnageQuantity(tonnage, denominationId) ?? 0) > 0);
-    if (configured || hasDispenserStock || everHadDispenserStock || observedMovement) {
+    const stockInLastArqueo = (currentQuantity ?? 0) > 0;
+    const usedToday =
+      configured ||
+      usableStock > 0 ||
+      stockInLastArqueo ||
+      detailEvidence.dispensed.has(denominationId) ||
+      detailEvidence.failed.has(denominationId);
+
+    if (usedToday) {
       planCandidates.set(denominationId, {
         configured,
+        currencyId: currencyKeyOf(denominationId),
         units: usableStock,
         valueCents: decimalToCents(entry.denominationValue),
       });
+      continue;
     }
+
+    const everHadDispenserStock = tonnages.some((tonnage) => (tonnageQuantity(tonnage, denominationId) ?? 0) > 0);
+    const historicalNote =
+      everHadDispenserStock || observedMovement
+        ? " El histórico de arqueos sí la movió: módulo retirado, reconfigurado o unidades extraídas."
+        : "";
+    ignoredDenominations.push({
+      currencyLabel: currencyLabelOf(denominationId),
+      denominationId,
+      denominationValue: entry.denominationValue,
+      reason: `Sin configuración de dispensado, sin saldo en el baúl ni en el último arqueo y sin entregas en el período consultado.${historicalNote}`,
+    });
+  }
+
+  const candidateCurrencyIds = new Set<number | null>([...planCandidates.values()].map((candidate) => candidate.currencyId));
+  const multiCurrency = candidateCurrencyIds.size > 1 || detailsMultiCurrency;
+  const machineCurrencyLabel = input.machineCurrency?.label ?? null;
+  if (ignoredDenominations.length > 0) {
+    const listed = ignoredDenominations
+      .slice(0, 4)
+      .map((entry) => `${entry.currencyLabel ? `${entry.currencyLabel} ` : ""}${entry.denominationValue}`)
+      .join(", ");
+    warnings.push(
+      `${ignoredDenominations.length} denominación(es) no se evaluaron porque la máquina no las usa hoy${machineCurrencyLabel ? ` (moneda principal: ${machineCurrencyLabel})` : ""}: ${listed}${ignoredDenominations.length > 4 ? ", …" : ""}. Ver el detalle y el motivo en el panel.`,
+    );
   }
 
   const aggregation = new Map<number, DenominationAggregate>();
   let payoutsAnalyzed = 0;
+  let mixedCurrencyPayouts = 0;
   const unclassifiedOperations = new Set<string>();
 
   // 1) Agregados por denominación a partir de los detalles consultados.
@@ -805,13 +995,9 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
     const dispensedInTransaction = new Map<number, number>();
 
     for (const detail of transaction.details) {
-      const denominationId = detail.denominationId;
-      const rawOperation = detail.operation?.trim() || null;
-      const keywordKind = classifyJamOperation(rawOperation);
       // El nombre manda cuando es clasificable; si no, se usa el rol deducido de los
       // importes para ese `idTypeOperation` (o el nombre literal como clave).
-      const roleKey = detail.operationId !== null ? `op:${detail.operationId}` : `name:${(rawOperation ?? "").toLowerCase()}`;
-      const kind: JamOperationKind = keywordKind !== "unknown" ? keywordKind : (inferredRoles.roles.get(roleKey) ?? "unknown");
+      const { denominationId, kind, rawOperation } = readJamDetail(detail, inferredRoles);
       if (rawOperation === null) {
         unclassifiedOperations.add("sin tipo de operación");
       } else if (kind === "unknown") {
@@ -877,6 +1063,18 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
       continue;
     }
 
+    // La combinación canónica se arma con las denominaciones de LA MISMA MONEDA que el
+    // pago. Sin esto, un pago de USD 100 se "planeaba" con 1 × COP 100 (mismo valor
+    // numérico) y el monedero de pesos quedaba acusado de no participar.
+    const payoutCurrencies = new Set<number | null>(
+      [...dispensedInTransaction.keys()].map((denominationId) => currencyKeyOf(denominationId)),
+    );
+    if (payoutCurrencies.size > 1) {
+      mixedCurrencyPayouts += 1;
+      continue;
+    }
+    const payoutCurrencyId = [...payoutCurrencies][0] ?? null;
+
     payoutsAnalyzed += 1;
     let actualTotal = 0n;
     for (const [denominationId, quantity] of dispensedInTransaction) {
@@ -886,11 +1084,13 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
     if (actualTotal === payoutCents) {
       const plan = canonicalPayoutMix(
         payoutCents,
-        [...planCandidates].map(([denominationId, candidate]) => ({
-          denominationId,
-          units: candidate.units,
-          valueCents: candidate.valueCents,
-        })),
+        [...planCandidates]
+          .filter(([, candidate]) => candidate.currencyId === payoutCurrencyId)
+          .map(([denominationId, candidate]) => ({
+            denominationId,
+            units: candidate.units,
+            valueCents: candidate.valueCents,
+          })),
       );
 
       if (plan) {
@@ -960,6 +1160,7 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
     return previous !== null && current !== null && previous - current > 0;
   });
   const rows: JamDenominationRow[] = storage
+    .filter((entry) => planCandidates.has(entry.idCurrencyDenomination))
     .map((entry) => {
       const denominationId = entry.idCurrencyDenomination;
       const aggregate = aggregation.get(denominationId) ?? createAggregate();
@@ -1160,6 +1361,8 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
 
       return {
         cause,
+        currencyId: currencyKeyOf(denominationId),
+        currencyLabel: currencyLabelOf(denominationId),
         denominationId,
         denominationImage: entry.imgDenom ?? null,
         denominationValue: entry.denominationValue,
@@ -1202,7 +1405,11 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
 
   // 5) Incidentes: uno por denominación con evidencia + ráfaga de salida a nivel de máquina.
   const compensatingRows = rows.filter((row) => row.compensating);
-  const compensatingLabel = compensatingRows.map((row) => row.denominationValue).join(", ");
+  // Con varias monedas la etiqueta incluye la moneda: «USD 100» y «COP 100» no pueden
+  // confundirse (el usuario veía «$1» y no sabía de qué moneda era).
+  const rowLabel = (row: { currencyLabel: string | null; denominationValue: string }): string =>
+    multiCurrency && row.currencyLabel ? `${row.currencyLabel} ${row.denominationValue}` : row.denominationValue;
+  const compensatingLabel = compensatingRows.map((row) => rowLabel(row)).join(", ");
   const incidents: JamIncident[] = [];
   for (const row of rows) {
     if (row.level === "sin_evidencia" || row.cause !== "atasco") {
@@ -1218,6 +1425,8 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
 
     incidents.push({
       cause: row.cause,
+      currencyId: row.currencyId,
+      currencyLabel: row.currencyLabel,
       denominationId: row.denominationId,
       denominationValue: row.denominationValue,
       detail: detailParts.join(" "),
@@ -1226,13 +1435,15 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
       lastEvidenceAt: row.lastEvidenceAt,
       level: row.level,
       suggestedAction: row.suggestedAction ?? "Revisar el módulo con arqueo de la denominación.",
-      title: `Posible atasco en la denominación ${row.denominationValue}`,
+      title: `Posible atasco en la denominación ${rowLabel(row)}`,
     });
   }
 
   if (errorReturnedCount >= thresholds.burstTransactions) {
     incidents.push({
       cause: "atasco",
+      currencyId: null,
+      currencyLabel: null,
       denominationId: null,
       denominationValue: null,
       detail: `${errorReturnedCount} transacciones «${RETURNED_ERROR_STATE}» por ${errorReturnedTotal} en el período. Si no se concentra en una denominación, apunta a la ruta de salida común del dispensador.`,
@@ -1273,6 +1484,16 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
       `Operaciones sin clasificar (${[...unclassifiedOperations].slice(0, 3).join(", ")}${unclassifiedOperations.size > 3 ? ", …" : ""}): el rol se dedujo de los importes${inferredRoles.method === "importes" ? "" : " y, cuando no fue posible, del estado de la transacción"}.`,
     );
   }
+  if (mixedCurrencyPayouts > 0) {
+    warnings.push(
+      `${mixedCurrencyPayouts} pago(s) combinaron denominaciones de monedas distintas: no se evaluó su combinación canónica (no se pueden sumar pesos y dólares).`,
+    );
+  }
+  if (multiCurrency) {
+    warnings.push(
+      "La máquina opera más de una moneda: los saldos, la combinación canónica y las señales se calculan por moneda, y los totales se muestran separados.",
+    );
+  }
   if (scan && payoutsAnalyzed === 0) {
     warnings.push("No hay pagos con combinación comparable en la ventana: no se pudo evaluar sustitución ni participación.");
   }
@@ -1280,12 +1501,15 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
   return {
     analyzed: scan !== null,
     blind: detailsBlind,
-    compensatingDenominations: compensatingRows.map((row) => row.denominationValue),
+    compensatingDenominations: compensatingRows.map((row) => rowLabel(row)),
     primary,
     failureReasons: scan?.failureReasons ?? [],
     headline,
+    ignoredDenominations,
     incidents,
     interpretation: { ...interpretation, roleMethod: inferredRoles.method },
+    mixedCurrencyPayouts,
+    multiCurrency,
     rows,
     scanned: {
       detailsFailures: scan?.detailsFailures ?? 0,

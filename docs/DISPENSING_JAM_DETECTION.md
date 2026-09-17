@@ -1,6 +1,6 @@
 # Detección temprana de atascos (monederos/billeteros) — estudio e implementación
 
-> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C7)** dentro de *Control de dispensado*.
+> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C8)** dentro de *Control de dispensado*.
 > **Veredicto:** **VIABLE con la API y el dashboard actuales**, sin cambios en el backend .NET ni en la base de datos.
 > **Archivos nuevos:** `src/features/dispensing-control/dispensing-jams.ts` (motor puro), `src/app/api/dispensing/jams/route.ts` (BFF acotado + caché), `src/features/dispensing-control/components/jam-diagnostics.tsx` (panel), `src/features/dispensing-control/api.ts` (cliente) y extensiones en `schemas.ts`, `hooks.ts` y la página.
 > **Estado de validación:** TypeScript, ESLint y build **PASA** (2026-09-17) + tres fixtures locales del motor y uno del normalizador (`node --experimental-strip-types`): escenario de sustitución/devolución, **máquina real Pay+ Inder 2 (ID 71)** y caso ciego. La prueba E2E autenticada sigue pendiente (B-04/B-05 del backlog).
@@ -20,6 +20,8 @@ El operador reportó: **«empezó a dispensar todo en monedas de 100 porque se a
 | **C7** | **Consulta sin máquina dejaba la pantalla bloqueada.** Al pulsar un período o escribir en el selector sin máquina elegida, el módulo mostraba «Selecciona una máquina» y **toda la barra de filtros quedaba deshabilitada**: no se podía volver a elegir una máquina sin cambiar de ruta. Causa verificada: en TanStack Query v5 una query con `enabled: false` mantiene `status: "pending"`, por lo que `isPending` es `true` sin nada cargando; el hook lo interpretaba como «cargando» y la página deshabilitaba los filtros con `disabled={isLoading && selection !== null}`. | Reporte del usuario | `isLoading` solo es verdadero con máquina seleccionada (`paypadId !== null && …`) y el `disabled` de la barra se expresa de forma explícita (`paypadId !== null && isLoading`). El estado vacío ahora aparece también al entrar (antes solo tras interactuar) y explica qué hacer. Evidencia: `QueryObserver` con `enabled:false` devuelve `status:"pending"`, `isPending:true`, `isLoading:false`. |
 | **C6** | **Alerta por tendencia (predecía con el pasado en vez de mirar el presente).** En Pay+ Inder 2 el 2.000 salió como *«Posible atasco»* cuando esa denominación **entregó 17 unidades en el período y bajó 255 en el arqueo**: la única prueba era que pasó de participar en el 100 % de los pagos previos al 40 % de los recientes. Una caída parcial es una tendencia, no un atasco. | Captura del panel + reporte: «¿por qué me dice que posible atasco si hay en el momento, no si hubo?» | `participacion_perdida` pasa a **peso 0** (nunca genera incidente por sí sola), exige **participación reciente ≈ 0** (≤ 5 %, no una caída parcial), **participación previa ≥ 50 %** y **ausencia de movimiento en el arqueo**. Además, `inactiva_con_saldo` ahora exige que los pagos hayan **requerido** esa denominación (`wasRequired`): estar quieta porque nadie la necesitó no es evidencia. |
 | **C5** | **El análisis exigía pulsar un botón.** Sin clic, el motor no tenía detalles y no había alerta posible: el operador veía «Sin señales» hasta analizar manualmente. | Reporte: «primero debería lanzar la alerta apenas consulte la máquina» | El análisis se **dispara automáticamente** al seleccionar máquina o cambiar el período (clave de consulta por máquina+rango, `staleTime` 5 min y caché de detalles de 30 min en el BFF). El botón pasa a **«Re-analizar»**. |
+
+| **C8** | **Las monedas se mezclaban y aparecían denominaciones que la máquina no usa.** El operador reportó dos cosas: (a) en una máquina de cambio divisa (COP ⇄ USD) los números salían raros, y (b) en una máquina que **solo maneja pesos** (CC Centro) aparecía un billete de **USD 1** como *Implicada* / *Posible atasco* con *«Configuración contradice el arqueo»*. Causas verificadas: la combinación canónica se armaba con **todas** las denominaciones, así que un pago de **USD 100** se "planeaba" con **1 × COP 100** (mismo valor numérico) y el monedero de pesos quedaba acusado de no participar; el valor de una denominación ausente del storage era **0**; los totales de baúl sumaban pesos y dólares; y una fila heredada ($1 sin configuración, sin saldo, con un arqueo antiguo que bajó 6) entraba al análisis solo por el **histórico** de arqueos. | Reporte del usuario + capturas + fixtures `multimoneda`/`metricas-multimoneda` | El motor es **consciente de la moneda** (`denomination-currency.ts`, `idCurrency` del catálogo): la combinación canónica, la sustitución, la compensación y la participación se evalúan **dentro de la moneda del pago**; el valor sale del catálogo ∪ storage; los pagos con denominaciones de varias monedas no se combinan (`mixedCurrencyPayouts`); la conciliación por importes se desactiva declarándolo cuando el período usa varias monedas; los totales se muestran **por moneda** (nunca sumados) y cada fila lleva su etiqueta de moneda (`COP 100` vs `USD 100`). Además una denominación solo se evalúa si la máquina **la usa hoy**: configurada, con saldo en el baúl, con existencia en el último arqueo o con entregas en el período; el histórico de arqueos ya no basta y las descartadas se informan con su motivo (`ignoredDenominations`). |
 
 ### Por qué el 500 quedaba invisible aunque estuviera atascado
 
@@ -72,6 +74,62 @@ INCIDENTE: [probable] Posible atasco en la denominación 500
 Antes de C1–C3 el mismo escenario producía `0 incidentes` y «sin señales»: la lógica no se equivocaba al concluir, simplemente **no llegaba a mirar**. Con el caso ciego (30/30 fallos) el titular ahora es *«Diagnóstico incompleto: no se pudo leer el detalle de ninguna transacción analizada…»*.
 
 > **Acción operativa derivada:** en Inder 2 hay que marcar el 500 como dispensador en **Pay+ → Configurar denominaciones** (hoy dice «No dispensa»). Mientras siga mal, la señal `config_inconsistente` lo advierte en cada análisis.
+
+---
+
+### Verificación del billete de 1 dólar en una máquina de solo pesos (fixture `multimoneda`, caso 1)
+
+Réplica de la captura reportada: máquina con COP 1.000 (20) y COP 500 (40) configurados y
+con saldo, más una fila heredada de **USD 1** sin configuración y sin saldo, cuyo arqueo
+anterior tenía 6 unidades y el último 0.
+
+```
+ANTES  HEADLINE: Posible atasco · Posible atasco en la denominación 1.
+       d=1 | saldo=0 | config=false | evidencia=true | caída=6 | cobertura=false
+           | nivel=sospecha score=1 | señales=[config_inconsistente]   → Rol «Implicada»
+
+DESPUÉS HEADLINE: No se detectaron señales de atasco en la ventana analizada.
+       d=1000 | saldo=20 | config=true | caída=5 | nivel=sin_evidencia | señales=[]
+       d=500  | saldo=40 | config=true | caída=0 | nivel=sin_evidencia | señales=[]
+       IGNORADAS: USD 1 → «Sin configuración de dispensado, sin saldo en el baúl ni en el
+       último arqueo y sin entregas en el período consultado. El histórico de arqueos sí la
+       movió: módulo retirado, reconfigurado o unidades extraídas.»
+```
+
+La denominación no desaparece del panel: sale del diagnóstico de atascos y se explica en la
+lista de **no evaluadas**, porque sin unidades en el baúl no hay módulo que pueda estar
+atascado hoy.
+
+### Verificación de la máquina de cambio de divisa (fixture `multimoneda`, caso 2)
+
+Máquina COP ⇄ USD con cuatro módulos (COP 100, COP 1.000, USD 1, USD 100) y pagos de
+**USD 100** entregados con un billete de USD 100, más dos pagos de **USD 10** entregados
+como 2 × USD 5.
+
+```
+ANTES  HEADLINE: Atasco probable · Posible atasco en la denominación 100.
+       d=100 (COP) | saldo=200 | sust=2 | nivel=probable score=3 | señales=[sustitucion]
+       …y la fila «100» de USD era indistinguible de la de COP en el panel.
+
+DESPUÉS HEADLINE: Atasco probable · Posible atasco en la denominación USD 10 — el cambio se entrega con USD 5.
+       moneda=COP | d=1000 | sust=0 | nivel=sin_evidencia
+       moneda=COP | d=100  | sust=0 | nivel=sin_evidencia        ← ya no se la culpa por un pago en dólares
+       moneda=USD | d=10   | sust=2 | nivel=probable  | señales=[sustitucion]
+       moneda=USD | d=5    | compensa=true | señales=[compensando_entrega]
+       MULTIMONEDA: true | ignoradas: 0 | pagos mezclados: 0
+```
+
+El motor **sigue detectando** la sustitución real (dentro de USD) y ahora distingue
+`COP 100` de `USD 100` en la tabla y en el titular.
+
+### Verificación de los totales por moneda (fixture `metricas-multimoneda`)
+
+```
+FILAS: COP 1000 (saldo 20, $20.000) · COP 500 (40, $20.000) · USD 10 (20, $200) · USD 1 (0, $0)
+TOTALES POR MONEDA: [ {currencyId: 1, label: "COP", total: "40000"},
+                      {currencyId: 2, label: "USD", total: "200"} ]
+SUMA PLANA (solo referencia, ya no se muestra): 40200
+```
 
 ---
 
@@ -171,6 +229,7 @@ concreto.
 
 | Elemento | Archivo | Notas |
 | --- | --- | --- |
+| Moneda de cada baúl | `src/features/dispensing-control/denomination-currency.ts` | Índice `idCurrencyDenomination` → moneda y valor desde el catálogo ∪ storage; etiqueta corta (`COP`, `USD`) para la UI. Sin él, pesos y dólares se sumaban y dos denominaciones del mismo valor eran indistinguibles. |
 | Motor puro | `src/features/dispensing-control/dispensing-jams.ts` | Sin red ni React: `computeJamDiagnostics`, `classifyJamOperation`, `canonicalPayoutMix`, `reconcileDetailInterpretation`, `JAM_THRESHOLDS`, `jamSignalWeights/Labels`, tipos. Testeable con Node (`--experimental-strip-types`). |
 | BFF acotado | `src/app/api/dispensing/jams/route.ts` | `POST { paypadId, from, to, maxTransactions ≤ 60 }` (30 por defecto). Cachea detalles inmutables por `id`; 404 = sin detalles; un detalle ilegible no tumba el diagnóstico (`detailsFailures`). |
 | Cliente + caché | `src/features/dispensing-control/api.ts`, `hooks.ts` | `useDispensingJamScan` es manual (`enabled` solo tras pulsar analizar), `staleTime` 5 min, `refetchOnWindowFocus: false`. |
@@ -230,6 +289,21 @@ Una denominación **compensadora nunca recibe nivel de atasco**: está entregand
 > El motor alerta con el **estado actual**: transacciones del período consultado o del
 > último intervalo de arqueos. Las **tendencias** (caídas de participación, uso
 > decreciente) son contexto con peso 0 y nunca generan un incidente por sí solas.
+
+### Regla de oro de la moneda
+
+> Todo cálculo (combinación canónica, sustitución, compensación, participación, saldos y
+> totales) vive **dentro de una moneda**. Los importes de monedas distintas **nunca** se
+> suman ni se comparan, y una denominación solo se evalúa si la máquina **la usa hoy**:
+> configurada, con saldo, con existencia en el último arqueo o entregando en el período.
+> El histórico de arqueos por sí solo **no** alcanza para alarmar.
+
+Consecuencias: (1) `denomination-currency.ts` resuelve la moneda con el `idCurrency` del
+catálogo (`/api/masters/denominations`) y la etiqueta (`COP`, `USD`); (2) cada fila e
+incidente publica `currencyId`/`currencyLabel` y los títulos usan `USD 10`, no `10`;
+(3) los totales del baúl se publican por moneda (`storageTotalsByCurrency`) y la tarjeta
+«DP · Real entregado» aclara que el total del arqueo es el del backend, no separable;
+(4) `ignoredDenominations` documenta qué quedó fuera y por qué, en lugar de omitirlo.
 
 ### Regla de oro de la atribución
 
@@ -295,6 +369,7 @@ Incidentes: *Posible atasco en la denominación 50000* (confirmado), *500* (conf
 | Costo de `Transaction/{id}/Details` (una petición por transacción) | Carga del API legado | Análisis **manual**, tope de 30 transacciones por defecto (máx. 60), concurrencia 5, caché de 30 min por `id` (600 entradas) y `staleTime` de 5 min |
 | Ventana truncada | Evidencia parcial | `truncated` + advertencia explícita y regla de cobertura de la caída física |
 | Falsos positivos por desabasto | Ruido operativo | `dpStored == 0` ⇒ agotamiento (no atasco); en el umbral de recarga la única señal de devolución se limita a *sospecha* |
+| Configuración obsoleta: una denominación marcada «Dispensa» sin módulo físico (p. ej. USD 1 en una máquina de solo pesos) | Fila sin evidencia que confunde al operador | La fila solo se evalúa si además tiene saldo, existencia en el último arqueo o entregas en el período; sin ellas queda vacía (peso 0) y su acción remite a Pay+ → Configurar denominaciones. Las que no la usan hoy se listan aparte con el motivo (`ignoredDenominations`) |
 
 ---
 
