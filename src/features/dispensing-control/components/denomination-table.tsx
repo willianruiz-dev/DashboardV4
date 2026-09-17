@@ -158,6 +158,14 @@ export function DenominationTable({ denominations, excludedRows = [], loading = 
                             ) : (
                               <Badge variant="secondary">OK</Badge>
                             )}
+                            {/* Una fila de otra moneda que SÍ está en uso se declara como tal:
+                                si aparece, es porque la máquina la trabaja hoy (configurada,
+                                con saldo, con cargue o con entregas), no por herencia. */}
+                            {row.foreignCurrency ? (
+                              <Badge className="mt-1 flex w-fit" title={`La moneda de este baúl (${row.currencyLabel ?? "no declarada"}) no es la del Pay+`} variant="outline">
+                                Otra moneda
+                              </Badge>
+                            ) : null}
                           </TableCell>
                         </TableRow>
                         {row.low ? (
