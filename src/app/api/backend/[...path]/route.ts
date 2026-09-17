@@ -20,9 +20,73 @@ function isUnsafeMethod(method: string): boolean {
   return !["GET", "HEAD", "OPTIONS"].includes(method);
 }
 
+function firstForwardedValue(value: string | null): string | null {
+  const firstValue = value?.split(",", 1)[0]?.trim();
+  return firstValue || null;
+}
+
+function toOrigin(protocol: string, host: string): string | null {
+  try {
+    const url = new URL(`${protocol}://${host}`);
+
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:")
+      || url.username
+      || url.password
+      || url.pathname !== "/"
+      || url.search
+      || url.hash
+    ) {
+      return null;
+    }
+
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `nextUrl.origin` can describe the listener (`0.0.0.0`) instead of the public
+ * browser origin when Next runs behind the local/preview reverse proxy. Include
+ * the request host and the proxy's public host so valid same-origin POSTs keep
+ * their CSRF check without treating the listener address as the only origin.
+ */
+function getRequestOrigins(request: NextRequest): Set<string> {
+  const origins = new Set<string>([request.nextUrl.origin]);
+  const host = request.headers.get("host");
+  const forwardedHost = firstForwardedValue(request.headers.get("x-forwarded-host"));
+  const forwardedProtocol = firstForwardedValue(request.headers.get("x-forwarded-proto"));
+  const protocol = forwardedProtocol === "http" || forwardedProtocol === "https"
+    ? forwardedProtocol
+    : request.nextUrl.protocol.replace(":", "");
+
+  for (const candidateHost of [host, forwardedHost]) {
+    if (!candidateHost) {
+      continue;
+    }
+
+    const origin = toOrigin(protocol, candidateHost);
+    if (origin) {
+      origins.add(origin);
+    }
+  }
+
+  return origins;
+}
+
 function isSameOriginRequest(request: NextRequest): boolean {
-  const origin = request.headers.get("origin");
-  return origin === null || origin === request.nextUrl.origin;
+  const originHeader = request.headers.get("origin");
+
+  if (originHeader === null) {
+    return true;
+  }
+
+  try {
+    return getRequestOrigins(request).has(new URL(originHeader).origin);
+  } catch {
+    return false;
+  }
 }
 
 async function proxy(request: NextRequest, context: BackendRouteContext): Promise<NextResponse> {
