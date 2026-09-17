@@ -13,7 +13,9 @@
  *   ciego           – sin detalles legibles el diagnóstico es incompleto, no «limpio» (C3)
  *   cc-centro-usd1  – el billete de USD 1 de una máquina de solo pesos no se evalúa (C8/C9)
  *   divisa          – máquina COP ⇄ USD: nada se mezcla entre monedas (C8)
+ *   alerta-inicio   – la alerta del inicio declara las máquinas multimoneda en vez de sumar
  */
+import { summarizeMachineCurrencies } from "../src/features/dispensing-control/denomination-usage.ts";
 import { computeJamDiagnostics, type JamDiagnostics } from "../src/features/dispensing-control/dispensing-jams.ts";
 import { computeDispensingMetrics } from "../src/features/dispensing-control/dispensing-metrics.ts";
 
@@ -448,6 +450,7 @@ expect(
   "cada fila en uso explica por qué (tooltip del panel)",
   ccCentroMetrics.rows.every((row) => row.inUseReasons.length > 0),
 );
+expect("una máquina de una sola moneda no se marca multimoneda", ccCentroMetrics.multiCurrency === false, ccCentroMetrics.currencyLabels.join(", "));
 expect(
   "el USD 1 conserva su motivo canónico",
   (ccCentroMetrics.excludedRows.find((row) => row.currencyLabel === "USD")?.excludedReason ?? "").includes("Su moneda (USD)"),
@@ -505,6 +508,18 @@ const divisa = computeJamDiagnostics({
   ...RANGE,
 });
 
+const divisaMetrics = computeDispensingMetrics({
+  byState: { Aprobada: { count: 4, total: "1000000" } },
+  denominations: divisaDenominations,
+  lastTonnage: null,
+  loads: [],
+  machineCurrency: { id: COP, label: "COP" },
+  now: new Date("2026-09-17T22:00:00.000Z"),
+  rangeFrom: new Date(RANGE.rangeFrom),
+  rangeTo: new Date(RANGE.rangeTo),
+  storage: divisaStorage,
+});
+
 console.log(`  headline: ${divisa.headline}`);
 console.log(`  filas: ${divisa.rows.map((row) => `${row.currencyLabel} ${row.denominationValue} [${row.level}]`).join(" · ")}`);
 
@@ -515,6 +530,56 @@ expect("el USD 10 sí detecta la sustitución real", (usd10?.substitutionEvents 
 expect("el titular distingue la moneda", divisa.headline.includes("USD 10"));
 expect("la máquina se declara multimoneda", divisa.multiCurrency === true);
 expect("no hay pagos con monedas mezcladas", divisa.mixedCurrencyPayouts === 0);
+expect("las tarjetas declaran la máquina como multimoneda", divisaMetrics.multiCurrency === true);
+expect(
+  "se publican las monedas en uso",
+  divisaMetrics.currencyLabels.includes("COP") && divisaMetrics.currencyLabels.includes("USD"),
+  divisaMetrics.currencyLabels.join(", "),
+);
+
+/* ------------------------------------------------------------------ 8) alerta del inicio: moneda por máquina */
+
+console.log("\n[alerta-inicio] moneda de cada máquina para no sumar importes incomparables");
+
+const catalogo = divisaDenominations.map((entry) => ({ currency: entry.currency, id: entry.id, idCurrency: entry.idCurrency }));
+const aStorage = (entries: { id: number; isDispensing: boolean; min?: string; stock?: string }[]) =>
+  entries.map((entry) => ({
+    apStored: "0",
+    dpStored: entry.stock ?? "0",
+    idCurrencyDenomination: entry.id,
+    isDispensing: entry.isDispensing,
+    minDpQuantity: entry.min ?? "0",
+    rjStored: "0",
+  }));
+
+const divisaCurrencies = summarizeMachineCurrencies({
+  catalog: catalogo,
+  fallbackCurrencyId: COP,
+  storage: aStorage([
+    { id: 1, isDispensing: true, stock: "200" },
+    { id: 11, isDispensing: true, stock: "20" },
+    { id: 10, isDispensing: false },
+  ]),
+});
+const ccCentroCurrencies = summarizeMachineCurrencies({
+  catalog: catalogo,
+  fallbackCurrencyId: COP,
+  storage: aStorage([
+    { id: 1, isDispensing: true, stock: "40" },
+    { id: 2, isDispensing: true, stock: "20" },
+    { id: 10, isDispensing: false },
+  ]),
+});
+// Los baúles con saldo siguen contando aunque la configuración esté desactualizada, y una
+// fila sin configuración ni saldo (el USD 1 heredado) no convierte la máquina en multimoneda.
+const sinCatalogo = summarizeMachineCurrencies({ catalog: [], fallbackCurrencyId: USD, storage: aStorage([{ id: 10, isDispensing: true, stock: "5" }]) });
+
+console.log(`  divisa: ${JSON.stringify(divisaCurrencies)} · cc-centro: ${JSON.stringify(ccCentroCurrencies)}`);
+expect("la máquina de divisa se declara multimoneda", divisaCurrencies.mixed === true);
+expect("sus monedas son COP y USD", divisaCurrencies.labels.includes("COP") && divisaCurrencies.labels.includes("USD"), divisaCurrencies.labels.join(", "));
+expect("la máquina de solo pesos no se declara multimoneda", ccCentroCurrencies.mixed === false);
+expect("el USD 1 heredado no cuenta como moneda en uso", !ccCentroCurrencies.labels.includes("USD"), ccCentroCurrencies.labels.join(", "));
+expect("sin catálogo cae a la moneda del Pay+", sinCatalogo.mixed === false && sinCatalogo.labels.includes("moneda del Pay+"), sinCatalogo.labels.join(", "));
 
 /* ------------------------------------------------------------------ resumen */
 

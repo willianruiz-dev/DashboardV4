@@ -61,8 +61,11 @@ export function ReturnAlertsHomeSection() {
       const before = previous.get(machine.paypadId) ?? 0;
       if (machine.errorCount > before) {
         const difference = machine.errorCount - before;
+        const amount = machine.errorTotalMixedCurrency
+          ? `importe en varias monedas${machine.currencyLabels.length > 0 ? ` (${machine.currencyLabels.join(", ")})` : ""}`
+          : formatDashboardMoney(machine.errorTotal);
         toast.warning(`${machine.paypadName}: ${difference} error(es) de devuelta`, {
-          description: `${machine.errorCount} en total hoy · ${formatDashboardMoney(machine.errorTotal)}. Revisa el control de dispensado.`,
+          description: `${machine.errorCount} en total hoy · ${amount}. Revisa el control de dispensado.`,
           duration: 10_000,
         });
       }
@@ -180,12 +183,20 @@ function MachineAlertCard({ machine, nowMs }: { machine: ReturnAlertMachine; now
         </Badge>
       </div>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-numeric text-lg font-semibold text-amber-700 dark:text-amber-300">
-          {formatDashboardMoney(machine.errorTotal)}
-        </span>
+        {/* Una máquina puede operar COP y USD (cambio divisa): sumar sus importes daría un
+            número no comparable, así que en ese caso se declara en lugar de mostrarlo. */}
+        {machine.errorTotalMixedCurrency ? (
+          <span className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+            Importe en varias monedas{machine.currencyLabels.length > 0 ? ` (${machine.currencyLabels.join(", ")})` : ""}
+          </span>
+        ) : (
+          <span className="font-numeric text-lg font-semibold text-amber-700 dark:text-amber-300">
+            {formatDashboardMoney(machine.errorTotal)}
+          </span>
+        )}
         <span className="text-xs text-muted-foreground">
           {machine.transactions} transacción(es) hoy
-          {machine.errorTotalIncomplete ? " · importe parcial (hay importes ilegibles)" : ""}
+          {machine.errorTotalIncomplete && !machine.errorTotalMixedCurrency ? " · importe parcial (hay importes ilegibles)" : ""}
         </span>
       </div>
       <p className="text-xs text-muted-foreground">

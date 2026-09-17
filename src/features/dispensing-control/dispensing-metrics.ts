@@ -78,6 +78,14 @@ export interface DispensingMetrics {
   dp: { at: string | null; storageTotal: string; total: string | null };
   lastLoad: { at: string | null; elapsedMs: number | null; total: string | null };
   rj: { count: number; physicalTotal: string | null; total: string };
+  /** Etiquetas de las monedas que la máquina trabaja hoy (p. ej. `["COP","USD"]`). */
+  currencyLabels: string[];
+  /**
+   * `true` si el inventario en uso abarca más de una moneda: los importes agregados
+   * (AP/RJ del período y el total del arqueo) suman monedas distintas y no son
+   * comparables entre sí. El desglose por moneda sigue disponible.
+   */
+  multiCurrency: boolean;
   /** Sólo denominaciones en uso hoy (lo que la máquina realmente maneja). */
   rows: DispensingDenominationRow[];
   /** Filas del storage que NO son inventario en uso hoy, con su motivo (no se ocultan: se explican). */
@@ -328,6 +336,8 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       total: byState[RETURNED_ERROR_STATE]?.total ?? "0",
     },
     excludedRows,
+    currencyLabels: [...new Set(rows.map((row) => row.currencyLabel ?? "moneda no declarada"))],
+    multiCurrency: new Set(rows.map((row) => row.currencyId)).size > 1,
     rows,
     storageTotalsByCurrency: [...totalsByCurrency.values()],
   };

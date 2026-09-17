@@ -1,3 +1,5 @@
+import { currencyShortLabel } from "./denomination-currency";
+
 /**
  * ¿La máquina USA hoy esta denominación? — regla compartida por el desglose de saldos y
  * el motor de atascos, para que ambos paneles nunca se contradigan.
@@ -102,4 +104,78 @@ export function describeDenominationUsage(signals: DenominationUsageSignals): st
   }
 
   return reasons;
+}
+
+interface MachineCurrencyCatalogEntry {
+  currency: string | null | undefined;
+  id: number;
+  idCurrency: number;
+}
+
+interface MachineCurrencyStorageEntry {
+  apStored: string;
+  dpStored: string;
+  idCurrencyDenomination: number;
+  isDispensing: boolean;
+  minDpQuantity: string;
+  rjStored: string;
+}
+
+/**
+ * Monedas que la máquina trabaja hoy, según su baúl (`PayPad/GetStorage`) y el catálogo.
+ *
+ * Se usa donde NO hay arqueos ni cargues a mano (p. ej. la alerta del inicio) para saber si
+ * un importe agregado suma monedas distintas. Sólo cuentan los baúles con alguna señal de
+ * uso (configurados, con saldo o con umbral): una fila heredada —el billete de USD 1 de
+ * C.C. Centro2, sin configuración y con todo en cero— no convierte a la máquina en
+ * multimoneda. Una moneda no declarada en el catálogo cae a `fallbackCurrencyId`.
+ */
+export function summarizeMachineCurrencies(input: {
+  catalog: readonly MachineCurrencyCatalogEntry[];
+  fallbackCurrencyId: number | null;
+  storage: readonly MachineCurrencyStorageEntry[];
+}): { labels: string[]; mixed: boolean; unknownCurrencyCount: number } {
+  const currencyById = new Map(input.catalog.map((entry) => [entry.id, entry.idCurrency]));
+  const labelById = new Map(input.catalog.map((entry) => [entry.id, currencyShortLabel(entry.currency)]));
+  const labels = new Set<string>();
+  const currencyIds = new Set<number>();
+  let unknownCurrencyCount = 0;
+
+  for (const entry of input.storage) {
+    const inUse = isDenominationInUse({
+      acceptedLastArqueo: null,
+      acceptedStock: toNumber(entry.apStored),
+      configured: entry.isDispensing,
+      deliveredInPeriod: false,
+      deliveredLastArqueo: null,
+      dispensingStock: toNumber(entry.dpStored),
+      failedInPeriod: false,
+      loadedInPeriod: 0,
+      minDpQuantity: toNumber(entry.minDpQuantity),
+      rejectedLastArqueo: null,
+      rejectionStock: toNumber(entry.rjStored),
+    });
+    if (!inUse) {
+      continue;
+    }
+
+    const currencyId = currencyById.get(entry.idCurrencyDenomination) ?? input.fallbackCurrencyId;
+    if (currencyId === null || currencyId === undefined) {
+      unknownCurrencyCount += 1;
+      continue;
+    }
+
+    currencyIds.add(currencyId);
+    const label = labelById.get(entry.idCurrencyDenomination) ?? (currencyId === input.fallbackCurrencyId ? "moneda del Pay+" : null);
+    if (label) {
+      labels.add(label);
+    }
+  }
+
+  return { labels: [...labels], mixed: currencyIds.size > 1, unknownCurrencyCount };
+}
+
+function toNumber(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import { CircleCheck, PackageOpen, TimerReset, XCircle } from "lucide-react";
+import { CircleCheck, PackageOpen, TimerReset, TriangleAlert, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
@@ -106,6 +107,11 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
     currencyTotals.length > 1
       ? currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
       : null;
+  const multiCurrency = metrics?.multiCurrency ?? false;
+  const currencyLabels = (metrics?.currencyLabels ?? []).join(", ");
+  // Se declara en las tarjetas para que nadie lea un total agregado como si fuera
+  // comparable: para eso está el desglose por moneda.
+  const mixedCurrencyNote = multiCurrency ? " · suma monedas distintas (no comparable)" : "";
   const dpTotal = metrics?.dp.total ?? null;
   const lastLoadElapsed = metrics?.lastLoad.elapsedMs ?? null;
 
@@ -154,12 +160,22 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
           />
         ) : (
           <>
+            {multiCurrency ? (
+              <Alert variant="warning">
+                <TriangleAlert aria-hidden="true" className="size-4" />
+                <AlertTitle>Máquina multimoneda ({currencyLabels})</AlertTitle>
+                <AlertDescription>
+                  Los importes de AP, RJ y el total del arqueo agregan monedas distintas y no son comparables entre sí. El inventario del
+                  dispensador se muestra por moneda en el desglose, y la detección de atascos evalúa cada moneda por separado.
+                </AlertDescription>
+              </Alert>
+            ) : null}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard
                 icon={CircleCheck}
                 label="AP · Aprobadas del período"
                 loading={metricsQuery.isLoading && metrics === null}
-                subtitle={`${metrics?.ap.count ?? 0} transacción${(metrics?.ap.count ?? 0) === 1 ? "" : "es"}${metrics?.apPhysical.at ? ` · Arqueo: ${formatDashboardMoney(metrics.apPhysical.total ?? "0")}` : ""}`}
+                subtitle={`${metrics?.ap.count ?? 0} transacción${(metrics?.ap.count ?? 0) === 1 ? "" : "es"}${metrics?.apPhysical.at ? ` · Arqueo: ${formatDashboardMoney(metrics.apPhysical.total ?? "0")}` : ""}${mixedCurrencyNote}`}
                 tone="approved"
                 value={metrics ? formatDashboardMoney(metrics.ap.total) : "—"}
               />
@@ -169,7 +185,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 loading={metricsQuery.isLoading && metrics === null}
                 subtitle={
                   metrics?.dp.at
-                    ? `Último arqueo: ${formatDashboardDateTime(metrics.dp.at)}${currencyBreakdown ? ` (total del backend; no separable por moneda) · inventario actual por moneda: ${currencyBreakdown}` : ""}`
+                    ? `Último arqueo: ${formatDashboardDateTime(metrics.dp.at)}${currencyBreakdown ? ` (total del backend${multiCurrency ? ", suma monedas distintas: no separable" : ""}) · inventario actual por moneda: ${currencyBreakdown}` : ""}`
                     : metrics
                       ? `Sin arqueo · inventario${currencyBreakdown ? " por moneda" : ""}: ${currencyBreakdown ?? formatDashboardMoney(metrics.dp.storageTotal)}`
                       : null
@@ -181,7 +197,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 icon={XCircle}
                 label="RJ · Aprobada Error Devuelta"
                 loading={metricsQuery.isLoading && metrics === null}
-                subtitle={`${metrics?.rj.count ?? 0} transacción${(metrics?.rj.count ?? 0) === 1 ? "" : "es"}${metrics?.rj.physicalTotal ? ` · Baúl rechazo: ${formatDashboardMoney(metrics.rj.physicalTotal)}` : ""}`}
+                subtitle={`${metrics?.rj.count ?? 0} transacción${(metrics?.rj.count ?? 0) === 1 ? "" : "es"}${metrics?.rj.physicalTotal ? ` · Baúl rechazo: ${formatDashboardMoney(metrics.rj.physicalTotal)}` : ""}${mixedCurrencyNote}`}
                 tone="cancelled"
                 value={metrics ? formatDashboardMoney(metrics.rj.total) : "—"}
               />

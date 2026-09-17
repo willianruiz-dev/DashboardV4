@@ -95,10 +95,17 @@ export type ReturnAlertsRequest = z.infer<typeof returnAlertsRequestSchema>;
 
 export const returnAlertMachineSchema = z.object({
   approvedCount: z.number().int().nonnegative(),
+  /** Monedas que la máquina trabaja hoy, según su baúl (p. ej. `["COP","USD"]`). */
+  currencyLabels: z.array(z.string()).default([]),
   errorCount: z.number().int().nonnegative(),
   errorTotal: z.string(),
   /** `true` si algún importe del día no se pudo interpretar y el total queda corto. */
   errorTotalIncomplete: z.boolean().default(false),
+  /**
+   * `true` si la máquina opera más de una moneda: `errorTotal` suma monedas distintas y no
+   * es comparable, así que la interfaz muestra «varias monedas» en lugar de un número.
+   */
+  errorTotalMixedCurrency: z.boolean().default(false),
   lastErrorAt: z.string().nullable(),
   paypadId: z.number().int().positive(),
   paypadName: z.string(),

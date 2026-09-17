@@ -3,7 +3,7 @@
 > **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C9)** dentro de *Control de dispensado*.
 > **Veredicto:** **VIABLE con la API y el dashboard actuales**, sin cambios en el backend .NET ni en la base de datos.
 > **Archivos nuevos:** `src/features/dispensing-control/dispensing-jams.ts` (motor puro), `src/app/api/dispensing/jams/route.ts` (BFF acotado + caché), `src/features/dispensing-control/components/jam-diagnostics.tsx` (panel), `src/features/dispensing-control/api.ts` (cliente) y extensiones en `schemas.ts`, `hooks.ts` y la página.
-> **Estado de validación:** TypeScript, ESLint y build **PASA** (2026-09-17) + **suite de regresiones en el repositorio**: `npm run fixtures:dispensing` (`scripts/dispensing-fixtures.mts`, 27 comprobaciones, sin red) reproduce los siete escenarios citados en este documento (C2, C3, C4, C6, C8, C9). La prueba E2E autenticada sigue pendiente (B-04/B-05 del backlog).
+> **Estado de validación:** `npm run check` (TypeScript, ESLint **y la suite**) y `npm run build` **PASA** (2026-09-17). La suite `npm run fixtures:dispensing` (`scripts/dispensing-fixtures.mts`, 37 comprobaciones, sin red) reproduce los ocho escenarios citados en este documento (C2, C3, C4, C6, C8, C9) y corre **dentro de `npm run check`**, así que una regresión del motor rompe la verificación estándar.
 
 ---
 
@@ -312,15 +312,19 @@ Una denominación **compensadora nunca recibe nivel de atasco**: está entregand
 
 > Todo cálculo (combinación canónica, sustitución, compensación, participación, saldos y
 > totales) vive **dentro de una moneda**. Los importes de monedas distintas **nunca** se
-> suman ni se comparan, y una denominación solo se evalúa si la máquina **la usa hoy**:
+> suman ni se comparan — tampoco en las tarjetas AP/DP/RJ ni en la alerta del inicio —, y una
+> denominación solo se evalúa si la máquina **la usa hoy**:
 > configurada, con saldo, con existencia en el último arqueo o entregando en el período.
 > El histórico de arqueos por sí solo **no** alcanza para alarmar.
 
 Consecuencias: (1) `denomination-currency.ts` resuelve la moneda con el `idCurrency` del
 catálogo (`/api/masters/denominations`) y la etiqueta (`COP`, `USD`); (2) cada fila e
 incidente publica `currencyId`/`currencyLabel` y los títulos usan `USD 10`, no `10`;
-(3) los totales del baúl se publican por moneda (`storageTotalsByCurrency`) y la tarjeta
-«DP · Real entregado» aclara que el total del arqueo es el del backend, no separable;
+(3) los totales del baúl se publican por moneda (`storageTotalsByCurrency`), la tarjeta
+«DP · Real entregado» aclara que el total del arqueo es el del backend y una máquina multimoneda
+(`multiCurrency`, con sus `currencyLabels`) muestra un aviso arriba de las tarjetas y la nota
+«suma monedas distintas (no comparable)» en las de AP/RJ; la alerta del inicio sustituye el
+importe por «Importe en varias monedas» (§9);
 (4) `ignoredDenominations` documenta qué quedó fuera y por qué, en lugar de omitirlo.
 
 ### Regla de oro de la atribución
@@ -346,13 +350,14 @@ muestra "cubierta por el análisis" o "fuera de la ventana analizada" en cada fi
 ## 5. Validación local (suite del repositorio)
 
 ```bash
-npm run fixtures:dispensing     # scripts/dispensing-fixtures.mts — sin red, sin sesión
+npm run check                   # typecheck + lint + la suite de dispensado (sin red, sin sesión)
+npm run fixtures:dispensing     # sólo la suite, si se quiere iterar sobre un escenario
 ```
 
-Siete escenarios con aserciones (29 comprobaciones; el proceso termina con código 1 si algo
+Ocho escenarios con aserciones (37 comprobaciones; el proceso termina con código 1 si algo
 falla). Cada uno corresponde a un caso reportado por el operador o a un falso positivo ya
 corregido, así que la suite es la red de seguridad de C2–C9: `usuario-actual`, `compensacion`,
-`inder2`, `jam`, `ciego`, `cc-centro-usd1` y `divisa`.
+`inder2`, `jam`, `ciego`, `cc-centro-usd1`, `divisa` y `alerta-inicio`.
 
 ### Escenario clásico del motor (50.000 y 500)
 
@@ -439,7 +444,7 @@ useDispensingReturnAlerts ── sondeo 30 s ──▶ 1. PayPad            (cac
 | --- | --- |
 | Petición | `POST /api/dispensing/return-alerts` con `{ from, to, paypadId }` (`paypadId: null` = todas las máquinas) |
 | Respuesta | `{ from, to, generatedAt, machines[], partialFailures }`; `Cache-Control: no-store` |
-| Por máquina | `paypadId`, `paypadName`, `transactions` (total del día), `approvedCount`, `errorCount`, `errorTotal`, `lastErrorAt` |
+| Por máquina | `paypadId`, `paypadName`, `transactions` (total del día), `approvedCount`, `errorCount`, `errorTotal` (suma de `incomeAmount` de las transacciones en error), `errorTotalIncomplete`, `errorTotalMixedCurrency`, `currencyLabels`, `lastErrorAt` |
 | Orden | `errorCount` desc, luego `lastErrorAt` desc (las máquinas que más fallan van primero) |
 | Rango | Día local en curso: `00:00` → `23:59:59.999` (en Bogotá, `05:00Z` → `04:59:59.999Z` del día siguiente) |
 | Permisos | `ReadTransactions` **y** `ReadPayPads`; sin ellos la sección no se renderiza |
@@ -464,6 +469,12 @@ sondeo no castigue al API:
 
 - Una **tarjeta pequeña por máquina** con errores: nombre, ID, cantidad de errores, importe total
   (`errorTotal`) y «último error hace …». Se muestran **solo** máquinas con `errorCount > 0`.
+- **Máquinas multimoneda (cambio divisa):** si el baúl de la máquina trabaja hoy más de una
+  moneda, la tarjeta **no muestra un importe** —que estaría sumando COP y USD— sino
+  «Importe en varias monedas (COP, USD)», y el aviso emergente dice lo mismo. La moneda se
+  resuelve con `summarizeMachineCurrencies` (misma regla de uso de C9) y **solo** para las
+  máquinas que acumularon errores, con caché de 60 s y un tope de 10 consultas de baúl por
+  vuelta (`MAX_STORAGE_LOOKUPS`): el costo extra del sondeo es marginal y acotado.
 - Cuando el contador de una máquina **sube** entre dos vueltas del sondeo se emite un aviso
   emergente (`toast`) con máquina, cantidad nueva y total del día: es la alerta «por encima de
   todo» sin salir del inicio.
@@ -481,4 +492,7 @@ sondeo no castigue al API:
   de atascos al abrir la máquina. Aquí se cuenta el error, no se atribuye.
 - Es un conteo del registro del backend, no un evento instantáneo del Pay+ (sin B-01 no hay
   pulso): el retraso máximo es la cadencia del sondeo más la caché del BFF (≤ 50 s).
+- `errorTotal` es la suma de `incomeAmount` de las transacciones en estado de error: si algún
+  importe no se puede interpretar se marca `errorTotalIncomplete` y, si la máquina opera varias
+  monedas, no se presenta como importe comparable.
 - La alerta no sustituye la notificación por correo (F5), que sigue requiriendo backend.
