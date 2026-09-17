@@ -82,7 +82,7 @@ export function TransactionSummaryCards({ summary }: { summary: TransactionSumma
                 <p className={cn("font-numeric truncate text-xl font-semibold tracking-tight", styles.value)}>{value}</p>
                 <p className="mt-0.5 truncate text-xs font-medium text-muted-foreground">{label}</p>
                 {subtitle ? (
-                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground/80" title={subtitle}>{subtitle}</p>
+                  <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug break-words text-muted-foreground/80" title={subtitle}>{subtitle}</p>
                 ) : null}
               </div>
             </div>
