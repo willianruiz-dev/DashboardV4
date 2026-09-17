@@ -203,6 +203,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 (cargada/entregada/rechazada/saldo) y debajo la detección de atascos. */}
             <DenominationTable
               denominations={metricsQuery.denominations}
+              excludedRows={metrics?.excludedRows ?? []}
               loading={metricsQuery.isLoading && metrics === null}
               rangeLabel={rangeLabel}
               rows={metrics?.rows ?? []}

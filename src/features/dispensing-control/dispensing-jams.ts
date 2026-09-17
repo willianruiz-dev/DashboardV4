@@ -6,6 +6,7 @@ import {
   buildDenominationValueIndex,
   denominationCurrencyText,
 } from "./denomination-currency";
+import { DENOMINATION_NOT_IN_USE_REASON, isDenominationInUse } from "./denomination-usage";
 
 /**
  * Detección temprana de atascos (monederos/billeteros) — cálculo PURO y testeable.
@@ -611,13 +612,17 @@ function loadQuantityForDenomination(
   return total;
 }
 
-function tonnageQuantity(tonnage: Tonnage | null, denominationId: number): number | null {
+function tonnageQuantity(
+  tonnage: Tonnage | null,
+  denominationId: number,
+  pick: (detail: Tonnage["details"][number]) => string = (detail) => detail.quantityDp,
+): number | null {
   if (!tonnage) {
     return null;
   }
 
   const detail = tonnage.details.find((item) => item.idCurrencyDenomination === denominationId);
-  return detail ? toInt(detail.quantityDp) : null;
+  return detail ? toInt(pick(detail)) : null;
 }
 
 /**
@@ -938,13 +943,25 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
     const observedMovement = physicalMovement !== null && physicalMovement > 0;
     const configured = entry.isDispensing;
     const usableStock = toInt(entry.dpStored);
-    const stockInLastArqueo = (currentQuantity ?? 0) > 0;
-    const usedToday =
-      configured ||
-      usableStock > 0 ||
-      stockInLastArqueo ||
-      detailEvidence.dispensed.has(denominationId) ||
-      detailEvidence.failed.has(denominationId);
+    const minDpQuantity = toInt(entry.minDpQuantity);
+    // Misma regla que el desglose de saldos (`denomination-usage.ts`): los dos paneles
+    // deben coincidir sobre qué denominaciones trabaja la máquina hoy.
+    const usedToday = isDenominationInUse({
+      acceptedLastArqueo: tonnageQuantity(lastTonnage, denominationId, (detail) => detail.quantityAp),
+      acceptedStock: toInt(entry.apStored),
+      configured,
+      deliveredInPeriod: detailEvidence.dispensed.has(denominationId),
+      deliveredLastArqueo: currentQuantity,
+      dispensingStock: usableStock,
+      failedInPeriod: detailEvidence.failed.has(denominationId),
+      loadedInPeriod:
+        tonnageWindowValid && previousTonnage !== null
+          ? loadQuantityForDenomination(loads, denominationId, entry.denominationValue, toMillis(previousTonnage.dateCreated), toMillis(lastTonnage?.dateCreated ?? null))
+          : 0,
+      minDpQuantity,
+      rejectedLastArqueo: tonnageQuantity(lastTonnage, denominationId, (detail) => detail.quantityRj),
+      rejectionStock: toInt(entry.rjStored),
+    });
 
     if (usedToday) {
       planCandidates.set(denominationId, {
@@ -965,7 +982,7 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
       currencyLabel: currencyLabelOf(denominationId),
       denominationId,
       denominationValue: entry.denominationValue,
-      reason: `Sin configuración de dispensado, sin saldo en el baúl ni en el último arqueo y sin entregas en el período consultado.${historicalNote}`,
+      reason: `${DENOMINATION_NOT_IN_USE_REASON}${historicalNote}`,
     });
   }
 

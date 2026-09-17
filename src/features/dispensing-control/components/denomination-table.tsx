@@ -38,6 +38,8 @@ export function LowBalanceAlert({ balance, minDpQuantity }: LowBalanceAlertProps
 
 interface DenominationTableProps {
   denominations: readonly CurrencyDenomination[];
+  /** Filas del storage que no son inventario en uso: se explican, no se ocultan. */
+  excludedRows?: readonly DispensingDenominationRow[];
   loading?: boolean;
   rangeLabel: string;
   rows: readonly DispensingDenominationRow[];
@@ -51,7 +53,7 @@ function denominationImage(denominations: readonly CurrencyDenomination[], row: 
   return { alt: `Billete de ${formatDashboardMoney(value)}`, img: meta?.img ?? null, value };
 }
 
-export function DenominationTable({ denominations, loading = false, rangeLabel, rows, totalsByCurrency = [] }: DenominationTableProps) {
+export function DenominationTable({ denominations, excludedRows = [], loading = false, rangeLabel, rows, totalsByCurrency = [] }: DenominationTableProps) {
   const lowRows = rows.filter((row) => row.low);
   // Máquina de cambio divisa: los importes de monedas distintas no se suman entre sí.
   const multiCurrency = rows.some((row) => row.currencyId !== (rows[0]?.currencyId ?? null));
@@ -136,6 +138,9 @@ export function DenominationTable({ denominations, loading = false, rangeLabel, 
                           </TableCell>
                           <TableCell className={cn("text-right align-top", tinted)}>
                             <span className="font-numeric font-medium text-emerald-600 dark:text-emerald-400">{row.delivered}</span>
+                            {row.negativeReport ? (
+                              <span className="block text-xs text-amber-600 dark:text-amber-400" title={row.negativeReport}>arqueo negativo, se muestra 0</span>
+                            ) : null}
                           </TableCell>
                           <TableCell className={cn("text-right align-top", tinted)}>
                             <span className="font-numeric font-medium text-red-500 dark:text-red-400">{row.rejected}</span>
@@ -193,7 +198,11 @@ export function DenominationTable({ denominations, loading = false, rangeLabel, 
                     </div>
                     <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
                       <div><dt className="text-xs text-muted-foreground">Cargada</dt><dd className="font-numeric font-medium text-blue-600 dark:text-blue-400">{row.loadedInRange}</dd></div>
-                      <div><dt className="text-xs text-muted-foreground">Entregada</dt><dd className="font-numeric font-medium text-emerald-600 dark:text-emerald-400">{row.delivered}</dd></div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Entregada</dt>
+                        <dd className="font-numeric font-medium text-emerald-600 dark:text-emerald-400">{row.delivered}</dd>
+                        {row.negativeReport ? <dd className="text-xs text-amber-600 dark:text-amber-400">arqueo negativo</dd> : null}
+                      </div>
                       <div><dt className="text-xs text-muted-foreground">Rechazada</dt><dd className="font-numeric font-medium text-red-500 dark:text-red-400">{row.rejected}</dd></div>
                       <div><dt className="text-xs text-muted-foreground">Saldo</dt><dd className="font-numeric font-semibold">{row.balance}</dd></div>
                     </dl>
@@ -204,6 +213,29 @@ export function DenominationTable({ denominations, loading = false, rangeLabel, 
             </div>
           </>
         )}
+
+        {/* Filas del storage que NO son inventario de la máquina hoy (p. ej. el billete de
+            USD 1 que solo vive en `PayPad/GetStorage` con todo en cero). No se ocultan: se
+            listan con el motivo, igual que el panel de atascos. Antes aparecían en la tabla
+            como un baúl más, con un «Entregada (DP) −6» de un arqueo viejo. */}
+        {!loading && excludedRows.length > 0 ? (
+          <div className="grid gap-1 rounded-lg border border-dashed border-slate-300/80 p-3 dark:border-slate-700">
+            <p className="text-xs font-medium">
+              Denominaciones fuera del inventario en uso · no se muestran en el desglose ({excludedRows.length})
+            </p>
+            <ul className="grid gap-1 text-xs text-muted-foreground">
+              {excludedRows.map((row) => (
+                <li key={row.denominationId}>
+                  • <span className="font-medium text-foreground">{row.currencyLabel ? `${row.currencyLabel} ` : ""}{formatDashboardMoney(row.denominationValue)}</span>: {row.excludedReason}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-muted-foreground">
+              Se excluyen sólo cuando no hay ninguna señal de que la máquina las trabaje (ni configuración, ni saldo, ni cargues, ni entregas
+              positivas). Si esa denominación sí debe dispensar, configúrala en Pay+ → Configurar denominaciones y registra su cargue.
+            </p>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

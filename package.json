@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "node scripts/start-local-api.mjs --dev",
+    "fixtures:dispensing": "tsx scripts/dispensing-fixtures.mts",
     "build": "next build",
     "start": "node scripts/start-local-api.mjs",
     "start:local-api": "npm run build && npm run start",
@@ -51,6 +52,7 @@
     "eslint": "^9.39.1",
     "eslint-config-next": "^16.3.5",
     "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.13",
     "typescript": "5.9.3"
   }
 }

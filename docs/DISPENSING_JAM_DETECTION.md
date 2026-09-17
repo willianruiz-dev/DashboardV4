@@ -1,9 +1,9 @@
 # Detección temprana de atascos (monederos/billeteros) — estudio e implementación
 
-> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C8)** dentro de *Control de dispensado*.
+> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C9)** dentro de *Control de dispensado*.
 > **Veredicto:** **VIABLE con la API y el dashboard actuales**, sin cambios en el backend .NET ni en la base de datos.
 > **Archivos nuevos:** `src/features/dispensing-control/dispensing-jams.ts` (motor puro), `src/app/api/dispensing/jams/route.ts` (BFF acotado + caché), `src/features/dispensing-control/components/jam-diagnostics.tsx` (panel), `src/features/dispensing-control/api.ts` (cliente) y extensiones en `schemas.ts`, `hooks.ts` y la página.
-> **Estado de validación:** TypeScript, ESLint y build **PASA** (2026-09-17) + tres fixtures locales del motor y uno del normalizador (`node --experimental-strip-types`): escenario de sustitución/devolución, **máquina real Pay+ Inder 2 (ID 71)** y caso ciego. La prueba E2E autenticada sigue pendiente (B-04/B-05 del backlog).
+> **Estado de validación:** TypeScript, ESLint y build **PASA** (2026-09-17) + **suite de regresiones en el repositorio**: `npm run fixtures:dispensing` (`scripts/dispensing-fixtures.mts`, 27 comprobaciones, sin red) reproduce los siete escenarios citados en este documento (C2, C3, C4, C6, C8, C9). La prueba E2E autenticada sigue pendiente (B-04/B-05 del backlog).
 
 ---
 
@@ -22,6 +22,8 @@ El operador reportó: **«empezó a dispensar todo en monedas de 100 porque se a
 | **C5** | **El análisis exigía pulsar un botón.** Sin clic, el motor no tenía detalles y no había alerta posible: el operador veía «Sin señales» hasta analizar manualmente. | Reporte: «primero debería lanzar la alerta apenas consulte la máquina» | El análisis se **dispara automáticamente** al seleccionar máquina o cambiar el período (clave de consulta por máquina+rango, `staleTime` 5 min y caché de detalles de 30 min en el BFF). El botón pasa a **«Re-analizar»**. |
 
 | **C8** | **Las monedas se mezclaban y aparecían denominaciones que la máquina no usa.** El operador reportó dos cosas: (a) en una máquina de cambio divisa (COP ⇄ USD) los números salían raros, y (b) en una máquina que **solo maneja pesos** (CC Centro) aparecía un billete de **USD 1** como *Implicada* / *Posible atasco* con *«Configuración contradice el arqueo»*. Causas verificadas: la combinación canónica se armaba con **todas** las denominaciones, así que un pago de **USD 100** se "planeaba" con **1 × COP 100** (mismo valor numérico) y el monedero de pesos quedaba acusado de no participar; el valor de una denominación ausente del storage era **0**; los totales de baúl sumaban pesos y dólares; y una fila heredada ($1 sin configuración, sin saldo, con un arqueo antiguo que bajó 6) entraba al análisis solo por el **histórico** de arqueos. | Reporte del usuario + capturas + fixtures `multimoneda`/`metricas-multimoneda` | El motor es **consciente de la moneda** (`denomination-currency.ts`, `idCurrency` del catálogo): la combinación canónica, la sustitución, la compensación y la participación se evalúan **dentro de la moneda del pago**; el valor sale del catálogo ∪ storage; los pagos con denominaciones de varias monedas no se combinan (`mixedCurrencyPayouts`); la conciliación por importes se desactiva declarándolo cuando el período usa varias monedas; los totales se muestran **por moneda** (nunca sumados) y cada fila lleva su etiqueta de moneda (`COP 100` vs `USD 100`). Además una denominación solo se evalúa si la máquina **la usa hoy**: configurada, con saldo en el baúl, con existencia en el último arqueo o con entregas en el período; el histórico de arqueos ya no basta y las descartadas se informan con su motivo (`ignoredDenominations`). |
+
+| **C9** | **La fila seguía apareciendo en el «Desglose por denominaciones».** Tras C8 el billete de **USD 1** desapareció del panel de atascos, pero seguía en el desglose como un baúl más, con «Entregada (DP) **−6**» y un «USD $0» en el inventario por moneda. El desglose se construía con **todas** las filas de `PayPad/GetStorage`, sin aplicar la regla de uso. Además mostraba como entrega un valor **negativo** del arqueo. | Captura del operador: `USD $1 · Entregada (DP) −6 · Saldo 0 · Estado OK`, frente a la «Lista de Denominaciones» del dashboard antiguo (`PayPadStorageForm.js` filtra el catálogo por `x.idCurrency === paypad.idCurrency`) donde esa denominación no existe | La regla de uso se extrae a **`denomination-usage.ts`** y la aplican **los dos** paneles (desglose y motor), de modo que no puedan contradecirse. El desglose principal muestra solo inventario en uso; el resto se lista aparte con el motivo (`excludedRows`, misma idea que `ignoredDenominations`). Los valores negativos del arqueo se **acotan a 0** con la nota «arqueo negativo, se muestra 0» (`negativeReport`). Los totales y el inventario por moneda se calculan solo con lo que está en uso (desaparece el «USD $0»). |
 
 ### Por qué el 500 quedaba invisible aunque estuviera atascado
 
@@ -77,7 +79,7 @@ Antes de C1–C3 el mismo escenario producía `0 incidentes` y «sin señales»:
 
 ---
 
-### Verificación del billete de 1 dólar en una máquina de solo pesos (fixture `multimoneda`, caso 1)
+### Verificación del billete de 1 dólar en una máquina de solo pesos (escenario `cc-centro-usd1`)
 
 Réplica de la captura reportada: máquina con COP 1.000 (20) y COP 500 (40) configurados y
 con saldo, más una fila heredada de **USD 1** sin configuración y sin saldo, cuyo arqueo
@@ -89,18 +91,19 @@ ANTES  HEADLINE: Posible atasco · Posible atasco en la denominación 1.
            | nivel=sospecha score=1 | señales=[config_inconsistente]   → Rol «Implicada»
 
 DESPUÉS HEADLINE: No se detectaron señales de atasco en la ventana analizada.
-       d=1000 | saldo=20 | config=true | caída=5 | nivel=sin_evidencia | señales=[]
-       d=500  | saldo=40 | config=true | caída=0 | nivel=sin_evidencia | señales=[]
-       IGNORADAS: USD 1 → «Sin configuración de dispensado, sin saldo en el baúl ni en el
-       último arqueo y sin entregas en el período consultado. El histórico de arqueos sí la
-       movió: módulo retirado, reconfigurado o unidades extraídas.»
+       desglose: COP 1000 · COP 500   ← el desglose ya no muestra el USD 1
+       excluidas: USD 1 → «Sin dispensación configurada, sin saldo (DP/RJ/AP), sin cargues en
+       el período y sin entregas positivas en el último arqueo ni en el período consultado.
+       El último arqueo reporta −6 entregada(s): se muestra 0. Su moneda (USD) no es la del
+       Pay+ (COP).»
+       totales por moneda: solo COP (desaparece el «USD $0»)
 ```
 
 La denominación no desaparece del panel: sale del diagnóstico de atascos y se explica en la
 lista de **no evaluadas**, porque sin unidades en el baúl no hay módulo que pueda estar
 atascado hoy.
 
-### Verificación de la máquina de cambio de divisa (fixture `multimoneda`, caso 2)
+### Verificación de la máquina de cambio de divisa (escenario `divisa`)
 
 Máquina COP ⇄ USD con cuatro módulos (COP 100, COP 1.000, USD 1, USD 100) y pagos de
 **USD 100** entregados con un billete de USD 100, más dos pagos de **USD 10** entregados
@@ -122,14 +125,19 @@ DESPUÉS HEADLINE: Atasco probable · Posible atasco en la denominación USD 10 
 El motor **sigue detectando** la sustitución real (dentro de USD) y ahora distingue
 `COP 100` de `USD 100` en la tabla y en el titular.
 
-### Verificación de los totales por moneda (fixture `metricas-multimoneda`)
+### Verificación de los totales por moneda y del valor negativo acotado
 
 ```
-FILAS: COP 1000 (saldo 20, $20.000) · COP 500 (40, $20.000) · USD 10 (20, $200) · USD 1 (0, $0)
+FILAS: COP 1000 (saldo 20) · COP 500 (40) · USD 10 (20) · USD 1 (0)
 TOTALES POR MONEDA: [ {currencyId: 1, label: "COP", total: "40000"},
                       {currencyId: 2, label: "USD", total: "200"} ]
-SUMA PLANA (solo referencia, ya no se muestra): 40200
+Entregada del USD 1 (arqueo −6): 0  + negativeReport «El último arqueo reporta −6
+entregada(s): se muestra 0.»
 ```
+
+La suite del repositorio comprueba además que una máquina de divisa con módulos USD **reales**
+(configurados y con saldo) los mantiene visibles: la exclusión no es «moneda distinta», es
+«sin ninguna señal de uso».
 
 ---
 
@@ -229,6 +237,7 @@ concreto.
 
 | Elemento | Archivo | Notas |
 | --- | --- | --- |
+| Uso de cada denominación | `src/features/dispensing-control/denomination-usage.ts` | `isDenominationInUse` + motivo canónico: decide si la denominación entra al desglose y al motor. Un valor negativo de arqueo no es evidencia de uso. |
 | Moneda de cada baúl | `src/features/dispensing-control/denomination-currency.ts` | Índice `idCurrencyDenomination` → moneda y valor desde el catálogo ∪ storage; etiqueta corta (`COP`, `USD`) para la UI. Sin él, pesos y dólares se sumaban y dos denominaciones del mismo valor eran indistinguibles. |
 | Motor puro | `src/features/dispensing-control/dispensing-jams.ts` | Sin red ni React: `computeJamDiagnostics`, `classifyJamOperation`, `canonicalPayoutMix`, `reconcileDetailInterpretation`, `JAM_THRESHOLDS`, `jamSignalWeights/Labels`, tipos. Testeable con Node (`--experimental-strip-types`). |
 | BFF acotado | `src/app/api/dispensing/jams/route.ts` | `POST { paypadId, from, to, maxTransactions ≤ 60 }` (30 por defecto). Cachea detalles inmutables por `id`; 404 = sin detalles; un detalle ilegible no tumba el diagnóstico (`detailsFailures`). |
@@ -290,6 +299,15 @@ Una denominación **compensadora nunca recibe nivel de atasco**: está entregand
 > último intervalo de arqueos. Las **tendencias** (caídas de participación, uso
 > decreciente) son contexto con peso 0 y nunca generan un incidente por sí solas.
 
+### Regla de oro del uso (¿la máquina trabaja esta denominación?)
+
+> Una denominación pertenece al inventario de la máquina solo si hay **alguna señal positiva**
+> de que la trabaja: configuración de dispensado, umbral configurado, saldo (DP/RJ/AP),
+> cargues del período, entregas/rechazos **positivos** del último arqueo, o entregas/intentos
+> registrados en los detalles consultados. Un valor **negativo** del arqueo (artefacto legacy
+> de cantidades firmadas) no cuenta como uso. Vale igual para el desglose de saldos y para el
+> motor de atascos: `denomination-usage.ts` es la única fuente de la regla.
+
 ### Regla de oro de la moneda
 
 > Todo cálculo (combinación canónica, sustitución, compensación, participación, saldos y
@@ -325,12 +343,24 @@ muestra "cubierta por el análisis" o "fuera de la ventana analizada" en cada fi
 
 ---
 
-## 5. Validación local (fixture del motor)
+## 5. Validación local (suite del repositorio)
 
-Escenario reproducido (sin red): 6 pagos de 50.000; los tres primeros usan el billete de
+```bash
+npm run fixtures:dispensing     # scripts/dispensing-fixtures.mts — sin red, sin sesión
+```
+
+Siete escenarios con aserciones (27 comprobaciones; el proceso termina con código 1 si algo
+falla). Cada uno corresponde a un caso reportado por el operador o a un falso positivo ya
+corregido, así que la suite es la red de seguridad de C2–C9: `usuario-actual`, `compensacion`,
+`inder2`, `jam`, `ciego`, `cc-centro-usd1` y `divisa`.
+
+### Escenario clásico del motor (50.000 y 500)
+
+Escenario `jam` (sin red): 6 pagos de 50.000; los tres primeros usan el billete de
 50.000, los tres siguientes se completan con 2×20.000 + 1×10.000; dos transacciones
 `Aprobada Error Devuelta` con fallos en **500** (monedas) y una con fallo en 20.000; dos
-arqueos donde los baúles de 50.000 y 500 **no bajan** y los demás sí.
+arqueos donde los baúles de 50.000 y 500 **no bajan** y los demás sí. La suite lo ejecuta tal
+cual y comprueba niveles, ráfaga y cobertura de la caída física.
 
 | Denominación | Saldo | No entregado | Dispensado | Sustituciones | Caída física | Nivel | Señales |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -369,6 +399,7 @@ Incidentes: *Posible atasco en la denominación 50000* (confirmado), *500* (conf
 | Costo de `Transaction/{id}/Details` (una petición por transacción) | Carga del API legado | Análisis **manual**, tope de 30 transacciones por defecto (máx. 60), concurrencia 5, caché de 30 min por `id` (600 entradas) y `staleTime` de 5 min |
 | Ventana truncada | Evidencia parcial | `truncated` + advertencia explícita y regla de cobertura de la caída física |
 | Falsos positivos por desabasto | Ruido operativo | `dpStored == 0` ⇒ agotamiento (no atasco); en el umbral de recarga la única señal de devolución se limita a *sospecha* |
+| Cantidades negativas del arqueo en el desglose | Números que parecen entregas | Se acotan a 0 y la fila declara el valor reportado (`negativeReport`); el signo se conserva solo para lectura, como en los cargues/arqueos |
 | Configuración obsoleta: una denominación marcada «Dispensa» sin módulo físico (p. ej. USD 1 en una máquina de solo pesos) | Fila sin evidencia que confunde al operador | La fila solo se evalúa si además tiene saldo, existencia en el último arqueo o entregas en el período; sin ellas queda vacía (peso 0) y su acción remite a Pay+ → Configurar denominaciones. Las que no la usan hoy se listan aparte con el motivo (`ignoredDenominations`) |
 
 ---

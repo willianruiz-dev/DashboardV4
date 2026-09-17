@@ -2,6 +2,7 @@ import type { CurrencyDenomination } from "@/features/denominations/schemas";
 import type { Load, PayPadStorage, Tonnage } from "@/features/paypads/schemas";
 import type { TransactionStateBucket } from "@/features/transactions/schemas";
 import { buildDenominationCurrencyIndex, denominationCurrencyText } from "./denomination-currency";
+import { DENOMINATION_NOT_IN_USE_REASON, isDenominationInUse } from "./denomination-usage";
 
 /**
  * Cálculo puro de métricas de dispensado (AP/DP/RJ) para un Pay+ y un período.
@@ -41,6 +42,17 @@ export interface DispensingDenominationRow {
   /** Etiqueta de la moneda (p. ej. «COP», «USD»): sin ella, «100» y «100» se confunden. */
   currencyLabel: string | null;
   denominationId: number;
+  /**
+   * La denominación pertenece HOY al inventario de la máquina (configurada, con saldo,
+   * con cargues o con entregas). Las filas que no cumplen salen del desglose principal.
+   */
+  inUse: boolean;
+  /** Motivo por el que la fila quedó fuera del desglose principal (`null` si está dentro). */
+  excludedReason: string | null;
+  /** El último arqueo reporta un valor negativo para esta denominación (artefacto legacy). */
+  negativeReport: string | null;
+  /** `true` si la moneda de la denominación no es la declarada por el Pay+. */
+  foreignCurrency: boolean;
   denominationValue: string;
   delivered: number;
   isDispensing: boolean;
@@ -64,8 +76,11 @@ export interface DispensingMetrics {
   dp: { at: string | null; storageTotal: string; total: string | null };
   lastLoad: { at: string | null; elapsedMs: number | null; total: string | null };
   rj: { count: number; physicalTotal: string | null; total: string };
+  /** Sólo denominaciones en uso hoy (lo que la máquina realmente maneja). */
   rows: DispensingDenominationRow[];
-  /** Inventario del baúl dispensador separado por moneda (una entrada por moneda). */
+  /** Filas del storage que NO son inventario en uso hoy, con su motivo (no se ocultan: se explican). */
+  excludedRows: DispensingDenominationRow[];
+  /** Inventario del baúl dispensador separado por moneda (una entrada por moneda en uso). */
   storageTotalsByCurrency: DispensingCurrencyTotal[];
 }
 
@@ -158,6 +173,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     machineCurrency: input.machineCurrency ?? null,
     storage,
   });
+  const machineCurrencyId = input.machineCurrency?.id ?? null;
 
   const lastLoad = latestBy(loads, (load) => toMillis(load.dateCreated));
   const lastLoadTime = lastLoad ? toMillis(lastLoad.dateCreated) : Number.NaN;
@@ -168,14 +184,66 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
   });
   const rangeLoadsTotal = sumDecimalStrings(loadsInRange.map((load) => load.totalLoaded));
 
-  const rows: DispensingDenominationRow[] = storage
+  const allRows: DispensingDenominationRow[] = storage
     .map((entry) => {
-      const delivered = tonnageDetailQuantity(lastTonnage, entry.idCurrencyDenomination, (detail) => detail.quantityDp);
-      const rejected = tonnageDetailQuantity(lastTonnage, entry.idCurrencyDenomination, (detail) => detail.quantityRj);
+      const deliveredRaw = tonnageDetailQuantity(lastTonnage, entry.idCurrencyDenomination, (detail) => detail.quantityDp);
+      const rejectedRaw = tonnageDetailQuantity(lastTonnage, entry.idCurrencyDenomination, (detail) => detail.quantityRj);
+      const apRaw = tonnageDetailQuantity(lastTonnage, entry.idCurrencyDenomination, (detail) => detail.quantityAp);
       const balance = toInt(entry.dpStored);
       const minDpQuantity = toInt(entry.minDpQuantity);
+      const rejectionStock = toInt(entry.rjStored);
+      const acceptedStock = toInt(entry.apStored);
+      const loadedInRange = detailQuantity(loadsInRange.flatMap((load) => load.details), entry.idCurrencyDenomination);
 
+      // Un arqueo legacy puede traer cantidades NEGATIVAS (firmadas). Mostrar «entregada
+      // −6» como una entrega es incorrecto: se acota a 0 y se declara el valor reportado.
+      const negatives: string[] = [];
+      if (deliveredRaw !== null && deliveredRaw < 0) {
+        negatives.push(`${deliveredRaw} entregada(s)`);
+      }
+      if (rejectedRaw !== null && rejectedRaw < 0) {
+        negatives.push(`${rejectedRaw} rechazada(s)`);
+      }
+      const negativeReport = negatives.length === 0 ? null : `El último arqueo reporta ${negatives.join(" y ")}: se muestra 0.`;
+
+      const delivered = deliveredRaw === null ? balance : Math.max(0, deliveredRaw);
+      const rejected = rejectedRaw === null ? rejectionStock : Math.max(0, rejectedRaw);
       const currency = currencyIndex.get(entry.idCurrencyDenomination);
+      const foreignCurrency = machineCurrencyId !== null && currency?.currencyId != null && currency.currencyId !== machineCurrencyId;
+
+      // ¿La máquina usa HOY esta denominación? La misma regla del motor de atascos: la
+      // configuración, el saldo (DP/RJ/AP), los cargues del período, las entregas del
+      // último arqueo o cualquier detalle del baúl. Una fila heredada —el billete de
+      // USD 1 que solo aparece en `PayPad/GetStorage` con todo en cero y un arqueo
+      // negativo— no es inventario de la máquina y no debe figurar en el desglose. El
+      // dashboard antiguo tampoco la muestra: su «Lista de Denominaciones» filtra el
+      // catálogo por la moneda del Pay+ (`idCurrency === paypad.idCurrency`).
+      const inUse = isDenominationInUse({
+        acceptedLastArqueo: apRaw,
+        acceptedStock,
+        configured: entry.isDispensing,
+        deliveredInPeriod: false,
+        deliveredLastArqueo: deliveredRaw,
+        dispensingStock: balance,
+        failedInPeriod: false,
+        loadedInPeriod: loadedInRange,
+        minDpQuantity,
+        rejectedLastArqueo: rejectedRaw,
+        rejectionStock,
+      });
+
+      const excludedParts: string[] = [];
+      if (!inUse) {
+        excludedParts.push(DENOMINATION_NOT_IN_USE_REASON);
+        if (negativeReport) {
+          excludedParts.push(negativeReport);
+        }
+        if (foreignCurrency) {
+          excludedParts.push(
+            `Su moneda (${denominationCurrencyText(currency) ?? "no declarada"}) no es la del Pay+ (${input.machineCurrency?.label ?? "no declarada"}).`,
+          );
+        }
+      }
 
       return {
         balance,
@@ -186,12 +254,16 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         denominationValue: entry.denominationValue,
         // Entregada/rechazada: valor físico del último arqueo; sin arqueo,
         // cae al inventario actual del sistema (referencia).
-        delivered: delivered ?? balance,
+        delivered,
+        excludedReason: excludedParts.length === 0 ? null : excludedParts.join(" "),
+        foreignCurrency,
+        inUse,
         isDispensing: entry.isDispensing,
-        loadedInRange: detailQuantity(loadsInRange.flatMap((load) => load.details), entry.idCurrencyDenomination),
+        loadedInRange,
         low: entry.isDispensing && balance <= minDpQuantity + LOW_BALANCE_TOLERANCE,
         minDpQuantity,
-        rejected: rejected ?? toInt(entry.rjStored),
+        negativeReport,
+        rejected,
       };
     })
     // Moneda primero (agrupada) y valor descendente dentro de ella: sin esto, un
@@ -206,7 +278,12 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       return toInt(right.denominationValue) - toInt(left.denominationValue);
     });
 
-  const storageTotal = sumDecimalStrings(storage.map((entry) => entry.dpTotal));
+  const rows = allRows.filter((row) => row.inUse);
+  const excludedRows = allRows.filter((row) => !row.inUse);
+
+  // El total y el desglose por moneda se calculan SOLO con el inventario en uso: si no,
+  // un saldo residual de una moneda que la máquina no maneja aparece como «USD $0».
+  const storageTotal = sumDecimalStrings(rows.map((entry) => entry.balanceValue));
   const totalsByCurrency = new Map<string, DispensingCurrencyTotal>();
   for (const row of rows) {
     const key = row.currencyId === null ? "none" : String(row.currencyId);
@@ -245,6 +322,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       physicalTotal: lastTonnage?.totalRj ?? null,
       total: byState[RETURNED_ERROR_STATE]?.total ?? "0",
     },
+    excludedRows,
     rows,
     storageTotalsByCurrency: [...totalsByCurrency.values()],
   };
