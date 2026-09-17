@@ -7,6 +7,8 @@ export interface DashboardNavigationItem {
   title: string;
 }
 
+export const DISPENSING_CONTROL_HREF = "/dashboard/transactions/dispensing-control";
+
 const legacyPathToAppPath: Readonly<Record<string, string>> = {
   "/": "/dashboard",
   "/Admin/Alerts": "/dashboard/alerts",
@@ -64,6 +66,58 @@ export function buildDashboardNavigation(routes: readonly RouteDefinition[]): Da
     }
 
     rootItems.push(item);
+  }
+
+  return rootItems;
+}
+
+function cloneNavigationItem(item: DashboardNavigationItem): DashboardNavigationItem {
+  return { ...item, children: item.children.map(cloneNavigationItem) };
+}
+
+function findNavigationItem(items: readonly DashboardNavigationItem[], href: string): DashboardNavigationItem | null {
+  for (const item of items) {
+    if (item.href === href) {
+      return item;
+    }
+
+    const child = findNavigationItem(item.children, href);
+    if (child) {
+      return child;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Inyecta el ítem "Control de dispensado" en la navegación para roles
+ * SuperAdmin (sin depender de registros de ruta en datos): se anida bajo
+ * "Transacciones" si existe, o a nivel raíz si no. Si la ruta ya viene
+ * asignada al rol en datos, no se duplica.
+ */
+export function withDispensingControl(items: readonly DashboardNavigationItem[], enabled: boolean): DashboardNavigationItem[] {
+  if (!enabled) {
+    return [...items];
+  }
+
+  const rootItems: DashboardNavigationItem[] = items.map(cloneNavigationItem);
+  if (findNavigationItem(rootItems, DISPENSING_CONTROL_HREF)) {
+    return rootItems;
+  }
+
+  const dispensingItem: DashboardNavigationItem = {
+    children: [],
+    href: DISPENSING_CONTROL_HREF,
+    id: -1,
+    title: "Control de dispensado",
+  };
+
+  const transactions = findNavigationItem(rootItems, "/dashboard/transactions");
+  if (transactions && !transactions.children.some((child) => child.href === DISPENSING_CONTROL_HREF)) {
+    transactions.children.push(dispensingItem);
+  } else {
+    rootItems.push(dispensingItem);
   }
 
   return rootItems;

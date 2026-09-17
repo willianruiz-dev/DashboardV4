@@ -2,11 +2,11 @@
 
 > **Actualizado:** 2026-09-17 — **IMPLEMENTADO (fases A–D)**
 > **Veredicto:** **VIABLE**. El ~90% de los datos se resuelve con endpoints ya existentes (frontend + BFF). **Cero cambios en el backend .NET** para el núcleo; 1 extensión BFF de ~15 líneas (resumen por estado, ya aplicada) y 1 registro de ruta en datos (vía UI, sin código).
-> **Estado del código:** implementado en `src/features/dispensing-control/` + ruta `/dashboard/transactions/dispensing-control`. Pendiente: registro de datos (ruta + asignación al rol SuperAdmin) y validación E2E autenticada con Pay+ real.
+> **Estado del código:** implementado en `src/features/dispensing-control/` + ruta `/dashboard/transactions/dispensing-control`. **Sin operaciones de datos**: el acceso SuperAdmin se resuelve en el frontend por nombre de rol (ítem inyectado en el sidebar + guard de página). Pendiente: validación E2E autenticada con Pay+ real.
 
 ### Decisiones resueltas (2026-09-17)
 
-- **D1 — Acceso SuperAdmin:** **data-driven** (opción A), igual que el resto de módulos: la ruta se asigna al rol **SuperAdmin** (que tiene muchos usuarios) vía el módulo Roles; el guard de página y la visibilidad del sidebar dependen de esa asignación (sin hardcode de nombres de rol). El API de permisos es solo lectura (catálogo seed en DB), por lo que el guard usa la **ruta** en vez de un permiso nombrado; si el equipo prefiere `ReadDispensingControl`, basta con crear la fila en la tabla de permisos y cambiar 1 línea del guard.
+- **D1 — Acceso SuperAdmin:** **resuelto en el frontend por nombre de rol** (`isSuperAdminRole` en `src/lib/roles/super-admin.ts`, normaliza `SuperAdmin`/`super admin`/`super-admin`, e incluye `root` como super-rol legacy, igual que la página de Usuarios). El sidebar inyecta el ítem para ese rol (`withDispensingControl` en `dashboard-navigation.ts`) y la página aplica el mismo guard. **Cero operaciones de datos, cero cambios al API.** Si en el futuro se crea la ruta en datos para el rol, el ítem no se duplica.
 - **D2 — Umbral de alerta:** `minDpQuantity` existente (con la tolerancia legacy de +10 unidades). Opción B (porcentaje sobre capacidad en `extraDataJson`) queda como evolución.
 - **D3 — Tarjeta DP:** último arqueo (físico) con subtítulo de fecha; sin arqueo, referencia del inventario actual (storage).
 - **D4 — byState:** extensión BFF aplicada (`summary.byState` en `src/app/api/transactions/search/route.ts`).
@@ -88,15 +88,17 @@ Cambios transversales pequeños:
 3. Cada página hace su guard propio: `hasPermission(session, "X")` → si no, `<ForbiddenState/>`.
 4. **No existe un rol "superAdmin" en el código ni en los seeds.** El único caso especial de rol por nombre es `root` (página de Usuarios: `session.role.role?.toLowerCase() === "root"`).
 
-### Recomendación (opción A, data-driven, sin hardcode)
+### Implementado (resolución 100% en la app, sin datos ni API)
 
-1. **Módulo Rutas (UI existente):** crear la ruta `route: "/Admin/Transactions/DispensingControl"`, `title: "Control de dispensado"`, icono p. ej. `fa-boxes-stacked` / `fa-scale-balanced`.
-2. **Módulo Roles (UI existente):** asignar esa ruta **solo al rol que actúe como superAdmin** + crear/asignar el permiso `ReadDispensingControl`.
-3. **Sidebar:** el ítem aparece solo para roles con la ruta asignada → cumplimiento exacto de "solo superAdmin lo ve", sin nombrar roles en código.
-4. **Guard de página:** `hasPermission(session, "ReadDispensingControl")` en `page.tsx` (patrón idéntico a Transacciones/PayPads).
-5. **Frontend:** 1 línea en `legacyPathToAppPath` (§2).
+El acceso se resuelve **en el frontend por nombre de rol**, con el mismo patrón que ya usa la página de Usuarios para `root`:
 
-> **Alternativa B (si se prefiere hardcode):** `const isSuperAdmin = session.role.role?.toLowerCase() === "root" || session.role.role?.toLowerCase() === "superadmin";` y filtrar la navegación + guard con esa bandera (como en la página de Usuarios). Requiere definir qué nombre de rol usar en producción. → **Decisión D1 (§4).**
+1. **`src/lib/roles/super-admin.ts`** — `isSuperAdminRole(role)`: normaliza mayúsculas/espacios/guiones y reconoce `superadmin` (y `root` como super-rol legacy). Los muchos usuarios SuperAdmin acceden sin configurar nada.
+2. **`dashboard-navigation.ts`** — `withDispensingControl(items, enabled)`: inyecta el ítem *Control de dispensado* (href `/dashboard/transactions/dispensing-control`, id `-1`) bajo el nodo *Transacciones* (o a nivel raíz si no existe) solo para SuperAdmin; no duplica si la ruta ya viniera asignada en datos.
+3. **`dashboard-shell.tsx`** — aplica la inyección con `isSuperAdminRole(session.role.role ?? session.user.role)`; la navegación móvil usa el mismo árbol.
+4. **Guard de página** — la página aplica el mismo `isSuperAdminRole` y muestra `ForbiddenState` al resto.
+5. **`legacyPathToAppPath`** — el mapping `/Admin/Transactions/DispensingControl` se conserva: si algún día el rol lleva la ruta asignada en datos, el ítem se resuelve igual (sin duplicados).
+
+> Si el equipo prefiere un permiso nombrado (`ReadDispensingControl`) como en otros módulos, basta crear la fila en la tabla de permisos (seed/DB) y cambiar 1 línea del guard.
 
 ---
 

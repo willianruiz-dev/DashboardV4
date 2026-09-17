@@ -7,6 +7,7 @@ import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/componen
 import { PageHeader } from "@/components/shared/page-header";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { usePaypads } from "@/features/paypads/hooks";
+import { isSuperAdminRole } from "@/lib/roles/super-admin";
 import {
   useDispensingMetrics,
 } from "@/features/dispensing-control/hooks";
@@ -22,10 +23,10 @@ import { formatDashboardMoney } from "@/lib/formatters/money";
 
 export function DispensingControlPage() {
   const session = useDashboardSession();
-  // Data-driven: el ítem de menú y el guard dependen de la ruta asignada al rol
-  // (ver docs/DISPENSING_CONTROL_FEASIBILITY.md §3). El rol SuperAdmin —y solo
-  // ese— recibe la ruta "/Admin/Transactions/DispensingControl" vía el módulo Roles.
-  const canAccess = session.routes.some((route) => route.route?.trim() === "/Admin/Transactions/DispensingControl");
+  // Guard de nivel SuperAdmin resuelto en el frontend por nombre de rol
+  // (mismo patrón que la página de Usuarios con "root"): sin operaciones de
+  // datos ni cambios al API. Ver docs/DISPENSING_CONTROL_FEASIBILITY.md §3.
+  const canAccess = isSuperAdminRole(session.role.role ?? session.user.role);
   const canReadPaypads = hasPermission(session, "ReadPayPads");
   const paypadsQuery = usePaypads(canAccess && canReadPaypads);
 
@@ -42,7 +43,7 @@ export function DispensingControlPage() {
   }
 
   if (!canAccess) {
-    return <ForbiddenState description="Tu rol no tiene la ruta del control de dispensado asignada." />;
+    return <ForbiddenState description="El control de dispensado es exclusivo de usuarios con rol SuperAdmin." />;
   }
 
   const metrics = metricsQuery.metrics;

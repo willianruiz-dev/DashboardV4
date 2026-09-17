@@ -14,7 +14,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import type { DashboardSession } from "@/features/auth/schemas";
 import { DashboardSessionProvider } from "@/features/auth/session-context";
 import { backendStaticFilePath } from "@/lib/files/backend-static-path";
-import { buildDashboardNavigation } from "@/lib/navigation/dashboard-navigation";
+import { buildDashboardNavigation, withDispensingControl } from "@/lib/navigation/dashboard-navigation";
+import { isSuperAdminRole } from "@/lib/roles/super-admin";
 
 interface DashboardShellProps {
   children: ReactNode;
@@ -40,7 +41,13 @@ function getInitials(name: string): string {
 export function DashboardShell({ children, session }: DashboardShellProps) {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(false);
-  const navigation = buildDashboardNavigation(session.routes);
+  // El "Control de dispensado" es de nivel SuperAdmin: se inyecta en la
+  // navegación directamente en el frontend (por nombre de rol), sin
+  // depender de registros de ruta en datos ni de cambios al API.
+  const navigation = withDispensingControl(
+    buildDashboardNavigation(session.routes),
+    isSuperAdminRole(session.role.role ?? session.user.role),
+  );
   const displayName = getDisplayName(session);
   const roleName = session.role.role ?? session.user.role ?? "Rol sin nombre";
 
