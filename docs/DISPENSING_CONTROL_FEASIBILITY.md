@@ -9,6 +9,14 @@
 > panel «Detección de atascos»). Fórmulas, señales, umbrales, límites y validación local en
 > **`docs/DISPENSING_JAM_DETECTION.md`**. No cambia ninguna decisión de este documento: sigue
 > sin requerir cambios en el backend .NET.
+>
+> **Extensión 2026-09-17 — alerta del inicio y multimoneda:** el inicio del panel muestra las
+> máquinas con errores de devuelta del día (`POST /api/dispensing/return-alerts` +
+> `components/return-alerts-home.tsx`, §9 de `DISPENSING_JAM_DETECTION.md`) y el módulo separa
+> **por moneda** todo cálculo y agregado (C8/C9: `denomination-currency.ts`,
+> `denomination-usage.ts`). Este documento describe el diseño original: la lista de archivos de
+> §2 y la tabla de riesgos se actualizaron al resultado final, y el estado por fases vive en
+> `docs/AGENT_TASK_BACKLOG.md`.
 
 ### Decisiones resueltas (2026-09-17)
 
@@ -58,21 +66,29 @@ Semántica propuesta (consistente con el legacy `TransactionsResume.js`):
 ## 2. Arquitectura de archivos (propuesta)
 
 ```
-src/app/dashboard/transactions/dispensing-control/
-  page.tsx                      # Server component: guard de permiso + render del cliente
+src/app/dashboard/transactions/dispensing-control/page.tsx   # Server: ?paypad= → preselección
+src/app/api/dispensing/jams/route.ts                         # BFF acotado del análisis de detalles
+src/app/api/dispensing/return-alerts/route.ts                # BFF de la alerta del inicio
 
 src/features/dispensing-control/
-  schemas.ts                    # Tipos Zod: filtros, métricas, filas de denominación
-  api.ts                        # Reusa searchTransactions / storage / tonnages / loads
-                                # (nada nuevo salvo re-export de query keys)
-  dispensing-metrics.ts         # FUNCIÓN PURA (testeable): computeDispensingMetrics(...)
-  hooks.ts                      # useDispensingMetrics, presets de tiempo, elapsed
+  schemas.ts                    # Tipos Zod: filtros, métricas, barrido de detalles, alerta del inicio
+  api.ts                        # searchTransactions / storage / tonnages / loads + jams + return-alerts
+  dispensing-metrics.ts         # FUNCIÓN PURA: computeDispensingMetrics(...) (saldos, AP/DP/RJ)
+  dispensing-jams.ts            # FUNCIÓN PURA: motor de atascos (señales, niveles, atribución)
+  detail-normalizer.ts          # Normalizador tolerante de `Transaction/{id}/Details` (C1)
+  denomination-currency.ts      # Moneda y valor de cada denominación (COP ≠ USD) — C8
+  denomination-usage.ts         # ¿La máquina usa hoy esta denominación? + monedas por máquina — C9
+  hooks.ts                      # useDispensingMetrics, useDispensingJamScan, useDispensingReturnAlerts
   components/
-    dispensing-control-page.tsx # Composición general + estados (pending/error/empty)
+    dispensing-control-page.tsx # Composición general + estados (pending/error/empty) + aviso multimoneda
     dispensing-filters.tsx      # Select Pay+ + presets Hoy/24h/7d + rango custom
     metric-card.tsx             # Card reutilizable (título, valor, ícono, tono, sub-texto)
-    denomination-table.tsx      # Grid: Cargada / Entregada / Rechazada / Saldo + alerta por fila
-    low-balance-alert.tsx       # <Alert type="warning" message="Baúl agotándose"/> por fila
+    denomination-table.tsx      # Grid Cargada/Entregada/Rechazada/Saldo + alerta por fila
+                                # (LowBalanceAlert vive aquí) + filas fuera de inventario (C9)
+    jam-diagnostics.tsx         # Panel de atascos: incidentes, evidencia por denominación, límites
+    return-alerts-home.tsx      # Tarjetas de la alerta del inicio (errores de devuelta del día)
+
+scripts/dispensing-fixtures.mts # Suite de regresiones: `npm run fixtures:dispensing` (en `check`)
 ```
 
 Cambios transversales pequeños:
@@ -80,8 +96,8 @@ Cambios transversales pequeños:
 | Archivo | Cambio |
 | --- | --- |
 | `src/lib/navigation/dashboard-navigation.ts` | Añadir al mapa `legacyPathToAppPath`: `"/Admin/Transactions/DispensingControl": "/dashboard/transactions/dispensing-control"` (el path legado debe coincidir con el registro de ruta creado en el módulo Rutas) |
-| `src/app/api/transactions/search/route.ts` | (Opcional, D4) Extender `createSummary` con `byState` |
-| `src/features/transactions/schemas.ts` | (Opcional, D4) Extender `transactionSummarySchema` con el mapa `byState` |
+| `src/app/api/transactions/search/route.ts` | **Aplicado (D4)**: `createSummary` publica `byState` |
+| `src/features/transactions/schemas.ts` | **Aplicado (D4)**: `transactionSummarySchema` incluye el mapa `byState` |
 
 ---
 
@@ -245,6 +261,8 @@ interface DenominationRow {
 | --- | --- | --- |
 | Máquina sin arqueo/cargue registrado (p. ej. nueva) | Cards DP/sin "último cargue" vacías | Estados vacíos explícitos ("Sin arqueo todavía") + DP cae a `dpTotal` de storage como referencia |
 | `GetByDate` devuelve el conjunto completo | Períodos muy amplios en máquinas de alto volumen → respuesta pesada | Topper de rango a 31 días en el selector custom; los presets (hoy/24h/7d) acotan por defecto |
-| Cantidades negativas legacy (Prueba1, backlog fase 3–4) | Filas de denominación con signos extraños | El reader ya conserva el signo solo en lecturas históricas; mostrar verbatim igual que el legacy |
+| Cantidades negativas legacy (Prueba1, backlog fase 3–4) | Filas de denominación con signos extraños | El reader conserva el signo solo en lecturas históricas; en el desglose de dispensado los negativos se **acotan a 0** con la nota «arqueo negativo, se muestra 0» (`negativeReport`, C9) en lugar de mostrarse como entregas |
+| Denominaciones heredadas en `PayPad/GetStorage` (p. ej. el billete de USD 1 de C.C. Centro2) | Filas sin inventario real que alarmaban o confundían | Regla de uso compartida (`denomination-usage.ts`, C9): solo se evalúan las que la máquina trabaja hoy; el resto se lista aparte con el motivo |
+| Máquina de cambio divisa (COP ⇄ USD) | Importes de monedas distintas sumados como si fueran comparables | Cálculo y agregados **por moneda** (`currencyLabels`, `multiCurrency`), títulos con etiqueta (`USD 10`) y «Importe en varias monedas» donde no hay separación posible (C8) |
 | Umbral "20% de capacidad" no existe en datos | Imposible literal sin cambio de esquema | D2 (A): `minDpQuantity` (existente y editable por operador) |
 | Zonas horarias | Métricas de "Hoy" desfasadas | Helpers existentes con zona UTC explícita (misma regla que Transacciones) |
