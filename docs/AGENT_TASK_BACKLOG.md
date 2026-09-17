@@ -32,6 +32,15 @@
 - `STATIC_FILES_BASE_ADDRESS` es un override exclusivamente server-side; sin configuración adicional usa el origen histórico verificado. El proxy no reenvía `DashboardKeyId`, Bearer, cookies ni otros secretos al host público de archivos. El navegador sólo recibe bytes same-origin.
 - El helper de imágenes incorpora una revisión local que fuerza un reintento de recursos que hayan quedado marcados como fallidos por el proxy anterior; el BFF descarta esa query antes de pedir el archivo remoto.
 - Se migraron los assets locales históricos de `dashboardv2-frontend/public/images` a `public/images`, incluido `profile-default.png`; perfiles sin ruta, vacíos, `NULL` o recursos que fallen conservan el fallback visual local.
+- **Alerta del inicio (errores de devuelta):** `/dashboard` muestra arriba de todo, por máquina, las
+  transacciones `Aprobada Error Devuelta` **del día en curso**, con actualización automática cada 30 s
+  (solo con la pestaña visible). El BFF `POST /api/dispensing/return-alerts` resuelve todas las máquinas
+  server-side con caché corta (Pay+ 60 s, máquina+rango 20 s) y concurrencia 5; una máquina ilegible no
+  oculta a las demás (`partialFailures`). El aviso solo aparece cuando hay errores, emite un aviso
+  emergente si el contador sube entre vueltas y enlaza con `?paypad=<id>` al control de dispensado, que
+  preselecciona la máquina y dispara el análisis de atascos. Sin contrato realtime en el backend (B-01),
+  el sondeo es la única vía; el rango se recalcula al cambiar el día local. Ver §9 de
+  `docs/DISPENSING_JAM_DETECTION.md`.
 - **Detección temprana de atascos (monederos/billeteros):** el sistema infiere el atasco cruzando saldo del baúl (`dpStored`), operaciones por denominación de `Transaction/{id}/Details`, dos arqueos consecutivos y cargues. Señales con peso explícito (`devuelto_con_saldo`, `sustitucion`, `sin_caida_fisica`, `participacion_perdida`, `caida_corroborada`, `caida_insuficiente`, `caida_sin_registro`, `rafaga_salida`, `descuadre_inventario`), niveles sospecha/probable/confirmado y distinción explícita entre **atasco** (había saldo y no salió) y **agotamiento** (no había saldo). El motor reconcilia los nombres de `typeOperation` con `returnAmount`/`incomeAmount` y, si no puede, lo declara en el panel en lugar de inventar evidencia. El costo de `Transaction/{id}/Details` se acota con análisis manual, tope configurable (30 por defecto), concurrencia 5 y caché en memoria por transacción.
 
 ## Validación actual
@@ -56,6 +65,7 @@
 | Motor de atascos con fixture local | **PASA (fixture local)** — el escenario del negocio (billetero de 50.000 sustituido por 20.000+10.000 y monedero de 500 con saldo que no entrega) queda en **confirmado** con caída física 0, y un fallo único aislado no genera incidente. Reconciliación del detalle verificada contra `returnAmount`. |
 | Caso real Pay+ Inder 2 (ID 71) reproducido | **PASA (fixture local)** — con la configuración de la captura (500 «No dispensa», saldo 34, caída física 97, cero `Aprobada Error Devuelta`) y 12 pagos con cambio de 1.500 entregado en 15×100, el motor emite `sustitucion_no_configurada` + `config_inconsistente` ⇒ **incidente probable en el monedero de 500**, exactamente lo reportado por el operador. Antes de C1–C3 el mismo dato daba «sin señales». |
 | Consulta sin máquina no bloquea los filtros | **PASA (código + evidencia del runtime)** — `QueryObserver` con `enabled:false` confirma `status:"pending"`, `isPending:true`; la guarda `paypadId !== null` impide que ese estado se traduzca en filtros deshabilitados. Pendiente inspección autenticada. |
+| Alerta del inicio: errores de devuelta del día | **PASA (código + contrato local)** — `npm run check` y `npm run build` limpios (2026-09-17). `POST /api/dispensing/return-alerts` sin sesión responde **401** (no 500) y el rango construido en zona Bogotá es `00:00 → 23:59:59.999` locales. La respuesta se valida con `returnAlertsResponseSchema` (fixture: 2 máquinas, 1 con error) y una respuesta mal formada se rechaza. `Date.now()` durante el render y el `setState` en efecto se eliminaron (reglas `react-hooks/purity` y `set-state-in-effect`), por lo que la preselección por `?paypad=` sale del estado inicial. Pendiente: verlo con datos reales y sesión (B-04/B-05). |
 | Falso positivo por tendencia de uso | **PASA (fixture local)** — con el 2.000 entregando 18 unidades en el período, 255 en el arqueo y una caída de participación del 100 % al 40 %, el motor no emite incidentes (`0`); antes reportaba «Posible atasco en 2000». |
 | Atribución culpable vs compensador | **PASA (fixture local)** — con el 500 atascado (34 unidades, «No dispensa»), 10 pagos de cambio 1.000 entregados como 10×100, dos errores devuelta en monedas de 100 (24 unidades) y un arqueo del 100 que baja menos de lo dispensado, el titular es **«Posible atasco en la denominación 500 — el cambio se entrega con 100»** y el 100 queda como **Compensando** (sin señales de atasco). Antes de C4 el único incidente era «atasco en 100». |
 | Normalizador de detalles legacy | **PASA (fixture local)** — formas probadas: enteros del DTO real, strings, `typeOperation` nulo, `response: null`, arreglo plano y entradas basura; ninguna lanza y las inválidas se cuentan como `detailsMalformed`. |
@@ -72,7 +82,7 @@
 
 ## SUPUESTOS Y BLOQUEOS
 
-1. **B-01 — Eventos realtime:** no se encontró un contrato WebSocket/SignalR ni una implementación de Hub en el backend legado. No se inventó una conexión ni payload.
+1. **B-01 — Eventos realtime:** no se encontró un contrato WebSocket/SignalR ni una implementación de Hub en el backend legado. No se inventó una conexión ni payload; la alerta de errores de devuelta del inicio usa **sondeo del navegador cada 30 s** con caché corta en el BFF (§9 de `docs/DISPENSING_JAM_DETECTION.md`), no un canal servidor→navegador.
 2. **B-02 — Idempotencia financiera:** el backend no acepta un idempotency key ni documenta deduplicación. La UI previene doble envío durante la mutación, pero la garantía distribuida exige cambio backend.
 3. **B-03 — Parámetros de listas:** el upstream devuelve colecciones completas. El BFF aplica paginación/filtro/orden en servidor para transacciones; otros recursos conservan el contrato de lista legado.
 4. **B-04 — Red de este agente:** la conexión TLS directa del sandbox al API productivo falla (`SSL_ERROR_SYSCALL`). Esto no bloqueó comprobar el host estático público por una ruta independiente, pero sí impide una sesión/API E2E desde este entorno.

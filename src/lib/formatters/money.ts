@@ -58,6 +58,26 @@ export function sumMoneyStrings(values: readonly string[]): string {
   return total === null ? "0" : centsToDecimal(total);
 }
 
+/**
+ * Suma decimales **ignorando** los valores no interpretables (vacío, `null` textual,
+ * formato raro). `sumMoneyStrings` devuelve `0` si alguno falla, lo que en un tablero
+ * de dinero es peor que omitirlo: aquí se informa cuántos se omitieron.
+ */
+export function sumMoneyStringsLenient(values: readonly string[]): { skipped: number; total: string } {
+  let cents = 0n;
+  let skipped = 0;
+  for (const value of values) {
+    const parsed = decimalToCents(value);
+    if (parsed === null) {
+      skipped += 1;
+      continue;
+    }
+    cents += parsed;
+  }
+
+  return { skipped, total: centsToDecimal(cents) };
+}
+
 export function multiplyMoneyString(value: string, quantity: string): string {
   const cents = decimalToCents(value);
   if (cents === null || !/^\d+$/.test(quantity)) {

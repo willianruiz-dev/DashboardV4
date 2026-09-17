@@ -5,14 +5,21 @@ import { useEffect, useMemo, useState } from "react";
 
 import { useDenominations } from "@/features/denominations/hooks";
 import type { CurrencyDenomination } from "@/features/denominations/schemas";
-import { analyzeDispensingJams, dispensingQueryKeys } from "@/features/dispensing-control/api";
+import { analyzeDispensingJams, dispensingQueryKeys, fetchDispensingReturnAlerts } from "@/features/dispensing-control/api";
 import { usePaypadLoads, usePaypadStorage, usePaypadTonnages } from "@/features/paypads/hooks";
 import type { Load, PayPadStorage, Tonnage } from "@/features/paypads/schemas";
 import { useTransactionSearch } from "@/features/transactions/hooks";
 import type { TransactionSearchRequest, TransactionStateBucket } from "@/features/transactions/schemas";
 import { localDateTimeToApiIso } from "@/lib/formatters/date";
 import { computeDispensingMetrics, type DispensingMetrics } from "./dispensing-metrics";
-import { JAM_SCAN_MAX_TRANSACTIONS, type DispensingRange, type DispensingTimePreset, type JamScanRequest } from "./schemas";
+import {
+  JAM_SCAN_MAX_TRANSACTIONS,
+  RETURN_ALERTS_REFRESH_MS,
+  type DispensingRange,
+  type DispensingTimePreset,
+  type JamScanRequest,
+  type ReturnAlertsRequest,
+} from "./schemas";
 
 function pad(value: number): string {
   return String(value).padStart(2, "0");
@@ -246,4 +253,59 @@ export function useDispensingJamScan(request: JamScanRequest | null) {
     retry: false,
     staleTime: 5 * 60 * 1000,
   });
+}
+
+/**
+ * Alertas de devoluciones del inicio. No existe contrato realtime en el backend
+ * legado (ver B-01), así que el «tiempo real» es un sondeo acotado:
+ *  - cada `RETURN_ALERTS_REFRESH_MS` (30 s),
+ *  - solo con la pestaña visible (`refetchIntervalInBackground: false`),
+ *  - y sin refetch al enfocar (`refetchOnWindowFocus: false`) para no duplicar.
+ * El BFF absorbe el costo con caché corta por máquina y concurrencia limitada.
+ */
+export function useDispensingReturnAlerts(request: ReturnAlertsRequest | null, enabled = true) {
+  return useQuery({
+    enabled: enabled && request !== null,
+    queryFn: () => {
+      if (request === null) {
+        throw new Error("No se indicó el rango para consultar los errores de devuelta.");
+      }
+      return fetchDispensingReturnAlerts(request);
+    },
+    queryKey: request === null ? dispensingQueryKeys.returnAlertsNone() : dispensingQueryKeys.returnAlerts(request),
+    refetchInterval: RETURN_ALERTS_REFRESH_MS,
+    // Explicito: no se sondea con la pestaña en segundo plano.
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: RETURN_ALERTS_REFRESH_MS / 2,
+  });
+}
+
+/** Rango de hoy (00:00 → 23:59) listo para el BFF: la alerta es siempre del día actual. */
+export function buildTodayReturnAlertsRequest(now = new Date()): ReturnAlertsRequest | null {
+  const range = createPresetRange("hoy", now);
+  const from = localDateTimeToApiIso(range.from);
+  const to = localDateTimeToApiIso(range.to, { endOfMinute: true });
+  if (!from || !to) {
+    return null;
+  }
+
+  return { from, paypadId: null, to };
+}
+
+/**
+ * Igual que `buildTodayReturnAlertsRequest`, pero para el día local indicado como
+ * `YYYY-M-D`. El inicio usa esta variante para recalcular el rango si la pestaña
+ * sigue abierta al pasar la medianoche (la alerta es siempre del día en curso).
+ */
+export function buildReturnAlertsRequestForDay(dayKey: string): ReturnAlertsRequest | null {
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(dayKey);
+  if (match === null) {
+    return null;
+  }
+
+  const [, year, month, day] = match;
+  // Mediodía del día local: evita los bordes de horario de verano al fijar 00:00 / 23:59.
+  return buildTodayReturnAlertsRequest(new Date(Number(year), Number(month) - 1, Number(day), 12));
 }

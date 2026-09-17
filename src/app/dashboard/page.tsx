@@ -1,8 +1,12 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ReturnAlertsHomeSection } from "@/features/dispensing-control/components/return-alerts-home";
 
 export default function DashboardHomePage() {
   return (
     <div className="grid gap-6">
+      {/* Alerta por encima de todo: errores de devuelta del día en curso por máquina. */}
+      <ReturnAlertsHomeSection />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-2xl sm:text-3xl">Bienvenido</CardTitle>

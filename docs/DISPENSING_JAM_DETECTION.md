@@ -175,7 +175,8 @@ concreto.
 | BFF acotado | `src/app/api/dispensing/jams/route.ts` | `POST { paypadId, from, to, maxTransactions ≤ 60 }` (30 por defecto). Cachea detalles inmutables por `id`; 404 = sin detalles; un detalle ilegible no tumba el diagnóstico (`detailsFailures`). |
 | Cliente + caché | `src/features/dispensing-control/api.ts`, `hooks.ts` | `useDispensingJamScan` es manual (`enabled` solo tras pulsar analizar), `staleTime` 5 min, `refetchOnWindowFocus: false`. |
 | Panel | `src/features/dispensing-control/components/jam-diagnostics.tsx` | Banner por incidente con evidencia y acción sugerida, tabla/​cards de evidencia por denominación, advertencias y pie con ventana analizada y lectura del detalle. |
-| Página | `components/dispensing-control-page.tsx` | Inyecta el panel entre las tarjetas y el desglose de denominaciones; al cambiar filtros se invalida el análisis. |
+| Página | `components/dispensing-control-page.tsx` | Inyecta el panel entre las tarjetas y el desglose de denominaciones; al cambiar filtros se invalida el análisis. Acepta `?paypad=<id>` para preseleccionar la máquina (enlace desde la alerta del inicio). |
+| Alerta del inicio | `src/app/api/dispensing/return-alerts/route.ts`, `components/return-alerts-home.tsx`, `hooks.ts` (`useDispensingReturnAlerts`) | Errores `Aprobada Error Devuelta` del día en curso por máquina, con sondeo cada 30 s y caché corta en el BFF (ver §9). |
 
 ### Sobre los nombres de operación (`typeOperation`)
 
@@ -301,8 +302,77 @@ Incidentes: *Posible atasco en la denominación 50000* (confirmado), *500* (conf
 
 - **Se puede hoy:** detectar, atribuir por denominación, mostrar evidencia, sugerir acción y
   priorizar la revisión en sitio. Cero cambios de backend.
+- **Sí se puede hoy sin backend nuevo:** avisar en el inicio del panel las máquinas con errores
+  de devuelta del día en curso, con sondeo cada 30 s (ver §9).
 - **No se puede hoy:** notificar automáticamente por correo ante un atasco (la alerta id 1
   es de "escasez en baúles" y el `AlertsController` solo expone suscripciones) ni recibir
   un pulso instantáneo del Pay+ (no hay WebSocket/SignalR, B-01). Requiere F5.
 - **Pendiente de datos reales:** confirmar los nombres de `typeOperation`, la frecuencia con
   que se registran arqueos y calibrar los umbrales (`JAM_THRESHOLDS`) con Prueba1.
+
+---
+
+## 9. Alerta del inicio: errores de devuelta (`Aprobada Error Devuelta`)
+
+El inicio del panel (`/dashboard`, el que solo tenía «Bienvenido») ahora muestra **arriba de
+todo** las máquinas que hoy registran transacciones en estado `Aprobada Error Devuelta`. Es la
+señal más barata y más temprana disponible: no necesita `Transaction/{id}/Details` ni arqueos, y
+por eso puede refrescarse sola todo el día.
+
+```
+Navegador (/dashboard)                        BFF Next.js (/api/dispensing/return-alerts)
+useDispensingReturnAlerts ── sondeo 30 s ──▶ 1. PayPad            (caché 60 s)
+                                             2. Transaction/GetByDate { from, id, to }  (caché 20 s por
+                                                máquina+rango, concurrencia 5)
+                                             3. Resumen por máquina: conteo, importe, último error
+```
+
+### 9.1 Contrato
+
+| Aspecto | Valor |
+| --- | --- |
+| Petición | `POST /api/dispensing/return-alerts` con `{ from, to, paypadId }` (`paypadId: null` = todas las máquinas) |
+| Respuesta | `{ from, to, generatedAt, machines[], partialFailures }`; `Cache-Control: no-store` |
+| Por máquina | `paypadId`, `paypadName`, `transactions` (total del día), `approvedCount`, `errorCount`, `errorTotal`, `lastErrorAt` |
+| Orden | `errorCount` desc, luego `lastErrorAt` desc (las máquinas que más fallan van primero) |
+| Rango | Día local en curso: `00:00` → `23:59:59.999` (en Bogotá, `05:00Z` → `04:59:59.999Z` del día siguiente) |
+| Permisos | `ReadTransactions` **y** `ReadPayPads`; sin ellos la sección no se renderiza |
+
+### 9.2 «Tiempo real» sin contrato realtime (B-01)
+
+El backend legado no expone WebSocket/SignalR, así que el tiempo real se resuelve con **sondeo
+acotado del navegador**: cada 30 s (`RETURN_ALERTS_REFRESH_MS`), solo con la pestaña visible y
+sin `refetch` al enfocar (`refetchOnWindowFocus: false`) para no duplicar vueltas. Para que el
+sondeo no castigue al API:
+
+1. **Caché por máquina + rango de 20 s** en el BFF: varias vueltas de varias personas comparten
+   la misma respuesta (Map acotado a 200 entradas).
+2. **Caché del listado de Pay+ de 60 s** (antes se pedía en cada vuelta).
+3. **Concurrencia 5** (`src/lib/server/concurrency.ts`, compartido con `/api/dispensing/jams`).
+4. Una máquina ilegible **no oculta** a las demás: se cuenta en `partialFailures` y el pie lo
+   indica.
+5. El rango se recalcula cuando cambia el día local, de modo que una pestaña abierta toda la
+   noche pasa sola al día nuevo sin recargar.
+
+### 9.3 Presentación
+
+- Una **tarjeta pequeña por máquina** con errores: nombre, ID, cantidad de errores, importe total
+  (`errorTotal`) y «último error hace …». Se muestran **solo** máquinas con `errorCount > 0`.
+- Cuando el contador de una máquina **sube** entre dos vueltas del sondeo se emite un aviso
+  emergente (`toast`) con máquina, cantidad nueva y total del día: es la alerta «por encima de
+  todo» sin salir del inicio.
+- Sin errores el inicio no queda vacío: indica cuántas máquinas se consultaron y, si hubo,
+  cuántas no respondieron.
+- Cada tarjeta enlaza a
+  `/dashboard/transactions/dispensing-control?paypad=<id>`, que **preselecciona** la máquina con
+  el período «hoy» y dispara el análisis de atascos automáticamente (C5). Así el aviso del inicio
+  se encadena con el diagnóstico por denominación.
+- El pie declara la fuente, la hora de la última consulta y la cadencia.
+
+### 9.4 Límites (declarados)
+
+- El estado `Aprobada Error Devuelta` **no dice qué denominación falló**: eso lo aporta el motor
+  de atascos al abrir la máquina. Aquí se cuenta el error, no se atribuye.
+- Es un conteo del registro del backend, no un evento instantáneo del Pay+ (sin B-01 no hay
+  pulso): el retraso máximo es la cadencia del sondeo más la caché del BFF (≤ 50 s).
+- La alerta no sustituye la notificación por correo (F5), que sigue requiriendo backend.

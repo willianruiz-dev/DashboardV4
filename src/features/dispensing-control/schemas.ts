@@ -78,3 +78,42 @@ export const jamScanResponseSchema = z.object({
   truncated: z.boolean(),
 });
 export type JamScanResponse = z.infer<typeof jamScanResponseSchema>;
+
+/**
+ * Alimentación de la alerta del inicio: transacciones `Aprobada Error Devuelta`
+ * del día actual, por máquina. El sondeo lo hace el navegador (no existe contrato
+ * realtime en el backend legado); el BFF acota la carga con caché corta y
+ * concurrencia limitada.
+ */
+export const returnAlertsRequestSchema = z.object({
+  from: z.string().datetime({ offset: true }),
+  /** `null` = todas las máquinas. */
+  paypadId: z.number().int().positive().nullable().default(null),
+  to: z.string().datetime({ offset: true }),
+});
+export type ReturnAlertsRequest = z.infer<typeof returnAlertsRequestSchema>;
+
+export const returnAlertMachineSchema = z.object({
+  approvedCount: z.number().int().nonnegative(),
+  errorCount: z.number().int().nonnegative(),
+  errorTotal: z.string(),
+  /** `true` si algún importe del día no se pudo interpretar y el total queda corto. */
+  errorTotalIncomplete: z.boolean().default(false),
+  lastErrorAt: z.string().nullable(),
+  paypadId: z.number().int().positive(),
+  paypadName: z.string(),
+  transactions: z.number().int().nonnegative(),
+});
+export type ReturnAlertMachine = z.infer<typeof returnAlertMachineSchema>;
+
+export const returnAlertsResponseSchema = z.object({
+  from: z.string(),
+  generatedAt: z.string(),
+  machines: z.array(returnAlertMachineSchema),
+  partialFailures: z.number().int().nonnegative(),
+  to: z.string(),
+});
+export type ReturnAlertsResponse = z.infer<typeof returnAlertsResponseSchema>;
+
+/** Cadencia del sondeo de la alerta del inicio (no hay WebSocket: ver B-01). */
+export const RETURN_ALERTS_REFRESH_MS = 30_000;

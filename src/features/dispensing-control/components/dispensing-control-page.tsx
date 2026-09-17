@@ -10,6 +10,7 @@ import { usePaypads } from "@/features/paypads/hooks";
 import { isSuperAdminRole } from "@/lib/roles/super-admin";
 import {
   buildJamScanRequest,
+  createPresetRange,
   useDispensingJamScan,
   useDispensingMetrics,
 } from "@/features/dispensing-control/hooks";
@@ -25,7 +26,12 @@ import { dispensingPresetLabels, type JamScanRequest } from "@/features/dispensi
 import { formatDashboardDateTime, localDateTimeToApiIso } from "@/lib/formatters/date";
 import { formatDashboardMoney } from "@/lib/formatters/money";
 
-export function DispensingControlPage() {
+interface DispensingControlPageProps {
+  /** Máquina preseleccionada (p. ej. al llegar desde la alerta del inicio). */
+  initialPaypadId?: number | null;
+}
+
+export function DispensingControlPage({ initialPaypadId = null }: DispensingControlPageProps) {
   const session = useDashboardSession();
   // Guard de nivel SuperAdmin resuelto en el frontend por nombre de rol
   // (mismo patrón que la página de Usuarios con "root"): sin operaciones de
@@ -34,7 +40,13 @@ export function DispensingControlPage() {
   const canReadPaypads = hasPermission(session, "ReadPayPads");
   const paypadsQuery = usePaypads(canAccess && canReadPaypads);
 
-  const [selection, setSelection] = useState<DispensingFilterSelection | null>(null);
+  // Preselección desde la URL (alerta del inicio): el estado inicial se deriva de la prop
+  // (no de un efecto) para no provocar renders en cascada; el operador puede cambiarla.
+  const [selection, setSelection] = useState<DispensingFilterSelection | null>(() =>
+    initialPaypadId === null
+      ? null
+      : { paypadId: initialPaypadId, preset: "hoy", range: createPresetRange("hoy") },
+  );
   const paypadId = selection?.paypadId ?? null;
   const metricsArgs = useMemo(
     () =>

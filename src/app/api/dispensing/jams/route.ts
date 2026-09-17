@@ -9,6 +9,7 @@ import {
 } from "@/features/dispensing-control/detail-normalizer";
 import { jamScanRequestSchema, type JamScanResponse } from "@/features/dispensing-control/schemas";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
+import { mapWithConcurrency } from "@/lib/server/concurrency";
 import { requireDashboardToken } from "@/lib/server/require-dashboard-token";
 import { createApiRouteError } from "@/lib/server/route-error";
 import { httpEnvelopeSchema } from "@/schemas/http";
@@ -150,31 +151,6 @@ function evidencePriority(transaction: DashboardTransaction): number {
 function transactionTime(transaction: DashboardTransaction): number {
   const time = new Date(transaction.dateCreated ?? "").getTime();
   return Number.isNaN(time) ? 0 : time;
-}
-
-/** Ejecuta tareas asíncronas con un máximo de peticiones simultáneas. */
-async function mapWithConcurrency<TItem, TResult>(
-  items: readonly TItem[],
-  concurrency: number,
-  task: (item: TItem) => Promise<TResult>,
-): Promise<TResult[]> {
-  const results: TResult[] = [];
-  let cursor = 0;
-
-  async function worker(): Promise<void> {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      const item = items[index];
-      if (item !== undefined) {
-        results[index] = await task(item);
-      }
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
-  await Promise.all(workers);
-  return results;
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
