@@ -1,6 +1,6 @@
 "use client";
 
-import { Edit3, KeyRound, Plus, Trash2 } from "lucide-react";
+import { Edit3, KeyRound, Trash2, UserPlus } from "lucide-react";
 import { useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
@@ -222,14 +222,6 @@ export function UsersPage() {
   return (
     <div className="grid gap-6">
       <PageHeader
-        actions={
-          canWrite ? (
-            <Button onClick={() => setEditor({ mode: "create" })} type="button">
-              <Plus aria-hidden="true" className="size-4" />
-              Crear usuario
-            </Button>
-          ) : undefined
-        }
         description="Gestiona cuentas, roles asociados y el estado de acceso de los usuarios."
         title="Usuarios"
       />
@@ -238,14 +230,27 @@ export function UsersPage() {
       {!usersQuery.isPending && usersQuery.isError ? <ErrorState description={usersQuery.error instanceof Error ? usersQuery.error.message : "No fue posible cargar los usuarios."} onRetry={() => void usersQuery.refetch()} /> : null}
       {!usersQuery.isPending && !usersQuery.isError && users.length === 0 ? <EmptyState description="No hay usuarios disponibles para este rol." title="No hay usuarios" /> : null}
       {!usersQuery.isPending && !usersQuery.isError && users.length > 0 ? (
-        <ResponsiveDataTable
-          columns={columns}
-          data={users}
-          getCardDescription={(user) => `${displayText(user.role, "Sin rol")} · ${displayText(user.email)}`}
-          getCardTitle={userFullName}
-          getRowId={(user) => String(user.id)}
-          label="Listado de usuarios"
-        />
+        <>
+          {canWrite ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button onClick={() => setEditor({ mode: "create" })} type="button" variant="success">
+                <UserPlus aria-hidden="true" className="size-4" />
+                Crear usuario
+              </Button>
+              <p className="text-sm text-muted-foreground">
+                {users.length} usuario{users.length === 1 ? "" : "s"} registrado{users.length === 1 ? "" : "s"}.
+              </p>
+            </div>
+          ) : null}
+          <ResponsiveDataTable
+            columns={columns}
+            data={users}
+            getCardDescription={(user) => `${displayText(user.role, "Sin rol")} · ${displayText(user.email)}`}
+            getCardTitle={userFullName}
+            getRowId={(user) => String(user.id)}
+            label="Listado de usuarios"
+          />
+        </>
       ) : null}
 
       {editor ? (
