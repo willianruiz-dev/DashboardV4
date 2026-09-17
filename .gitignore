@@ -1,0 +1,20 @@
+# Next.js build output
+.next/
+out/
+
+# Dependencies and local tooling
+node_modules/
+*.tsbuildinfo
+
+# Local environment and credentials for the new application
+/.env*
+!/.env.example
+*.pem
+
+# Test and diagnostic output
+coverage/
+.nyc_output/
+
+# OS and editor files
+.DS_Store
+*.swp
