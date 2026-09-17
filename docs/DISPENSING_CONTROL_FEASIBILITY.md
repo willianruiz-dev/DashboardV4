@@ -4,6 +4,12 @@
 > **Veredicto:** **VIABLE**. El ~90% de los datos se resuelve con endpoints ya existentes (frontend + BFF). **Cero cambios en el backend .NET** para el núcleo; 1 extensión BFF de ~15 líneas (resumen por estado, ya aplicada) y 1 registro de ruta en datos (vía UI, sin código).
 > **Estado del código:** implementado en `src/features/dispensing-control/` + ruta `/dashboard/transactions/dispensing-control`. **Sin operaciones de datos**: el acceso SuperAdmin se resuelve en el frontend por nombre de rol (ítem inyectado en el sidebar + guard de página). Pendiente: validación E2E autenticada con Pay+ real.
 
+> **Extensión 2026-09-17 — detección de atascos:** el módulo incorpora el diagnóstico de
+> atascos por denominación (motor `dispensing-jams.ts`, BFF `POST /api/dispensing/jams` y
+> panel «Detección de atascos»). Fórmulas, señales, umbrales, límites y validación local en
+> **`docs/DISPENSING_JAM_DETECTION.md`**. No cambia ninguna decisión de este documento: sigue
+> sin requerir cambios en el backend .NET.
+
 ### Decisiones resueltas (2026-09-17)
 
 - **D1 — Acceso SuperAdmin:** **resuelto en el frontend por nombre de rol** (`isSuperAdminRole` en `src/lib/roles/super-admin.ts`, normaliza `SuperAdmin`/`super admin`/`super-admin`, e incluye `root` como super-rol legacy, igual que la página de Usuarios). El sidebar inyecta el ítem para ese rol (`withDispensingControl` en `dashboard-navigation.ts`) y la página aplica el mismo guard. **Cero operaciones de datos, cero cambios al API.** Si en el futuro se crea la ruta en datos para el rol, el ítem no se duplica.

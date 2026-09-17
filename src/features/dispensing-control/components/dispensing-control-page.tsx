@@ -1,7 +1,7 @@
 "use client";
 
 import { CircleCheck, PackageOpen, TimerReset, XCircle } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
@@ -9,16 +9,20 @@ import { hasPermission, useDashboardSession } from "@/features/auth/session-cont
 import { usePaypads } from "@/features/paypads/hooks";
 import { isSuperAdminRole } from "@/lib/roles/super-admin";
 import {
+  buildJamScanRequest,
+  useDispensingJamScan,
   useDispensingMetrics,
 } from "@/features/dispensing-control/hooks";
 import {
   DenominationTable,
 } from "@/features/dispensing-control/components/denomination-table";
+import { JamDiagnosticsSection } from "@/features/dispensing-control/components/jam-diagnostics";
 import { DispensingFilters, type DispensingFilterSelection } from "@/features/dispensing-control/components/dispensing-filters";
 import { MetricCard } from "@/features/dispensing-control/components/metric-card";
+import { computeJamDiagnostics } from "@/features/dispensing-control/dispensing-jams";
 import { formatElapsed } from "@/features/dispensing-control/dispensing-metrics";
-import { dispensingPresetLabels } from "@/features/dispensing-control/schemas";
-import { formatDashboardDateTime } from "@/lib/formatters/date";
+import { dispensingPresetLabels, type JamScanRequest } from "@/features/dispensing-control/schemas";
+import { formatDashboardDateTime, localDateTimeToApiIso } from "@/lib/formatters/date";
 import { formatDashboardMoney } from "@/lib/formatters/money";
 
 export function DispensingControlPage() {
@@ -32,14 +36,41 @@ export function DispensingControlPage() {
 
   const [selection, setSelection] = useState<DispensingFilterSelection | null>(null);
   const paypadId = selection?.paypadId ?? null;
-  const metricsQuery = useDispensingMetrics(
-    selection === null || selection.paypadId === null
-      ? null
-      : { from: selection.range.from, paypadId: selection.paypadId, to: selection.range.to },
+  const metricsArgs = useMemo(
+    () =>
+      selection === null || selection.paypadId === null
+        ? null
+        : { from: selection.range.from, paypadId: selection.paypadId, to: selection.range.to },
+    [selection],
+  );
+  const metricsQuery = useDispensingMetrics(metricsArgs);
+
+  // El análisis de atascos con detalles es una acción explícita (una petición por
+  // transacción): se guarda la selección analizada y se invalida al cambiar filtros.
+  const [scanTarget, setScanTarget] = useState<JamScanRequest | null>(null);
+  const jamScanQuery = useDispensingJamScan(scanTarget);
+  const analysisCurrent = useMemo(() => {
+    const current = buildJamScanRequest(metricsArgs);
+    return current !== null && scanTarget !== null && current.paypadId === scanTarget.paypadId && current.from === scanTarget.from && current.to === scanTarget.to;
+  }, [metricsArgs, scanTarget]);
+
+  const jamDiagnostics = useMemo(
+    () =>
+      computeJamDiagnostics({
+        byState: metricsQuery.sources.byState,
+        loads: metricsQuery.sources.loads,
+        scan: analysisCurrent ? (jamScanQuery.data ?? null) : null,
+        rangeFrom: metricsArgs === null ? null : localDateTimeToApiIso(metricsArgs.from),
+        rangeTo: metricsArgs === null ? null : localDateTimeToApiIso(metricsArgs.to, { endOfMinute: true }),
+        storage: metricsQuery.sources.storage,
+        tonnages: metricsQuery.sources.tonnages,
+      }),
+    [analysisCurrent, jamScanQuery.data, metricsArgs, metricsQuery.sources],
   );
 
   function handleApply(next: DispensingFilterSelection): void {
     setSelection(next);
+    setScanTarget(null);
   }
 
   if (!canAccess) {
@@ -140,6 +171,19 @@ export function DispensingControlPage() {
                 value={lastLoadElapsed === null ? "—" : `hace ${formatElapsed(lastLoadElapsed)}`}
               />
             </div>
+
+            <JamDiagnosticsSection
+              analysisCurrent={analysisCurrent}
+              diagnostics={jamDiagnostics}
+              error={analysisCurrent && jamScanQuery.isError && jamScanQuery.error instanceof Error ? jamScanQuery.error : null}
+              isAnalyzing={jamScanQuery.isFetching}
+              onAnalyze={() => {
+                const request = buildJamScanRequest(metricsArgs);
+                setScanTarget(request);
+              }}
+              onRetry={() => void jamScanQuery.refetch()}
+              rangeLabel={rangeLabel}
+            />
 
             <DenominationTable
               denominations={metricsQuery.denominations}

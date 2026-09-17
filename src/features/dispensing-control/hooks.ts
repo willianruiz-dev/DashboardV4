@@ -1,16 +1,18 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { useDenominations } from "@/features/denominations/hooks";
 import type { CurrencyDenomination } from "@/features/denominations/schemas";
+import { analyzeDispensingJams, dispensingQueryKeys } from "@/features/dispensing-control/api";
 import { usePaypadLoads, usePaypadStorage, usePaypadTonnages } from "@/features/paypads/hooks";
-import type { Tonnage } from "@/features/paypads/schemas";
+import type { Load, PayPadStorage, Tonnage } from "@/features/paypads/schemas";
 import { useTransactionSearch } from "@/features/transactions/hooks";
-import type { TransactionSearchRequest } from "@/features/transactions/schemas";
+import type { TransactionSearchRequest, TransactionStateBucket } from "@/features/transactions/schemas";
 import { localDateTimeToApiIso } from "@/lib/formatters/date";
 import { computeDispensingMetrics, type DispensingMetrics } from "./dispensing-metrics";
-import type { DispensingRange, DispensingTimePreset } from "./schemas";
+import { JAM_SCAN_MAX_TRANSACTIONS, type DispensingRange, type DispensingTimePreset, type JamScanRequest } from "./schemas";
 
 function pad(value: number): string {
   return String(value).padStart(2, "0");
@@ -59,6 +61,13 @@ export interface DispensingMetricsArgs {
   to: string;
 }
 
+export interface DispensingMetricsSources {
+  byState: Readonly<Record<string, TransactionStateBucket>>;
+  loads: readonly Load[];
+  storage: readonly PayPadStorage[];
+  tonnages: readonly Tonnage[];
+}
+
 export interface DispensingMetricsQuery {
   denominations: CurrencyDenomination[];
   error: Error | null;
@@ -66,7 +75,11 @@ export interface DispensingMetricsQuery {
   metrics: DispensingMetrics | null;
   now: Date;
   refetchAll: () => void;
+  /** Datos crudos de las mismas queries, para el motor de atascos (sin refetch extra). */
+  sources: DispensingMetricsSources;
 }
+
+const emptySources: DispensingMetricsSources = { byState: {}, loads: [], storage: [], tonnages: [] };
 
 /**
  * Orquestación del módulo (ver docs/DISPENSING_CONTROL_FEASIBILITY.md §5.3):
@@ -162,6 +175,19 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
     });
   }, [args, paypadId, searchQuery.data, storageQuery.data, tonnagesQuery.data, loadsQuery.data, now]);
 
+  const sources = useMemo<DispensingMetricsSources>(
+    () =>
+      paypadId === null
+        ? emptySources
+        : {
+            byState: searchQuery.data?.summary.byState ?? {},
+            loads: loadsQuery.data ?? [],
+            storage: storageQuery.data ?? [],
+            tonnages: tonnagesQuery.data ?? [],
+          },
+    [paypadId, searchQuery.data, loadsQuery.data, storageQuery.data, tonnagesQuery.data],
+  );
+
   return {
     denominations: denominationsQuery.data ?? [],
     error: firstError,
@@ -177,5 +203,41 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
         searchQuery.refetch();
       }
     },
+    sources,
   };
+}
+
+/** Rango de la selección actual en ISO UTC, tal como lo consume `Transaction/GetByDate`. */
+export function buildJamScanRequest(args: DispensingMetricsArgs | null): JamScanRequest | null {
+  if (args === null || args.paypadId === null) {
+    return null;
+  }
+
+  const from = localDateTimeToApiIso(args.from);
+  const to = localDateTimeToApiIso(args.to, { endOfMinute: true });
+  if (!from || !to) {
+    return null;
+  }
+
+  return { from, maxTransactions: JAM_SCAN_MAX_TRANSACTIONS, paypadId: args.paypadId, to };
+}
+/**
+ * Análisis de atascos (manual y cacheado). `request === null` lo mantiene
+ * deshabilitado: la consulta implica hasta `maxTransactions` peticiones de
+ * detalle contra el API legado, así que se ejecuta solo cuando la persona lo pide.
+ */
+export function useDispensingJamScan(request: JamScanRequest | null) {
+  return useQuery({
+    enabled: request !== null,
+    queryFn: () => {
+      if (request === null) {
+        throw new Error("No se indicó una máquina y rango para analizar atascos.");
+      }
+      return analyzeDispensingJams(request);
+    },
+    queryKey: request === null ? dispensingQueryKeys.jamScanNone() : dispensingQueryKeys.jamScan(request),
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+  });
 }

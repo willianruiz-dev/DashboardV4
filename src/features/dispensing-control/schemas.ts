@@ -18,3 +18,59 @@ export interface DispensingRange {
 
 /** Umbral máximo del rango personalizado: evita respuestas pesadas del API por máquina. */
 export const MAX_CUSTOM_RANGE_DAYS = 31;
+
+/**
+ * Detección de atascos: el navegador pide al BFF un análisis acotado de detalles
+ * por transacción (`Transaction/{id}/Details`) dentro del período elegido.
+ * El tope existe porque el API legado no pagina y cada detalle es una petición:
+ * la ventana se limita a las transacciones más relevantes (error devuelta primero)
+ * y el resultado indica si quedó truncado.
+ */
+export const JAM_SCAN_MAX_TRANSACTIONS = 30;
+
+export const jamScanRequestSchema = z.object({
+  from: z.string().datetime({ offset: true }),
+  maxTransactions: z.number().int().min(5).max(60).default(JAM_SCAN_MAX_TRANSACTIONS),
+  paypadId: z.number().int().positive(),
+  to: z.string().datetime({ offset: true }),
+});
+export type JamScanRequest = z.infer<typeof jamScanRequestSchema>;
+
+/**
+ * Cantidad de detalle con signo: la evidencia autenticada de Prueba1 mostró
+ * cantidades negativas en detalles históricos que el dashboard legado muestra.
+ */
+const jamSignedQuantitySchema = z
+  .union([z.number().int(), z.string().trim().regex(/^-?\d+$/)])
+  .transform((value) => String(value));
+
+export const jamScanDetailSchema = z.object({
+  denominationId: z.number().int().positive().nullable(),
+  operation: z.string().nullable(),
+  operationId: z.number().int().nullable(),
+  quantity: jamSignedQuantitySchema,
+});
+
+export const jamScanTransactionSchema = z.object({
+  dateCreated: z.string().nullable(),
+  details: z.array(jamScanDetailSchema),
+  id: z.number().int().positive(),
+  incomeAmount: z.string(),
+  realAmount: z.string(),
+  returnAmount: z.string(),
+  stateTransaction: z.string().nullable().transform((value) => value ?? ""),
+  totalAmount: z.string(),
+});
+
+export const jamScanResponseSchema = z.object({
+  detailsFailures: z.number().int().nonnegative(),
+  detailsRequests: z.number().int().nonnegative(),
+  generatedAt: z.string(),
+  maxTransactions: z.number().int().positive(),
+  scannedFrom: z.string().nullable(),
+  scannedTo: z.string().nullable(),
+  /** Transacciones ordenadas de más reciente a más antigua. */
+  transactions: z.array(jamScanTransactionSchema),
+  truncated: z.boolean(),
+});
+export type JamScanResponse = z.infer<typeof jamScanResponseSchema>;
