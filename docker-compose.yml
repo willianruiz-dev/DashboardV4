@@ -1,0 +1,26 @@
+# Levanta el Dashboard V4 en el servidor usando la imagen publicada por GitHub Actions.
+#
+#   1. Cree un `.env` junto a este archivo (está ignorado por git) con:
+#        DASHBOARD_API_KEY_ID=…
+#        DASHBOARD_RSA_PUBLIC_KEY=…        # PEM multilínea, con \n escapados o formato _ del legado
+#        SESSION_COOKIE_SECURE=false        # true sólo cuando sirva el panel por HTTPS
+#   2. `docker compose pull && docker compose up -d`
+#
+# La imagen se publica desde .github/workflows/publish-image.yml. Ver docs/DEPLOY.md.
+
+services:
+  dashboard:
+    image: ghcr.io/willianruiz-dev/dashboardv4:${DASHBOARD_IMAGE_TAG:-latest}
+    container_name: dashboard-v4
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    environment:
+      # El contenedor debe alcanzar el API legado (salida a internet / VPN de la oficina).
+      API_BASE_ADDRESS: ${API_BASE_ADDRESS:-https://apidashboardv2.e-city.co/}
+      STATIC_FILES_BASE_ADDRESS: ${STATIC_FILES_BASE_ADDRESS:-https://dashboardv2.e-city.co/}
+      DASHBOARD_API_KEY_ID: ${DASHBOARD_API_KEY_ID:?Defina DASHBOARD_API_KEY_ID en el .env del servidor}
+      DASHBOARD_RSA_PUBLIC_KEY: ${DASHBOARD_RSA_PUBLIC_KEY:?Defina DASHBOARD_RSA_PUBLIC_KEY en el .env del servidor}
+      # Con `false` el panel funciona por HTTP (por ejemplo http://IP:3000); con HTTPS use true.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      DASHBOARD_HISTORY_DIAGNOSTICS: ${DASHBOARD_HISTORY_DIAGNOSTICS:-false}

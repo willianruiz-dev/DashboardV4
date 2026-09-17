@@ -1,0 +1,1542 @@
+import type { CurrencyDenomination } from "@/features/denominations/schemas";
+import type { Load, PayPadStorage, Tonnage } from "@/features/paypads/schemas";
+import type { TransactionStateBucket } from "@/features/transactions/schemas";
+import {
+  buildDenominationCurrencyIndex,
+  buildDenominationValueIndex,
+  denominationCurrencyText,
+} from "./denomination-currency";
+import { DENOMINATION_NOT_IN_USE_REASON, isDenominationInUse } from "./denomination-usage";
+
+/**
+ * Detección temprana de atascos (monederos/billeteros) — cálculo PURO y testeable.
+ *
+ * Contexto: el Pay+ no reporta un evento explícito de "atasco". La única vía con
+ * los contratos que YA existen en el API es cruzar cuatro fuentes:
+ *
+ *  1. `PayPad/GetStorage/{id}`      → saldo por denominación del baúl dispensador
+ *                                     (`dpStored`), baúl de rechazo (`rjStored`),
+ *                                     `isDispensing`, `minDpQuantity`.
+ *  2. `Transaction/GetByDate` (BFF) → estado de cada transacción del período
+ *                                     (`Aprobada`, `Aprobada Error Devuelta`, ...) y
+ *                                     los importes (`incomeAmount`, `returnAmount`).
+ *  3. `Transaction/{id}/Details`    → por transacción y denominación, la operación
+ *                                     (`typeOperation` + `idTypeOperation`) y la
+ *                                     cantidad. Responde a "¿qué intentó entregar y
+ *                                     qué entregó?".
+ *  4. `Tonnage/GetByPaypad` + `Load/GetByPaypad` → arqueos (conteo FÍSICO) y cargues,
+ *                                     para saber qué salió realmente del monedero.
+ *
+ * Regla conceptual (la del negocio):
+ *  - "hay saldo suficiente pero no sale"  → posible ATRASCO.
+ *  - "no hay saldo"                        → AGOTAMIENTO (ya cubierto por el umbral).
+ *  - "salió menos de lo que el sistema dice entregar" → ATRASCO / descuadre.
+ *
+ * Semántica de las operaciones del detalle: el API entrega `typeOperation` (texto)
+ * e `idTypeOperation` (id), y el catálogo de valores NO existe en el repositorio.
+ * El motor clasifica por palabras clave (`failed` → `accept` → `dispense`) y,
+ * además, RECONCILIA con los importes: si la suma de los detalles de salida de una
+ * transacción aprobada cuadra con `returnAmount` (el cambio que sale del
+ * dispensador), la lectura queda verificada; si cuadra con `incomeAmount`, los
+ * nombres describen lo ACEPTADO y se desactivan sustitución/participación. Cuando
+ * no hay `typeOperation` legible, la atribución se infiere del estado (error ⇒
+ * intento fallido; aprobada ⇒ entregado) y solo si la transacción tiene devolución.
+ *
+ * Evidencia por denominación `d` (ventana analizada = transacciones con detalle
+ * consultado; caída física = últimos dos arqueos consecutivos):
+ *
+ *   intentosFallidos(d)  = unidades de operaciones fallidas dentro de transacciones
+ *                          con estado de error y devolución (o sin clasificar allí)
+ *   dispensadoSistema(d) = unidades de operaciones de salida (o sin clasificar en
+ *                          transacciones aprobadas con devolución)
+ *   sistemaTotal(d)      = intentosFallidos(d) + dispensadoSistema(d)
+ *   caidaFisica(d)       = quantityDp(arqueoPrevio, d) + cargues(previo, actual, d)
+ *                          − quantityDp(arqueoActual, d)
+ *
+ * Señales (pesos explícitos en `jamSignalWeights`, nunca un único umbral mágico):
+ *  - devuelto_con_saldo (3)   : hubo intentos fallidos y el baúl tiene unidades.
+ *  - sustitucion (3)          : el pago se completó sin la denominación canónica
+ *                               aunque el saldo la permitía (patrón repetido).
+ *  - sin_caida_fisica (3)     : el sistema reporta movimiento y el arqueo no bajó.
+ *  - participacion_perdida (2): dejó de usarse en la ventana reciente conservando saldo.
+ *  - caida_corroborada (2)    : el arqueo bajó exactamente lo dispensado (los intentos
+ *                               fallidos siguen en el baúl).
+ *  - caida_insuficiente (1)   : el arqueo bajó menos que lo entregado registrado.
+ *  - caida_sin_registro (1)   : el arqueo bajó más de lo registrado (extracción manual).
+ *  - rafaga_salida (2, máquina): muchas `Aprobada Error Devuelta` en el período.
+ *  - descuadre_inventario (0, informativo): el conteo subió (cargue no registrado).
+ *
+ * Niveles: sin_evidencia → sospecha → probable (score ≥ 3) → confirmado (score ≥ 6
+ * con señales de familias distintas). Si el baúl está en el umbral de recarga
+ * (legacy: `minDpQuantity + 10`) y la única evidencia es "devolvió teniendo
+ * unidades", el nivel se limita a sospecha: el desabasto también explica el fallo.
+ *
+ * IMPORTANTE — `isDispensing` NO habilita ni bloquea señales (corrección basada en
+ * un caso real: Pay+ Inder 2 tenía el monedero de 500 marcado como «No dispensa» en
+ * la configuración y aun así debía entregarlo; el filtro anterior suprimía toda la
+ * evidencia de esa denominación). El conjunto de denominaciones que pueden entregar
+ * cambio se deduce de la EVIDENCIA: `isDispensing` OR unidades dispensadas en la
+ * ventana OR caída física positiva en el intervalo de arqueos. Cuando una
+ * denominación que la evidencia considera dispensadora no está marcada como tal, la
+ * señal de sustitución baja de peso y se informa como posible configuración
+ * desactualizada (`sustitucion_no_configurada`).
+ * Los umbrales viven en `JAM_THRESHOLDS` y admiten override por parámetro (evolución
+ * natural: `PayPadConfiguration.extraDataJson`, key/value, sin migración).
+ */
+
+export const RETURNED_ERROR_STATE = "Aprobada Error Devuelta";
+
+export const jamLevels = ["sin_evidencia", "sospecha", "probable", "confirmado"] as const;
+export type JamLevel = (typeof jamLevels)[number];
+
+export const jamLevelLabels: Record<JamLevel, string> = {
+  confirmado: "Atasco confirmado por datos",
+  probable: "Atasco probable",
+  sin_evidencia: "Sin evidencia",
+  sospecha: "Posible atasco",
+};
+
+export const jamCauses = ["atasco", "agotado", "sin_evidencia"] as const;
+export type JamCause = (typeof jamCauses)[number];
+
+export const jamCauseLabels: Record<JamCause, string> = {
+  agotado: "Sin saldo (agotamiento)",
+  atasco: "Atasco",
+  sin_evidencia: "Sin evidencia",
+};
+
+export type JamSignalCode =
+  | "caida_corroborada"
+  | "caida_insuficiente"
+  | "caida_sin_registro"
+  | "compensando_entrega"
+  | "config_inconsistente"
+  | "descuadre_inventario"
+  | "devuelto_con_saldo"
+  | "inactiva_con_saldo"
+  | "participacion_perdida"
+  | "rafaga_salida"
+  | "rechazo_con_unidades"
+  | "sin_caida_fisica"
+  | "sustitucion"
+  | "sustitucion_no_configurada";
+
+export interface JamThresholds {
+  /** Transacciones `Aprobada Error Devuelta` en el período para declarar ráfaga de salida. */
+  burstTransactions: number;
+  /** Score para "confirmado" (además exige >= 2 señales y una señal núcleo). */
+  confirmedScore: number;
+  /** Tolerancia legacy del arqueo: saldo <= minDpQuantity + tolerancia ⇒ umbral de recarga. */
+  lowBalanceTolerance: number;
+  /** Unidades entregadas de más (respecto a su parte canónica) para marcar compensación. */
+  minimumCompensationUnits: number;
+  /** Eventos de compensación mínimos para marcar una denominación como compensadora. */
+  minimumCompensationEvents: number;
+  /** Unidades no entregadas mínimas para emitir "devolvió teniendo unidades". */
+  minimumFailedUnits: number;
+  /** Pagos recientes mínimos para evaluar pérdida de participación. */
+  minimumRecentPayouts: number;
+  /** Eventos de sustitución (transacciones distintas) para declarar patrón. */
+  minimumSubstitutionEvents: number;
+  /** Score para "probable". */
+  probableScore: number;
+  /** Participación reciente máxima (≈0) para considerar que dejó de usarse. */
+  participationRecentMaxRatio: number;
+  /** Participación previa mínima para considerar que la denominación se usaba. */
+  participationPreviousRatio: number;
+}
+
+export const JAM_THRESHOLDS: JamThresholds = {
+  burstTransactions: 3,
+  confirmedScore: 6,
+  lowBalanceTolerance: 10,
+  minimumCompensationEvents: 2,
+  minimumCompensationUnits: 2,
+  minimumFailedUnits: 2,
+  minimumRecentPayouts: 3,
+  minimumSubstitutionEvents: 2,
+  participationPreviousRatio: 0.5,
+  participationRecentMaxRatio: 0.05,
+  probableScore: 3,
+};
+
+/** Peso y etiqueta de cada señal: el score es la suma de las señales presentes. */
+export const jamSignalWeights: Record<JamSignalCode, number> = {
+  caida_corroborada: 2,
+  caida_insuficiente: 1,
+  caida_sin_registro: 1,
+  compensando_entrega: 0,
+  config_inconsistente: 1,
+  descuadre_inventario: 0,
+  devuelto_con_saldo: 3,
+  inactiva_con_saldo: 2,
+  participacion_perdida: 0,
+  rafaga_salida: 2,
+  rechazo_con_unidades: 1,
+  sin_caida_fisica: 3,
+  sustitucion: 3,
+  sustitucion_no_configurada: 3,
+};
+
+export const jamSignalLabels: Record<JamSignalCode, string> = {
+  caida_corroborada: "Arqueo corroboró los fallos",
+  caida_insuficiente: "Arqueo bajó menos de lo entregado",
+  caida_sin_registro: "Salió sin registro en el sistema",
+  compensando_entrega: "Compensando la entrega (no es el módulo atascado)",
+  config_inconsistente: "Configuración contradice el arqueo",
+  descuadre_inventario: "Descuadre de inventario",
+  devuelto_con_saldo: "Devolvió teniendo saldo",
+  inactiva_con_saldo: "No participó con saldo (arqueo)",
+  participacion_perdida: "No participó en la ventana reciente",
+  rafaga_salida: "Ráfaga de error devuelta",
+  rechazo_con_unidades: "Baúl de rechazo con unidades",
+  sin_caida_fisica: "El arqueo no bajó nada",
+  sustitucion: "Se sustituyó por denominación menor",
+  sustitucion_no_configurada: "Sustitución con denominación no configurada",
+};
+
+/** Señales que por sí solas describen un atasco de monedero/billetero. */
+const jamCoreSignals: readonly JamSignalCode[] = ["devuelto_con_saldo", "sin_caida_fisica", "sustitucion", "sustitucion_no_configurada"];
+
+/**
+ * Categorías de operación del detalle:
+ * - `dispense`: dinero que SALE del dispensador (cambio/devuelta/entrega).
+ * - `failed`  : intento de salida fallido o rechazado (error, rechazo, fallo).
+ * - `accept`  : dinero ACEPTADO (entra al aceptador); no participa del diagnóstico.
+ * - `unknown` : sin nombre legible; se infiere desde el estado de la transacción.
+ */
+export type JamOperationKind = "accept" | "dispense" | "failed" | "unknown";
+
+export interface JamScanDetail {
+  denominationId: number | null;
+  operation: string | null;
+  operationId: number | null;
+  quantity: string;
+}
+
+export interface JamScanTransaction {
+  dateCreated: string | null;
+  details: readonly JamScanDetail[];
+  id: number;
+  incomeAmount: string;
+  realAmount: string;
+  returnAmount: string;
+  stateTransaction: string;
+  totalAmount: string;
+}
+
+export interface JamScanPayload {
+  detailsFailures: number;
+  /** Detalles normalizados desde una forma inesperada (opcional por compatibilidad). */
+  detailsMalformed?: number;
+  detailsRequests: number;
+  /** Motivos sanitizados de los fallos de detalle (opcional por compatibilidad). */
+  failureReasons?: readonly string[];
+  generatedAt: string;
+  maxTransactions: number;
+  scannedFrom: string | null;
+  scannedTo: string | null;
+  transactions: readonly JamScanTransaction[];
+  truncated: boolean;
+}
+
+export interface JamDiagnosticsInput {
+  byState: Readonly<Record<string, TransactionStateBucket>>;
+  /**
+   * Catálogo de denominaciones (`/api/masters/denominations`). Aporta la MONEDA de cada
+   * denominación: una máquina de cambio divisa opera COP y USD con valores que se
+   * repiten (100, 1.000), y sin moneda el plan canónico mezclaba las dos.
+   */
+  denominations?: readonly CurrencyDenomination[];
+  loads: readonly Load[];
+  /** Moneda declarada por el Pay+ (respaldo de etiqueta si el catálogo no responde). */
+  machineCurrency?: { id: number; label: string | null } | null;
+  /** Período solicitado en la UI (ISO); delimita la validez de la caída física. */
+  rangeFrom?: string | null;
+  rangeTo?: string | null;
+  scan: JamScanPayload | null;
+  storage: readonly PayPadStorage[];
+  thresholds?: Partial<JamThresholds>;
+  tonnages: readonly Tonnage[];
+}
+
+export interface JamSignalEvidence {
+  code: JamSignalCode;
+  detail: string;
+  weight: number;
+}
+
+export interface JamDenominationRow {
+  cause: JamCause;
+  /** `idCurrency` del catálogo; `null` = moneda no declarada. */
+  currencyId: number | null;
+  /** Etiqueta de la moneda (p. ej. «USD»): distingue dos denominaciones del mismo valor. */
+  currencyLabel: string | null;
+  denominationId: number;
+  denominationImage: string | null;
+  denominationValue: string;
+  /** Lo que dice Pay+ → Configurar denominaciones (puede estar desactualizado). */
+  configuredForDispensing: boolean;
+  /** Lo que la evidencia muestra: movimiento físico, dispensado o sustituciones. */
+  dispensesByEvidence: boolean;
+  /** Entregó MÁS de su parte canónica: está cubriendo el hueco de otra denominación. */
+  compensating: boolean;
+  compensationEvents: number;
+  compensationUnits: number;
+  dispensedUnits: number;
+  /** Sin unidades en el baúl: los fallos se explican por agotamiento. */
+  empty: boolean;
+  failedTransactions: readonly number[];
+  failedUnits: number;
+  inferredUnits: number;
+  lastEvidenceAt: string | null;
+  level: JamLevel;
+  /** Saldo en el umbral de recarga legacy (`minDpQuantity + tolerancia`). */
+  low: boolean;
+  minDpQuantity: number;
+  operationNames: readonly string[];
+  physicalDrop: { coveredByScan: boolean; units: number | null; windowFrom: string | null; windowTo: string | null };
+  /** Unidades en operaciones de rechazo que no son intentos de salida (contexto). */
+  rejectedUnits: number;
+  /** Saldo del baúl de rechazo (RJ). */
+  rejectionStock: number;
+  score: number;
+  signals: readonly JamSignalEvidence[];
+  stock: number;
+  stockValue: string;
+  /** Pagos que se completaron sin esta denominación estando configurada como dispensadora. */
+  substitutionEvents: number;
+  /** Igual, pero con la denominación marcada como «No dispensa» (posible configuración vencida). */
+  unconfiguredSubstitutionEvents: number;
+  suggestedAction: string | null;
+  summary: string;
+}
+
+export interface JamIncident {
+  cause: JamCause;
+  currencyId: number | null;
+  currencyLabel: string | null;
+  denominationId: number | null;
+  denominationValue: string | null;
+  detail: string;
+  evidence: readonly string[];
+  kind: "monedero" | "salida";
+  lastEvidenceAt: string | null;
+  level: JamLevel;
+  suggestedAction: string;
+  title: string;
+}
+
+/** Lectura verificada (o no) de las operaciones del detalle frente a los importes. */
+export interface JamInterpretation {
+  /** Transacciones cuya suma de salidas cuadró con `incomeAmount` (lectura invertida). */
+  incomeMatches: number;
+  inverted: boolean;
+  /** Transacciones cuya suma de salidas cuadró con `returnAmount`. */
+  returnMatches: number;
+  /** Cómo se dedujo el rol de `idTypeOperation`: por importes o por ningún método. */
+  roleMethod: "importes" | "ninguno";
+  verified: boolean;
+}
+
+/**
+ * Denominación que la máquina NO usa hoy y por eso no se evaluó. Evita el falso
+ * positivo real: una máquina solo de pesos con una fila heredada de USD 1 (sin
+ * configuración, sin saldo) cuyo arqueo antiguo bajó 6 unidades se reportaba como
+ * «Configuración contradice el arqueo» y «Posible atasco en la denominación 1».
+ */
+export interface JamIgnoredDenomination {
+  currencyLabel: string | null;
+  denominationId: number;
+  denominationValue: string;
+  reason: string;
+}
+
+export interface JamDiagnostics {
+  analyzed: boolean;
+  /** Denominaciones que están compensando la entrega de otra (no son el módulo atascado). */
+  compensatingDenominations: readonly string[];
+  /** Incidente principal (el módulo que hay que revisar), si existe. */
+  primary: JamIncident | null;
+  /** Ninguna transacción analizada devolvió detalle: el diagnóstico es ciego. */
+  blind: boolean;
+  failureReasons: readonly string[];
+  headline: string;
+  /** Denominaciones descartadas por no estar en uso hoy (con el motivo, para poder auditarlo). */
+  ignoredDenominations: readonly JamIgnoredDenomination[];
+  /** Pagos cuya composición mezcló monedas: no se evaluó su combinación canónica. */
+  mixedCurrencyPayouts: number;
+  /** La máquina opera más de una moneda (cambio divisa): todo se calcula por moneda. */
+  multiCurrency: boolean;
+  incidents: readonly JamIncident[];
+  interpretation: JamInterpretation;
+  rows: readonly JamDenominationRow[];
+  scanned: {
+    detailsFailures: number;
+    detailsRequests: number;
+    firstTransactionAt: string | null;
+    lastTransactionAt: string | null;
+    payoutsAnalyzed: number;
+    transactions: number;
+    truncated: boolean;
+  };
+  warnings: readonly string[];
+}
+
+const failedOperationPattern = /error|fall|rechaz/i;
+const acceptOperationPattern = /acept|recib|ingres|deposit|entrada|carga/i;
+const dispenseOperationPattern = /dispens|entreg|devuel|vuelta|retorn|cambio|expend|salida|pago/i;
+
+/**
+ * Clasifica la operación del detalle. El orden importa: un nombre como
+ * «Devuelta Error» describe un intento de salida fallido, no una entrega.
+ */
+export function classifyJamOperation(operation: string | null): JamOperationKind {
+  const text = operation?.trim() ?? "";
+  if (text.length === 0) {
+    return "unknown";
+  }
+
+  if (failedOperationPattern.test(text)) {
+    return "failed";
+  }
+
+  if (acceptOperationPattern.test(text)) {
+    return "accept";
+  }
+
+  return dispenseOperationPattern.test(text) ? "dispense" : "unknown";
+}
+
+export function isErrorReturnedState(state: string | null | undefined): boolean {
+  return /error/i.test(state?.trim() ?? "");
+}
+
+function toInt(value: string | number | null | undefined, fallback = 0): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.trunc(value) : fallback;
+  }
+
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toMillis(value: string | null | undefined): number {
+  if (!value) {
+    return Number.NaN;
+  }
+
+  return new Date(value).getTime();
+}
+
+/** Centavos con signo a partir de un decimal del API (string/number). */
+export function decimalToCents(value: string | number | null | undefined): bigint {
+  if (value === null || value === undefined) {
+    return 0n;
+  }
+
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(value).trim());
+  if (!match) {
+    return 0n;
+  }
+
+  const fraction = (match[3] ?? "").slice(0, 2).padEnd(2, "0");
+  const cents = BigInt(match[2] ?? "0") * 100n + BigInt(fraction);
+  return match[1] === "-" ? -cents : cents;
+}
+
+interface MixPlan {
+  units: Map<number, number>;
+  valueCents: bigint;
+}
+
+/**
+ * Combinación canónica (menor cantidad de unidades, mayor denominación primero)
+ * de un valor con las denominaciones disponibles del dispensador. Devuelve `null`
+ * si el valor no se puede armar exactamente: en ese caso no se emite evidencia de
+ * sustitución (el algoritmo de entrega del Pay+ puede usar otro criterio).
+ */
+export function canonicalPayoutMix(
+  valueCents: bigint,
+  denominations: readonly { denominationId: number; units: number; valueCents: bigint }[],
+): MixPlan | null {
+  if (valueCents <= 0n) {
+    return null;
+  }
+
+  const sorted = [...denominations]
+    .filter((entry) => entry.units > 0 && entry.valueCents > 0n)
+    .sort((left, right) => (right.valueCents === left.valueCents ? right.units - left.units : right.valueCents > left.valueCents ? 1 : -1));
+  const units = new Map<number, number>();
+  let remainder = valueCents;
+
+  for (const entry of sorted) {
+    if (remainder < entry.valueCents) {
+      continue;
+    }
+
+    const wanted = remainder / entry.valueCents;
+    const available = BigInt(entry.units);
+    const used = wanted > available ? available : wanted;
+    if (used > 0n) {
+      units.set(entry.denominationId, Number(used));
+      remainder -= used * entry.valueCents;
+    }
+  }
+
+  return remainder === 0n ? { units, valueCents } : null;
+}
+
+interface DenominationAggregate {
+  /** Unidades entregadas por encima de su parte canónica: prueba de que SÍ funciona. */
+  compensationEvents: number;
+  compensationUnits: number;
+  dispensedUnits: number;
+  failedTransactions: Set<number>;
+  failedUnits: number;
+  inferredUnits: number;
+  lastEvidenceAt: string | null;
+  operationNames: Set<string>;
+  payoutTransactions: Set<number>;
+  rejectedUnits: number;
+  substitutionEvents: number;
+  unconfiguredSubstitutionEvents: number;
+}
+
+function createAggregate(): DenominationAggregate {
+  return {
+    compensationEvents: 0,
+    compensationUnits: 0,
+    dispensedUnits: 0,
+    failedTransactions: new Set<number>(),
+    failedUnits: 0,
+    inferredUnits: 0,
+    lastEvidenceAt: null,
+    operationNames: new Set<string>(),
+    payoutTransactions: new Set<number>(),
+    rejectedUnits: 0,
+    substitutionEvents: 0,
+    unconfiguredSubstitutionEvents: 0,
+  };
+}
+
+interface JamDetailReading {
+  denominationId: number | null;
+  kind: JamOperationKind;
+  rawOperation: string | null;
+}
+
+/**
+ * Clasificación de un detalle: el nombre manda cuando es legible; si no, se usa el rol
+ * deducido de los importes para ese `idTypeOperation` (o del nombre literal).
+ */
+function readJamDetail(
+  detail: JamScanDetail,
+  inferredRoles: { roles: ReadonlyMap<string, JamOperationKind> },
+): JamDetailReading {
+  const rawOperation = detail.operation?.trim() || null;
+  const keywordKind = classifyJamOperation(rawOperation);
+  const roleKey = detail.operationId !== null ? `op:${detail.operationId}` : `name:${(rawOperation ?? "").toLowerCase()}`;
+  const kind: JamOperationKind = keywordKind !== "unknown" ? keywordKind : (inferredRoles.roles.get(roleKey) ?? "unknown");
+
+  return { denominationId: detail.denominationId, kind, rawOperation };
+}
+
+/**
+ * Evidencia de detalle ANTES del análisis por denominación: qué denominaciones entregó,
+ * intentó entregar o rechazó la máquina en el período. Sirve para decidir si una
+ * denominación está en uso hoy (una que dispensó hoy sigue siendo candidata aunque su
+ * baúl quede en cero o la configuración esté desactualizada).
+ */
+function collectDetailEvidence(
+  transactions: readonly JamScanTransaction[],
+  inferredRoles: { roles: ReadonlyMap<string, JamOperationKind> },
+): { dispensed: Set<number>; failed: Set<number> } {
+  const dispensed = new Set<number>();
+  const failed = new Set<number>();
+
+  for (const transaction of transactions) {
+    const errorState = isErrorReturnedState(transaction.stateTransaction);
+    const hasPayout = decimalToCents(transaction.returnAmount) > 0n;
+    for (const detail of transaction.details) {
+      if (detail.denominationId === null || Math.abs(toInt(detail.quantity)) === 0) {
+        continue;
+      }
+
+      const { kind } = readJamDetail(detail, inferredRoles);
+      if (kind === "accept") {
+        continue;
+      }
+      if (kind === "dispense") {
+        dispensed.add(detail.denominationId);
+        continue;
+      }
+      if (kind === "failed") {
+        if (errorState && hasPayout) {
+          failed.add(detail.denominationId);
+        }
+        continue;
+      }
+      if (!hasPayout) {
+        continue;
+      }
+      (errorState ? failed : dispensed).add(detail.denominationId);
+    }
+  }
+
+  return { dispensed, failed };
+}
+
+function loadQuantityForDenomination(
+  loads: readonly Load[],
+  denominationId: number,
+  denominationValue: string,
+  fromMillis: number,
+  toMillisValue: number,
+): number {
+  let total = 0;
+  for (const load of loads) {
+    const time = toMillis(load.dateCreated);
+    if (Number.isNaN(time) || time <= fromMillis || time > toMillisValue) {
+      continue;
+    }
+
+    for (const detail of load.details) {
+      const matchesId = detail.idCurrencyDenomination !== null && detail.idCurrencyDenomination === denominationId;
+      const matchesValue = detail.idCurrencyDenomination === null && toInt(detail.denominationValue) === toInt(denominationValue);
+      if (matchesId || matchesValue) {
+        total += toInt(detail.quantity);
+      }
+    }
+  }
+  return total;
+}
+
+function tonnageQuantity(
+  tonnage: Tonnage | null,
+  denominationId: number,
+  pick: (detail: Tonnage["details"][number]) => string = (detail) => detail.quantityDp,
+): number | null {
+  if (!tonnage) {
+    return null;
+  }
+
+  const detail = tonnage.details.find((item) => item.idCurrencyDenomination === denominationId);
+  return detail ? toInt(pick(detail)) : null;
+}
+
+/**
+ * Cuando `typeOperation` viene nulo o con un nombre no clasificable, el rol de cada
+ * `idTypeOperation` se deduce de los IMPORTES: la operación cuyo valor acumulado
+ * sigue a `returnAmount` (dinero que sale) es de dispensado; la que sigue a
+ * `incomeAmount − returnAmount` es de aceptación. Es inferencia estadística sobre el
+ * propio período, no una suposición sobre el catálogo de la base.
+ */
+export function inferOperationRoles(
+  transactions: readonly JamScanTransaction[],
+  denominationValueById: ReadonlyMap<number, bigint>,
+): { method: "importes" | "ninguno"; roles: Map<string, JamOperationKind> } {
+  const totals = new Map<string, bigint>();
+  let expectedOut = 0n;
+  let expectedIn = 0n;
+
+  for (const transaction of transactions) {
+    if (isErrorReturnedState(transaction.stateTransaction)) {
+      continue;
+    }
+
+    const payoutCents = decimalToCents(transaction.returnAmount);
+    if (payoutCents <= 0n) {
+      continue;
+    }
+
+    expectedOut += payoutCents;
+    const inCents = decimalToCents(transaction.incomeAmount) - payoutCents;
+    expectedIn += inCents > 0n ? inCents : 0n;
+
+    for (const detail of transaction.details) {
+      if (detail.denominationId === null) {
+        continue;
+      }
+      const key = detail.operationId !== null ? `op:${detail.operationId}` : `name:${(detail.operation ?? "").toLowerCase()}`;
+      const value = BigInt(Math.abs(toInt(detail.quantity))) * (denominationValueById.get(detail.denominationId) ?? 0n);
+      totals.set(key, (totals.get(key) ?? 0n) + value);
+    }
+  }
+
+  const roles = new Map<string, JamOperationKind>();
+  const close = (value: bigint, expected: bigint): boolean =>
+    expected > 0n && value > 0n && (value > expected ? value - expected : expected - value) * 20n <= (value > expected ? value : expected);
+
+  let matched = 0;
+  for (const [key, total] of totals) {
+    if (close(total, expectedOut) && !close(total, expectedIn)) {
+      roles.set(key, "dispense");
+      matched += 1;
+      continue;
+    }
+
+    if (close(total, expectedIn) && !close(total, expectedOut)) {
+      roles.set(key, "accept");
+      matched += 1;
+    }
+  }
+
+  return { method: matched > 0 ? "importes" : "ninguno", roles };
+}
+
+/**
+ * Pre-paso de reconciliación: ¿los detalles que parecen salidas suman el valor de
+ * `returnAmount` (cambio entregado) o el de `incomeAmount` (dinero aceptado)? Es la
+ * única forma de validar los nombres de operación sin el catálogo de la base.
+ */
+export function reconcileDetailInterpretation(
+  transactions: readonly JamScanTransaction[],
+  denominationValueById: ReadonlyMap<number, bigint>,
+): JamInterpretation {
+  let returnMatches = 0;
+  let incomeMatches = 0;
+
+  for (const transaction of transactions) {
+    const payoutCents = decimalToCents(transaction.returnAmount);
+    if (payoutCents <= 0n || isErrorReturnedState(transaction.stateTransaction)) {
+      continue;
+    }
+
+    let sideTotal = 0n;
+    for (const detail of transaction.details) {
+      if (detail.denominationId === null || classifyJamOperation(detail.operation) !== "dispense") {
+        continue;
+      }
+      sideTotal += BigInt(Math.abs(toInt(detail.quantity))) * (denominationValueById.get(detail.denominationId) ?? 0n);
+    }
+
+    if (sideTotal === 0n) {
+      continue;
+    }
+
+    if (sideTotal === payoutCents) {
+      returnMatches += 1;
+      continue;
+    }
+
+    if (sideTotal === decimalToCents(transaction.incomeAmount)) {
+      incomeMatches += 1;
+    }
+  }
+
+  const comparable = returnMatches + incomeMatches;
+  const inverted = incomeMatches > returnMatches;
+  return {
+    incomeMatches,
+    inverted,
+    returnMatches,
+    roleMethod: "ninguno",
+    verified: comparable > 0 && !inverted,
+  };
+}
+
+function buildSummary(
+  level: JamLevel,
+  cause: JamCause,
+  failedUnits: number,
+  dispensedUnits: number,
+  physicalDrop: number | null,
+  substitutions: number,
+): string {
+  if (cause === "agotado" && level === "sin_evidencia") {
+    return "Sin unidades en el baúl: los fallos de entrega se explican por agotamiento y no por atasco.";
+  }
+
+  if (level === "sin_evidencia") {
+    return "Sin evidencia de atasco en la ventana analizada.";
+  }
+
+  const parts: string[] = [];
+  if (failedUnits > 0) {
+    parts.push(`${failedUnits} unidad(es) no entregada(s) con unidades disponibles en el baúl`);
+  }
+  if (dispensedUnits > 0) {
+    parts.push(`${dispensedUnits} unidad(es) dispensada(s) registrada(s) por el sistema`);
+  }
+  if (substitutions > 0) {
+    parts.push(`${substitutions} pago(s) se completaron con denominaciones menores teniendo saldo disponible`);
+  }
+  if (physicalDrop !== null) {
+    parts.push(`caída física del arqueo: ${physicalDrop} unidad(es)`);
+  }
+
+  return parts.length === 0 ? "Señales de atasco detectadas en la ventana analizada." : `${parts.join(" · ")}.`;
+}
+
+function buildSuggestedAction(cause: JamCause, level: JamLevel): string | null {
+  if (level === "sin_evidencia") {
+    return null;
+  }
+
+  if (cause === "agotado") {
+    return "Programar el cargue de la denominación y confirmar con arqueo que el conteo físico coincide.";
+  }
+
+  return "Verificar el módulo en sitio: liberar la obstrucción, registrar arqueo de la denominación y, si el cuadre no cierra, escalar al proveedor del Pay+.";
+}
+
+/** Evidencia independiente: física (arqueo) o fallo explícito de entrega. */
+const jamIndependentSignals: readonly JamSignalCode[] = [
+  "caida_corroborada",
+  "caida_insuficiente",
+  "caida_sin_registro",
+  "devuelto_con_saldo",
+  "sin_caida_fisica",
+];
+
+function levelFromScore(score: number, signals: readonly JamSignalEvidence[], thresholds: JamThresholds): JamLevel {
+  const hasCoreSignal = signals.some((signal) => jamCoreSignals.includes(signal.code));
+  const hasIndependentSignal = signals.some((signal) => jamIndependentSignals.includes(signal.code));
+  // "Confirmado" exige evidencia independiente de la composición de pagos: la
+  // sustitución sola puede deberse al algoritmo de entrega del Pay+.
+  if (score >= thresholds.confirmedScore && signals.length >= 2 && hasCoreSignal && hasIndependentSignal) {
+    return "confirmado";
+  }
+  if (score >= thresholds.probableScore) {
+    return "probable";
+  }
+  if (score >= 1) {
+    return "sospecha";
+  }
+  return "sin_evidencia";
+}
+
+export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostics {
+  const thresholds: JamThresholds = { ...JAM_THRESHOLDS, ...input.thresholds };
+  const { byState, loads, rangeFrom, rangeTo, scan, storage, tonnages } = input;
+  const warnings: string[] = [];
+  const requestedFrom = toMillis(rangeFrom ?? null);
+  const requestedTo = toMillis(rangeTo ?? null);
+  const detailsBlind = scan !== null && scan.detailsRequests > 0 && scan.detailsFailures >= scan.detailsRequests;
+  const detailsPartial = scan !== null && scan.detailsFailures > 0 && !detailsBlind;
+
+  const tonnagesDesc = [...tonnages]
+    .filter((tonnage) => !Number.isNaN(toMillis(tonnage.dateCreated)))
+    .sort((left, right) => toMillis(right.dateCreated) - toMillis(left.dateCreated));
+  const lastTonnage = tonnagesDesc[0] ?? null;
+  const previousTonnage = tonnagesDesc[1] ?? null;
+  if (!previousTonnage || !lastTonnage) {
+    warnings.push(`La caída física por denominación requiere dos arqueos consecutivos; hay ${lastTonnage ? "uno" : "ninguno"}.`);
+  }
+
+  const tonnageWindowFrom = previousTonnage?.dateCreated ?? null;
+  const tonnageWindowTo = lastTonnage?.dateCreated ?? null;
+  const tonnageWindowValid = tonnageWindowFrom !== null && tonnageWindowTo !== null;
+  if (!scan) {
+    warnings.push("Falta el análisis de detalles: «Analizar atascos» atribuye devoluciones y sustituciones por denominación.");
+  } else if (scan.truncated) {
+    warnings.push(`El período tenía más movimientos: se analizaron ${scan.transactions.length} transacciones (máximo ${scan.maxTransactions}).`);
+  }
+  // El diagnóstico nunca puede declararse "limpio" si no pudo leer el detalle: eso
+  // fue exactamente lo que ocultó el atasco del monedero de 500 en una máquina real.
+  if (detailsBlind) {
+    warnings.push(`No se pudo leer el detalle de ninguna de las ${scan?.detailsRequests ?? 0} transacciones analizadas, por eso no hay evidencia de composición de pagos.`);
+  } else if (scan && scan.detailsFailures > 0) {
+    warnings.push(`${scan.detailsFailures} transacción(es) no devolvieron detalle; la evidencia puede ser parcial.`);
+  }
+  if (scan && (scan.detailsMalformed ?? 0) > 0) {
+    warnings.push(`${scan.detailsMalformed} detalle(s) llegaron con una forma inesperada y se normalizaron; revisar el contrato del endpoint si el diagnóstico no cuadra.`);
+  }
+  if (scan && (scan.failureReasons?.length ?? 0) > 0) {
+    warnings.push(`Motivo de los fallos de detalle: ${scan.failureReasons?.join(" | ")}.`);
+  }
+
+  const errorReturnedCount = byState[RETURNED_ERROR_STATE]?.count ?? 0;
+  const errorReturnedTotal = byState[RETURNED_ERROR_STATE]?.total ?? "0";
+  // Índices de moneda y de valor. El valor sale del catálogo ∪ storage: un detalle de
+  // una denominación que no está en el storage de esta máquina valía 0 y descuadraba
+  // la reconciliación (máquinas de cambio divisa con varias monedas).
+  const currencyIndex = buildDenominationCurrencyIndex({
+    denominations: input.denominations ?? [],
+    machineCurrency: input.machineCurrency ?? null,
+    storage,
+  });
+  const currencyKeyOf = (denominationId: number): number | null => currencyIndex.get(denominationId)?.currencyId ?? null;
+  const currencyLabelOf = (denominationId: number): string | null => denominationCurrencyText(currencyIndex.get(denominationId));
+  const valueTextById = buildDenominationValueIndex({
+    denominations: input.denominations ?? [],
+    machineCurrency: input.machineCurrency ?? null,
+    storage,
+  });
+  const denominationValueById = new Map(
+    [...valueTextById].map(([denominationId, value]) => [denominationId, decimalToCents(value)]),
+  );
+
+  const transactionsAsc = scan
+    ? [...scan.transactions].sort((left, right) => toMillis(left.dateCreated) - toMillis(right.dateCreated))
+    : [];
+
+  let scannedFrom = Number.NaN;
+  let scannedTo = Number.NaN;
+  for (const transaction of transactionsAsc) {
+    const time = toMillis(transaction.dateCreated);
+    if (!Number.isNaN(time)) {
+      scannedFrom = Number.isNaN(scannedFrom) ? time : Math.min(scannedFrom, time);
+      scannedTo = Number.isNaN(scannedTo) ? time : Math.max(scannedTo, time);
+    }
+  }
+
+  // La conciliación por importes compara `returnAmount` / `incomeAmount` con la suma de
+  // los detalles. Con varias monedas esa comparación no tiene sentido (no se pueden
+  // sumar pesos y dólares), así que se desactiva y se declara: el rol de las operaciones
+  // sin nombre queda por estado de la transacción, como manda el diseño.
+  const detailCurrencies = new Set<number | null>();
+  const detailCurrencyLabels = new Set<string>();
+  for (const transaction of transactionsAsc) {
+    for (const detail of transaction.details) {
+      if (detail.denominationId !== null) {
+        detailCurrencies.add(currencyKeyOf(detail.denominationId));
+        detailCurrencyLabels.add(currencyLabelOf(detail.denominationId) ?? "moneda no declarada");
+      }
+    }
+  }
+  const detailsMultiCurrency = detailCurrencies.size > 1;
+  const interpretation = detailsMultiCurrency
+    ? { incomeMatches: 0, inverted: false, returnMatches: 0, roleMethod: "ninguno" as const, verified: false }
+    : reconcileDetailInterpretation(transactionsAsc, denominationValueById);
+  const inferredRoles = detailsMultiCurrency ? { method: "ninguno" as const, roles: new Map<string, JamOperationKind>() } : inferOperationRoles(transactionsAsc, denominationValueById);
+  if (detailsMultiCurrency) {
+    warnings.push(
+      `Los pagos analizados usan ${detailCurrencies.size} monedas (${[...detailCurrencyLabels].join(", ")}): la combinación canónica y las sustituciones se evalúan por moneda y los roles sin nombre se atribuyen por el estado de la transacción.`,
+    );
+  }
+  if (interpretation.inverted) {
+    warnings.push("Los importes indican que las operaciones «de salida» del detalle describen lo aceptado: se desactivaron sustitución y participación para no inventar evidencia.");
+  } else if (!detailsMultiCurrency && transactionsAsc.length > 0 && !interpretation.verified) {
+    // Con varias monedas la conciliación por importes no aplica y ya se declara aparte.
+    warnings.push("No se pudo reconciliar el detalle con los importes (sin nombres de operación o sin devoluciones): la evidencia se apoya en el estado de la transacción.");
+  }
+
+  // Conjunto de denominaciones que pueden entregar cambio: la configuración
+  // (`isDispensing`) ya no es la única fuente. Un monedero marcado «No dispensa» que
+  // sí bajó en el arqueo o sí aparece dispensando es evidencia suficiente; si no está
+  // marcado, la sustitución se registra como posible configuración desactualizada.
+  // Evidencia de detalle del período (antes del análisis): qué denominaciones entregó
+  // o intentó entregar la máquina hoy.
+  const detailEvidence = collectDetailEvidence(transactionsAsc, inferredRoles);
+
+  // Una denominación se evalúa sólo si la máquina la USA HOY: está configurada, tiene
+  // unidades en el baúl del sistema, tenía unidades en el último arqueo o el período
+  // analizado la muestra entregando/intentando entregar. El histórico de arqueos ya NO
+  // basta: una fila heredada (p. ej. el billete de USD 1 en una máquina que sólo maneja
+  // pesos, sin configuración ni saldo) cuyo arqueo viejo bajó 6 unidades generaba
+  // «Configuración contradice el arqueo» y un «Posible atasco» falso. Esas
+  // denominaciones se informan aparte, con el motivo, en lugar de alarmar.
+  const planCandidates = new Map<number, { configured: boolean; currencyId: number | null; units: number; valueCents: bigint }>();
+  const ignoredDenominations: JamIgnoredDenomination[] = [];
+  const previousQuantities = new Map<number, number | null>();
+  const currentQuantities = new Map<number, number | null>();
+  for (const entry of storage) {
+    const denominationId = entry.idCurrencyDenomination;
+    const previousQuantity = tonnageQuantity(previousTonnage, denominationId);
+    const currentQuantity = tonnageQuantity(lastTonnage, denominationId);
+    previousQuantities.set(denominationId, previousQuantity);
+    currentQuantities.set(denominationId, currentQuantity);
+    const physicalMovement =
+      previousQuantity !== null && currentQuantity !== null ? previousQuantity - currentQuantity : null;
+    const observedMovement = physicalMovement !== null && physicalMovement > 0;
+    const configured = entry.isDispensing;
+    const usableStock = toInt(entry.dpStored);
+    const minDpQuantity = toInt(entry.minDpQuantity);
+    // Misma regla que el desglose de saldos (`denomination-usage.ts`): los dos paneles
+    // deben coincidir sobre qué denominaciones trabaja la máquina hoy.
+    const usedToday = isDenominationInUse({
+      acceptedLastArqueo: tonnageQuantity(lastTonnage, denominationId, (detail) => detail.quantityAp),
+      acceptedStock: toInt(entry.apStored),
+      configured,
+      deliveredInPeriod: detailEvidence.dispensed.has(denominationId),
+      deliveredLastArqueo: currentQuantity,
+      dispensingStock: usableStock,
+      failedInPeriod: detailEvidence.failed.has(denominationId),
+      loadedInPeriod:
+        tonnageWindowValid && previousTonnage !== null
+          ? loadQuantityForDenomination(loads, denominationId, entry.denominationValue, toMillis(previousTonnage.dateCreated), toMillis(lastTonnage?.dateCreated ?? null))
+          : 0,
+      minDpQuantity,
+      rejectedLastArqueo: tonnageQuantity(lastTonnage, denominationId, (detail) => detail.quantityRj),
+      rejectionStock: toInt(entry.rjStored),
+    });
+
+    if (usedToday) {
+      planCandidates.set(denominationId, {
+        configured,
+        currencyId: currencyKeyOf(denominationId),
+        units: usableStock,
+        valueCents: decimalToCents(entry.denominationValue),
+      });
+      continue;
+    }
+
+    const everHadDispenserStock = tonnages.some((tonnage) => (tonnageQuantity(tonnage, denominationId) ?? 0) > 0);
+    const historicalNote =
+      everHadDispenserStock || observedMovement
+        ? " El histórico de arqueos sí la movió: módulo retirado, reconfigurado o unidades extraídas."
+        : "";
+    ignoredDenominations.push({
+      currencyLabel: currencyLabelOf(denominationId),
+      denominationId,
+      denominationValue: entry.denominationValue,
+      reason: `${DENOMINATION_NOT_IN_USE_REASON}${historicalNote}`,
+    });
+  }
+
+  const candidateCurrencyIds = new Set<number | null>([...planCandidates.values()].map((candidate) => candidate.currencyId));
+  const multiCurrency = candidateCurrencyIds.size > 1 || detailsMultiCurrency;
+  const machineCurrencyLabel = input.machineCurrency?.label ?? null;
+  if (ignoredDenominations.length > 0) {
+    const listed = ignoredDenominations
+      .slice(0, 4)
+      .map((entry) => `${entry.currencyLabel ? `${entry.currencyLabel} ` : ""}${entry.denominationValue}`)
+      .join(", ");
+    warnings.push(
+      `${ignoredDenominations.length} denominación(es) no se evaluaron porque la máquina no las usa hoy${machineCurrencyLabel ? ` (moneda principal: ${machineCurrencyLabel})` : ""}: ${listed}${ignoredDenominations.length > 4 ? ", …" : ""}. Ver el detalle y el motivo en el panel.`,
+    );
+  }
+
+  const aggregation = new Map<number, DenominationAggregate>();
+  let payoutsAnalyzed = 0;
+  let mixedCurrencyPayouts = 0;
+  const unclassifiedOperations = new Set<string>();
+
+  // 1) Agregados por denominación a partir de los detalles consultados.
+  for (const transaction of transactionsAsc) {
+    const errorState = isErrorReturnedState(transaction.stateTransaction);
+    const payoutCents = decimalToCents(transaction.returnAmount);
+    const hasPayout = payoutCents > 0n;
+    const dispensedInTransaction = new Map<number, number>();
+
+    for (const detail of transaction.details) {
+      // El nombre manda cuando es clasificable; si no, se usa el rol deducido de los
+      // importes para ese `idTypeOperation` (o el nombre literal como clave).
+      const { denominationId, kind, rawOperation } = readJamDetail(detail, inferredRoles);
+      if (rawOperation === null) {
+        unclassifiedOperations.add("sin tipo de operación");
+      } else if (kind === "unknown") {
+        unclassifiedOperations.add(rawOperation);
+      }
+      if (denominationId === null) {
+        continue;
+      }
+
+      const aggregate = aggregation.get(denominationId) ?? createAggregate();
+      aggregation.set(denominationId, aggregate);
+      if (rawOperation !== null) {
+        aggregate.operationNames.add(rawOperation);
+      }
+
+      const quantity = Math.abs(toInt(detail.quantity));
+      if (quantity === 0) {
+        continue;
+      }
+
+      if (kind === "accept") {
+        // Dinero aceptado: pertenece al aceptador, no al dispensador.
+        continue;
+      }
+
+      if (kind === "dispense") {
+        aggregate.dispensedUnits += quantity;
+        dispensedInTransaction.set(denominationId, (dispensedInTransaction.get(denominationId) ?? 0) + quantity);
+        continue;
+      }
+
+      if (kind === "failed") {
+        if (errorState && hasPayout) {
+          // Intento de salida fallido en una transacción que debía devolver.
+          aggregate.failedUnits += quantity;
+          aggregate.failedTransactions.add(transaction.id);
+          aggregate.lastEvidenceAt = transaction.dateCreated ?? aggregate.lastEvidenceAt;
+        } else {
+          aggregate.rejectedUnits += quantity;
+        }
+        continue;
+      }
+
+      // Sin nombre legible: solo se atribuye si la transacción tiene devolución.
+      if (!hasPayout) {
+        continue;
+      }
+
+      aggregate.inferredUnits += quantity;
+      if (errorState) {
+        aggregate.failedUnits += quantity;
+        aggregate.failedTransactions.add(transaction.id);
+        aggregate.lastEvidenceAt = transaction.dateCreated ?? aggregate.lastEvidenceAt;
+      } else {
+        aggregate.dispensedUnits += quantity;
+        dispensedInTransaction.set(denominationId, (dispensedInTransaction.get(denominationId) ?? 0) + quantity);
+      }
+    }
+
+    // 2) Sustitución: se pagó el valor esperado sin usar la denominación canónica.
+    const isPayout = !errorState && hasPayout && dispensedInTransaction.size > 0 && !interpretation.inverted;
+    if (!isPayout) {
+      continue;
+    }
+
+    // La combinación canónica se arma con las denominaciones de LA MISMA MONEDA que el
+    // pago. Sin esto, un pago de USD 100 se "planeaba" con 1 × COP 100 (mismo valor
+    // numérico) y el monedero de pesos quedaba acusado de no participar.
+    const payoutCurrencies = new Set<number | null>(
+      [...dispensedInTransaction.keys()].map((denominationId) => currencyKeyOf(denominationId)),
+    );
+    if (payoutCurrencies.size > 1) {
+      mixedCurrencyPayouts += 1;
+      continue;
+    }
+    const payoutCurrencyId = [...payoutCurrencies][0] ?? null;
+
+    payoutsAnalyzed += 1;
+    let actualTotal = 0n;
+    for (const [denominationId, quantity] of dispensedInTransaction) {
+      actualTotal += BigInt(quantity) * (denominationValueById.get(denominationId) ?? 0n);
+    }
+
+    if (actualTotal === payoutCents) {
+      const plan = canonicalPayoutMix(
+        payoutCents,
+        [...planCandidates]
+          .filter(([, candidate]) => candidate.currencyId === payoutCurrencyId)
+          .map(([denominationId, candidate]) => ({
+            denominationId,
+            units: candidate.units,
+            valueCents: candidate.valueCents,
+          })),
+      );
+
+      if (plan) {
+        // Falta de participación: la denominación estaba en la combinación correcta y
+        // no se usó (o se usó de menos). Es el sospechoso del atasco.
+        for (const [denominationId, plannedUnits] of plan.units) {
+          if ((dispensedInTransaction.get(denominationId) ?? 0) >= plannedUnits) {
+            continue;
+          }
+
+          const aggregate = aggregation.get(denominationId) ?? createAggregate();
+          if (planCandidates.get(denominationId)?.configured) {
+            aggregate.substitutionEvents += 1;
+          } else {
+            aggregate.unconfiguredSubstitutionEvents += 1;
+          }
+          aggregate.failedTransactions.add(transaction.id);
+          aggregate.lastEvidenceAt = transaction.dateCreated ?? aggregate.lastEvidenceAt;
+          aggregation.set(denominationId, aggregate);
+        }
+
+        // Sobre-entrega: esta denominación entregó MÁS de lo que le tocaba, así que
+        // está cubriendo el hueco de otra. Nunca puede ser el módulo atascado
+        // (corrige el caso real: el 100 compensaba al 500 y se lo culpaba a él).
+        for (const [denominationId, usedUnits] of dispensedInTransaction) {
+          const plannedUnits = plan.units.get(denominationId) ?? 0;
+          if (usedUnits - plannedUnits < thresholds.minimumCompensationUnits) {
+            continue;
+          }
+
+          const aggregate = aggregation.get(denominationId) ?? createAggregate();
+          aggregate.compensationEvents += 1;
+          aggregate.compensationUnits += usedUnits - plannedUnits;
+          aggregate.lastEvidenceAt = transaction.dateCreated ?? aggregate.lastEvidenceAt;
+          aggregation.set(denominationId, aggregate);
+        }
+      }
+    }
+
+    // Participación: en cuántos pagos participó cada denominación.
+    for (const denominationId of dispensedInTransaction.keys()) {
+      const aggregate = aggregation.get(denominationId) ?? createAggregate();
+      aggregate.payoutTransactions.add(transaction.id);
+      aggregation.set(denominationId, aggregate);
+    }
+  }
+
+  // 3) Segmentación para la señal de participación (2/3 previos vs 1/3 reciente).
+  const recentCutoffIndex = Math.max(0, transactionsAsc.length - Math.max(1, Math.round(transactionsAsc.length / 3)));
+  const recentTransactionIds = new Set(transactionsAsc.slice(recentCutoffIndex).map((transaction) => transaction.id));
+  const payoutTransactionIds = new Set<number>();
+  for (const aggregate of aggregation.values()) {
+    for (const id of aggregate.payoutTransactions) {
+      payoutTransactionIds.add(id);
+    }
+  }
+  const recentPayoutCount = [...payoutTransactionIds].filter((id) => recentTransactionIds.has(id)).length;
+  const previousPayoutCount = payoutTransactionIds.size - recentPayoutCount;
+  const canMeasureParticipation = recentPayoutCount >= thresholds.minimumRecentPayouts && previousPayoutCount >= thresholds.minimumRecentPayouts;
+
+  // 4) Filas por denominación del baúl. La configuración (`isDispensing`) informa,
+  //    pero no habilita ni bloquea la evidencia: en la máquina real Pay+ Inder 2 el
+  //    monedero de 500 estaba marcado «No dispensa» y sí debía entregar.
+  const machineMovedInWindow = [...planCandidates.keys()].some((denominationId) => {
+    const previous = previousQuantities.get(denominationId) ?? null;
+    const current = currentQuantities.get(denominationId) ?? null;
+    return previous !== null && current !== null && previous - current > 0;
+  });
+  const rows: JamDenominationRow[] = storage
+    .filter((entry) => planCandidates.has(entry.idCurrencyDenomination))
+    .map((entry) => {
+      const denominationId = entry.idCurrencyDenomination;
+      const aggregate = aggregation.get(denominationId) ?? createAggregate();
+      const stock = toInt(entry.dpStored);
+      const minDpQuantity = toInt(entry.minDpQuantity);
+      // `low` reutiliza el umbral legacy del arqueo; `empty` exige cero unidades:
+      // un fallo con el baúl lleno es más sospechoso que con el baúl en el umbral.
+      const low = entry.isDispensing && stock <= minDpQuantity + thresholds.lowBalanceTolerance;
+      const empty = stock <= 0;
+
+      const previousQuantity = previousQuantities.get(denominationId) ?? null;
+      const currentQuantity = currentQuantities.get(denominationId) ?? null;
+      const observedMovement = previousQuantity !== null && currentQuantity !== null ? previousQuantity - currentQuantity : null;
+      // ¿Esta denominación entrega? Configuración O evidencia (movimiento físico,
+      // unidades dispensadas en la ventana o sustituciones detectadas).
+      const evidencedDispensing =
+        (observedMovement !== null && observedMovement > 0) ||
+        aggregate.dispensedUnits > 0 ||
+        aggregate.unconfiguredSubstitutionEvents > 0;
+      const dispenses = entry.isDispensing || evidencedDispensing;
+      const usable = dispenses && !empty;
+      let physicalDrop: number | null = null;
+      if (tonnageWindowValid && previousQuantity !== null && currentQuantity !== null && tonnageWindowFrom !== null && tonnageWindowTo !== null) {
+        const loaded = loadQuantityForDenomination(loads, denominationId, entry.denominationValue, toMillis(tonnageWindowFrom), toMillis(tonnageWindowTo));
+        physicalDrop = previousQuantity + loaded - currentQuantity;
+      }
+
+      // La caída física solo es evidencia si TODO movimiento del intervalo del
+      // arqueo fue analizado: el intervalo debe empezar dentro de lo analizado y,
+      // si el análisis quedó truncado, terminar antes de la última transacción
+      // consultada (los movimientos posteriores no se vieron).
+      const intervalStart = toMillis(tonnageWindowFrom ?? null);
+      const intervalEnd = toMillis(tonnageWindowTo ?? null);
+      const insideRequestedRange =
+        !Number.isNaN(intervalStart) &&
+        !Number.isNaN(intervalEnd) &&
+        (Number.isNaN(requestedFrom) || intervalStart >= requestedFrom) &&
+        (Number.isNaN(requestedTo) || intervalEnd <= requestedTo);
+      const insideScannedWindow =
+        !Number.isNaN(intervalStart) &&
+        !Number.isNaN(intervalEnd) &&
+        !Number.isNaN(scannedFrom) &&
+        !Number.isNaN(scannedTo) &&
+        intervalStart >= scannedFrom &&
+        intervalEnd <= scannedTo;
+      // Con el análisis completo del período basta con que el intervalo esté dentro
+      // del rango solicitado; si quedó truncado, debe estar dentro de lo analizado.
+      const coveredByScan =
+        scan !== null && physicalDrop !== null && insideRequestedRange && (!scan.truncated || insideScannedWindow);
+
+      const systemUnits = aggregate.dispensedUnits + aggregate.failedUnits;
+      const rejectionStock = toInt(entry.rjStored);
+      // Una denominación que entrega MÁS de lo que le toca está cubriendo el hueco de
+      // otra: es prueba de que funciona. Nunca se le atribuye atasco, aunque acumule
+      // intentos fallidos o su arqueo no cuadre (eso es consecuencia, no causa).
+      const compensating =
+        aggregate.compensationEvents >= thresholds.minimumCompensationEvents && aggregate.compensationUnits > 0;
+      const signals: JamSignalEvidence[] = [];
+
+      if (!compensating && usable && aggregate.failedUnits >= thresholds.minimumFailedUnits) {
+        signals.push({
+          code: "devuelto_con_saldo",
+          detail: low
+            ? `${aggregate.failedUnits} unidad(es) no entregada(s) en ${aggregate.failedTransactions.size} transacción(es) y el baúl tiene ${stock} unidad(es), por debajo del umbral de recarga (${minDpQuantity + thresholds.lowBalanceTolerance}): confirmar con arqueo que no sea desabasto.`
+            : `${aggregate.failedUnits} unidad(es) no entregada(s) en ${aggregate.failedTransactions.size} transacción(es) y el baúl conserva ${stock} unidad(es) por encima del umbral de recarga (${minDpQuantity + thresholds.lowBalanceTolerance}).`,
+          weight: jamSignalWeights.devuelto_con_saldo,
+        });
+      }
+
+      if (!compensating && usable && aggregate.substitutionEvents >= thresholds.minimumSubstitutionEvents) {
+        signals.push({
+          code: "sustitucion",
+          detail: `En ${aggregate.substitutionEvents} pago(s) el valor se completó con otras denominaciones aunque esta tenía saldo suficiente.`,
+          weight: jamSignalWeights.sustitucion,
+        });
+      }
+
+      if (!compensating && !entry.isDispensing && !empty && aggregate.unconfiguredSubstitutionEvents >= thresholds.minimumSubstitutionEvents) {
+        signals.push({
+          code: "sustitucion_no_configurada",
+          detail: `En ${aggregate.unconfiguredSubstitutionEvents} pago(s) el valor se completó sin esta denominación aunque tenía ${stock} unidad(es). La configuración la marca como «No dispensa»: puede ser un atasco o una configuración desactualizada (corregir en Pay+ → Configurar denominaciones).`,
+          weight: jamSignalWeights.sustitucion_no_configurada,
+        });
+      }
+
+      if (!compensating && usable && canMeasureParticipation) {
+        const recentUses = [...aggregate.payoutTransactions].filter((id) => recentTransactionIds.has(id)).length;
+        const previousUses = aggregate.payoutTransactions.size - recentUses;
+        const previousRatio = previousUses / previousPayoutCount;
+        const recentRatio = recentUses / recentPayoutCount;
+        // Solo cuenta si dejó de usarse POR COMPLETO en la ventana reciente y el arqueo
+        // tampoco muestra movimiento. Una caída parcial (p. ej. del 100 % al 40 %) es
+        // una tendencia, no un atasco: la alerta debe describir el estado actual, no
+        // predecir con el histórico. Además aporta peso 0: nunca genera incidente sola.
+        const movedInArqueo = observedMovement !== null && observedMovement > 0;
+        if (!movedInArqueo && recentRatio <= thresholds.participationRecentMaxRatio && previousRatio >= thresholds.participationPreviousRatio) {
+          signals.push({
+            code: "participacion_perdida",
+            detail: `No participó en ninguno de los ${recentPayoutCount} pago(s) recientes analizados, cuando antes estaba en el ${Math.round(previousRatio * 100)}% de los pagos; conserva ${stock} unidad(es) en el baúl.`,
+            weight: jamSignalWeights.participacion_perdida,
+          });
+        }
+      }
+
+      if (!compensating && coveredByScan && physicalDrop !== null) {
+        if (systemUnits > 0 && physicalDrop === 0) {
+          signals.push({
+            code: "sin_caida_fisica",
+            detail: `El sistema registra ${systemUnits} unidad(es) en movimiento y el arqueo no redujo el conteo del baúl.`,
+            weight: jamSignalWeights.sin_caida_fisica,
+          });
+        } else if (aggregate.failedUnits >= thresholds.minimumFailedUnits && aggregate.dispensedUnits > 0 && physicalDrop === aggregate.dispensedUnits) {
+          signals.push({
+            code: "caida_corroborada",
+            detail: `El arqueo bajó exactamente lo dispensado (${aggregate.dispensedUnits}); las ${aggregate.failedUnits} unidad(es) no entregada(s) siguen en el baúl.`,
+            weight: jamSignalWeights.caida_corroborada,
+          });
+        } else if (aggregate.dispensedUnits > 0 && physicalDrop < aggregate.dispensedUnits) {
+          signals.push({
+            code: "caida_insuficiente",
+            detail: `El arqueo bajó ${physicalDrop} unidad(es) y el sistema registra ${aggregate.dispensedUnits} dispensada(s).`,
+            weight: jamSignalWeights.caida_insuficiente,
+          });
+        } else if (physicalDrop > systemUnits) {
+          signals.push({
+            code: "caida_sin_registro",
+            detail: `El arqueo bajó ${physicalDrop} unidad(es) y el sistema solo registra ${systemUnits}: posible liberación manual de la obstrucción sin registrar.`,
+            weight: jamSignalWeights.caida_sin_registro,
+          });
+        }
+      }
+
+      // No participó en el intervalo del arqueo aunque la máquina sí movió otras
+      // denominaciones y esta conserva saldo: es la única evidencia posible cuando el
+      // Pay+ no devuelve error (entrega silenciosa con denominaciones menores).
+      const wasRequired = aggregate.substitutionEvents + aggregate.unconfiguredSubstitutionEvents > 0;
+      if (
+        !compensating &&
+        wasRequired &&
+        observedMovement === 0 &&
+        !empty &&
+        dispenses &&
+        machineMovedInWindow &&
+        aggregate.dispensedUnits === 0
+      ) {
+        signals.push({
+          code: "inactiva_con_saldo",
+          detail: `${coveredByScan ? "" : "Evidencia de arqueos (fuera del período seleccionado): "}en el intervalo ${tonnageWindowFrom ?? "—"} → ${tonnageWindowTo ?? "—"} otras denominaciones bajaron y esta no se movió, conservando ${stock} unidad(es).`,
+          weight: coveredByScan ? jamSignalWeights.inactiva_con_saldo : 1,
+        });
+      }
+
+      if (!compensating && rejectionStock > 0 && (aggregate.failedUnits >= thresholds.minimumFailedUnits || aggregate.rejectedUnits > 0)) {
+        signals.push({
+          code: "rechazo_con_unidades",
+          detail: `El baúl de rechazo tiene ${rejectionStock} unidad(es) y hubo ${aggregate.failedUnits + aggregate.rejectedUnits} unidad(es) rechazada(s)/no entregada(s).`,
+          weight: jamSignalWeights.rechazo_con_unidades,
+        });
+      }
+
+      if (!compensating && !entry.isDispensing && observedMovement !== null && observedMovement > 0) {
+        signals.push({
+          code: "config_inconsistente",
+          detail: `La configuración la marca como «No dispensa», pero el arqueo muestra ${observedMovement} unidad(es) menos en el baúl: actualizar Pay+ → Configurar denominaciones para que la detección tenga la configuración correcta.`,
+          weight: jamSignalWeights.config_inconsistente,
+        });
+      }
+
+      if (compensating) {
+        signals.push({
+          code: "compensando_entrega",
+          detail: `Entregó ${aggregate.compensationUnits} unidad(es) de más respecto a su parte canónica en ${aggregate.compensationEvents} pago(s): está sustituyendo a otra denominación, no es el módulo atascado.`,
+          weight: jamSignalWeights.compensando_entrega,
+        });
+      }
+
+      if (physicalDrop !== null && physicalDrop < 0) {
+        signals.push({
+          code: "descuadre_inventario",
+          detail: `El conteo físico subió ${-physicalDrop} unidad(es) entre arqueos: cargue no registrado o descuadre previo; la caída física no se usa como evidencia.`,
+          weight: jamSignalWeights.descuadre_inventario,
+        });
+      }
+
+      // Una señal de peso 0 (tendencia o contexto) no puede sostener un incidente:
+      // el motor solo alerta con evidencia del período consultado o del arqueo.
+      const score = signals.reduce((total, signal) => total + signal.weight, 0);
+      let level = levelFromScore(score, signals, thresholds);
+      if (compensating) {
+        level = "sin_evidencia";
+      }
+      // Con el baúl en el umbral de recarga y una sola señal de "devolvió teniendo
+      // unidades", el desabasto es una explicación tan razonable como el atasco.
+      if (level === "probable" && low && !empty && signals.every((signal) => signal.code === "devuelto_con_saldo")) {
+        level = "sospecha";
+      }
+      const cause: JamCause = level !== "sin_evidencia" ? "atasco" : empty && dispenses ? "agotado" : "sin_evidencia";
+
+      return {
+        cause,
+        currencyId: currencyKeyOf(denominationId),
+        currencyLabel: currencyLabelOf(denominationId),
+        denominationId,
+        denominationImage: entry.imgDenom ?? null,
+        denominationValue: entry.denominationValue,
+        dispensedUnits: aggregate.dispensedUnits,
+        empty,
+        failedTransactions: [...aggregate.failedTransactions].slice(0, 5),
+        failedUnits: aggregate.failedUnits,
+        inferredUnits: aggregate.inferredUnits,
+        compensating,
+        compensationEvents: aggregate.compensationEvents,
+        compensationUnits: aggregate.compensationUnits,
+        configuredForDispensing: entry.isDispensing,
+        dispensesByEvidence: evidencedDispensing,
+        lastEvidenceAt: aggregate.lastEvidenceAt,
+        level,
+        low,
+        minDpQuantity,
+        operationNames: [...aggregate.operationNames],
+        physicalDrop: { coveredByScan, units: physicalDrop, windowFrom: tonnageWindowFrom, windowTo: tonnageWindowTo },
+        rejectedUnits: aggregate.rejectedUnits,
+        rejectionStock,
+        score,
+        signals,
+        stock,
+        stockValue: entry.dpTotal,
+        substitutionEvents: aggregate.substitutionEvents,
+        unconfiguredSubstitutionEvents: aggregate.unconfiguredSubstitutionEvents,
+        suggestedAction: buildSuggestedAction(cause, level),
+        summary: buildSummary(
+          level,
+          cause,
+          aggregate.failedUnits,
+          aggregate.dispensedUnits,
+          physicalDrop,
+          aggregate.substitutionEvents + aggregate.unconfiguredSubstitutionEvents,
+        ),
+      } satisfies JamDenominationRow;
+    })
+    .sort((left, right) => right.score - left.score || toInt(right.denominationValue) - toInt(left.denominationValue));
+
+  // 5) Incidentes: uno por denominación con evidencia + ráfaga de salida a nivel de máquina.
+  const compensatingRows = rows.filter((row) => row.compensating);
+  // Con varias monedas la etiqueta incluye la moneda: «USD 100» y «COP 100» no pueden
+  // confundirse (el usuario veía «$1» y no sabía de qué moneda era).
+  const rowLabel = (row: { currencyLabel: string | null; denominationValue: string }): string =>
+    multiCurrency && row.currencyLabel ? `${row.currencyLabel} ${row.denominationValue}` : row.denominationValue;
+  const compensatingLabel = compensatingRows.map((row) => rowLabel(row)).join(", ");
+  const incidents: JamIncident[] = [];
+  for (const row of rows) {
+    if (row.level === "sin_evidencia" || row.cause !== "atasco") {
+      continue;
+    }
+
+    const detailParts = [row.summary];
+    if (row.substitutionEvents + row.unconfiguredSubstitutionEvents > 0 && compensatingLabel.length > 0) {
+      detailParts.push(
+        `El cambio se está entregando con ${compensatingLabel} en su lugar: el módulo atascado es este (${row.denominationValue}), no el que compensa.`,
+      );
+    }
+
+    incidents.push({
+      cause: row.cause,
+      currencyId: row.currencyId,
+      currencyLabel: row.currencyLabel,
+      denominationId: row.denominationId,
+      denominationValue: row.denominationValue,
+      detail: detailParts.join(" "),
+      evidence: row.signals.map((signal) => `${jamSignalLabels[signal.code]}: ${signal.detail}`),
+      kind: "monedero",
+      lastEvidenceAt: row.lastEvidenceAt,
+      level: row.level,
+      suggestedAction: row.suggestedAction ?? "Revisar el módulo con arqueo de la denominación.",
+      title: `Posible atasco en la denominación ${rowLabel(row)}`,
+    });
+  }
+
+  if (errorReturnedCount >= thresholds.burstTransactions) {
+    incidents.push({
+      cause: "atasco",
+      currencyId: null,
+      currencyLabel: null,
+      denominationId: null,
+      denominationValue: null,
+      detail: `${errorReturnedCount} transacciones «${RETURNED_ERROR_STATE}» por ${errorReturnedTotal} en el período. Si no se concentra en una denominación, apunta a la ruta de salida común del dispensador.`,
+      evidence: [`Ráfaga de error devuelta: ${errorReturnedCount} transacción(es) en el período.`],
+      kind: "salida",
+      lastEvidenceAt: scan?.scannedTo ?? null,
+      level: errorReturnedCount >= thresholds.burstTransactions * 2 ? "probable" : "sospecha",
+      suggestedAction: "Revisar la ruta de salida (rodillos, sensor de presencia y boca de entrega) antes de la próxima recarga; contrastar con el baúl de rechazo del último arqueo.",
+      title: "Ráfaga de «Aprobada Error Devuelta»",
+    });
+  }
+
+  const levelOrder: Record<JamLevel, number> = { confirmado: 0, probable: 1, sin_evidencia: 3, sospecha: 2 };
+  incidents.sort((left, right) => levelOrder[left.level] - levelOrder[right.level]);
+
+  const confirmed = incidents.filter((incident) => incident.level === "confirmado").length;
+  const probable = incidents.filter((incident) => incident.level === "probable").length;
+  const suspected = incidents.filter((incident) => incident.level === "sospecha").length;
+  const monederoIncidents = incidents.filter((incident) => incident.kind === "monedero");
+  const primary = monederoIncidents.find((incident) => incident.level === "confirmado") ?? monederoIncidents[0] ?? null;
+  const headline =
+    primary !== null
+      ? `${jamLevelLabels[primary.level]} · ${primary.title}${compensatingLabel.length > 0 ? ` — el cambio se entrega con ${compensatingLabel}` : ""}${incidents.length > 1 ? ` (${incidents.length - 1} incidente(s) adicional(es))` : ""}.`
+      : incidents.length > 0
+      ? `${incidents.length} incidente(s) de dispensado: ${confirmed} confirmado(s), ${probable} probable(s) y ${suspected} en observación.`
+      : detailsBlind
+        ? "Diagnóstico incompleto: no se pudo leer el detalle de ninguna transacción analizada, así que la composición de los pagos no está verificada."
+        : detailsPartial
+          ? "Sin incidentes con la evidencia disponible, pero el detalle de algunas transacciones no se pudo leer: el diagnóstico es parcial."
+          : compensatingRows.length > 0
+            ? `Sin atasco detectado. ${compensatingLabel} está(n) entregando de más respecto a su parte canónica: revisar por qué otra denominación no participa.`
+            : scan
+              ? "No se detectaron señales de atasco en la ventana analizada."
+              : "Sin señales agregadas de atasco; falta el análisis de detalles para atribuirlas por denominación.";
+
+  if (unclassifiedOperations.size > 0) {
+    warnings.push(
+      `Operaciones sin clasificar (${[...unclassifiedOperations].slice(0, 3).join(", ")}${unclassifiedOperations.size > 3 ? ", …" : ""}): el rol se dedujo de los importes${inferredRoles.method === "importes" ? "" : " y, cuando no fue posible, del estado de la transacción"}.`,
+    );
+  }
+  if (mixedCurrencyPayouts > 0) {
+    warnings.push(
+      `${mixedCurrencyPayouts} pago(s) combinaron denominaciones de monedas distintas: no se evaluó su combinación canónica (no se pueden sumar pesos y dólares).`,
+    );
+  }
+  if (multiCurrency) {
+    warnings.push(
+      "La máquina opera más de una moneda: los saldos, la combinación canónica y las señales se calculan por moneda, y los totales se muestran separados.",
+    );
+  }
+  if (scan && payoutsAnalyzed === 0) {
+    warnings.push("No hay pagos con combinación comparable en la ventana: no se pudo evaluar sustitución ni participación.");
+  }
+
+  return {
+    analyzed: scan !== null,
+    blind: detailsBlind,
+    compensatingDenominations: compensatingRows.map((row) => rowLabel(row)),
+    primary,
+    failureReasons: scan?.failureReasons ?? [],
+    headline,
+    ignoredDenominations,
+    incidents,
+    interpretation: { ...interpretation, roleMethod: inferredRoles.method },
+    mixedCurrencyPayouts,
+    multiCurrency,
+    rows,
+    scanned: {
+      detailsFailures: scan?.detailsFailures ?? 0,
+      detailsRequests: scan?.detailsRequests ?? 0,
+      firstTransactionAt: Number.isNaN(scannedFrom) ? null : new Date(scannedFrom).toISOString(),
+      lastTransactionAt: Number.isNaN(scannedTo) ? null : new Date(scannedTo).toISOString(),
+      payoutsAnalyzed,
+      transactions: transactionsAsc.length,
+      truncated: scan?.truncated ?? false,
+    },
+    warnings,
+  };
+}

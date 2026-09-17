@@ -57,6 +57,17 @@
   --color-info-500:    #1E7FD4;
   --color-info-700:    #155C99;
 
+  /* ---- PASTEL 2026 (estados de transacciones y superficies) ----
+     Se usa la paleta pastel de Tailwind (emerald/red/blue/gray) para
+     obtener tonos suaves y de alto contraste:
+     - Transacciones APROBADAS  → emerald  (#10b981 base, pastel)
+     - Transacciones CANCELADAS → red      (#ef4444 base, pastel)
+     - RESTO de totales y valores generales → blue (#3b82f6 base)
+     - Acciones secundarias (p. ej. "Ver detalle") → gray #9ca3af
+     - Fondo principal: #F4F7FB · Bordes: #E4E9F1 (claro) / #26334A (oscuro)
+     - Botones y filas: transiciones 0.3s ease, hover con elevación
+       (box-shadow) y brillo sutil; radios 8-12px. */
+
   /* ---- TIPOGRAFÍA ---- */
   --font-sans:    "Poppins", ui-sans-serif, system-ui, sans-serif;
   --font-mono:    "JetBrains Mono", ui-monospace, monospace;

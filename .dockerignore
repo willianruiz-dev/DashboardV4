@@ -1,0 +1,25 @@
+# Nada de lo que sigue entra en la imagen.
+node_modules
+.next
+out
+coverage
+.git
+.gitignore
+.github
+
+# El dashboard legado es sólo referencia de paridad: incluye su propio .env.production con
+# credenciales y no se usa en tiempo de ejecución.
+dashboardv2-frontend
+
+# Secretos locales: jamás deben viajar en una capa de imagen.
+.env
+.env.local
+.env.production
+.env.deploy
+*.pem
+
+# Documentación y material de trabajo
+docs
+uploads
+*.md
+!README.md
