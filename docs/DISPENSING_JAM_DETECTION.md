@@ -349,7 +349,7 @@ muestra "cubierta por el análisis" o "fuera de la ventana analizada" en cada fi
 npm run fixtures:dispensing     # scripts/dispensing-fixtures.mts — sin red, sin sesión
 ```
 
-Siete escenarios con aserciones (27 comprobaciones; el proceso termina con código 1 si algo
+Siete escenarios con aserciones (29 comprobaciones; el proceso termina con código 1 si algo
 falla). Cada uno corresponde a un caso reportado por el operador o a un falso positivo ya
 corregido, así que la suite es la red de seguridad de C2–C9: `usuario-actual`, `compensacion`,
 `inder2`, `jam`, `ciego`, `cc-centro-usd1` y `divisa`.

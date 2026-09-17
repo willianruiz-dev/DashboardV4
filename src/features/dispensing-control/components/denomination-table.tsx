@@ -156,13 +156,19 @@ export function DenominationTable({ denominations, excludedRows = [], loading = 
                                 Baúl agotándose
                               </Badge>
                             ) : (
-                              <Badge variant="secondary">OK</Badge>
+                              <Badge title={row.inUseReasons.length > 0 ? `En uso por: ${row.inUseReasons.join(", ")}` : undefined} variant="secondary">
+                                OK
+                              </Badge>
                             )}
                             {/* Una fila de otra moneda que SÍ está en uso se declara como tal:
                                 si aparece, es porque la máquina la trabaja hoy (configurada,
                                 con saldo, con cargue o con entregas), no por herencia. */}
                             {row.foreignCurrency ? (
-                              <Badge className="mt-1 flex w-fit" title={`La moneda de este baúl (${row.currencyLabel ?? "no declarada"}) no es la del Pay+`} variant="outline">
+                              <Badge
+                                className="mt-1 flex w-fit"
+                                title={`La moneda de este baúl (${row.currencyLabel ?? "no declarada"}) no es la del Pay+${row.inUseReasons.length > 0 ? `. En uso por: ${row.inUseReasons.join(", ")}` : ""}`}
+                                variant="outline"
+                              >
                                 Otra moneda
                               </Badge>
                             ) : null}

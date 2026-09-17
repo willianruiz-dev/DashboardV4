@@ -59,3 +59,47 @@ export function isDenominationInUse(signals: DenominationUsageSignals): boolean 
 /** Motivo canónico de la exclusión (cada panel añade su contexto). */
 export const DENOMINATION_NOT_IN_USE_REASON =
   "Sin dispensación configurada, sin saldo (DP/RJ/AP), sin cargues en el período y sin entregas positivas en el último arqueo ni en el período consultado.";
+
+/**
+ * Señales positivas de uso, en texto, para poder explicar cada fila en uso (tooltip del
+ * panel). Si esta lista está vacía, la denominación está fuera del inventario en uso y su
+ * lugar es la lista de excluidas.
+ */
+export function describeDenominationUsage(signals: DenominationUsageSignals): string[] {
+  const reasons: string[] = [];
+  if (signals.configured) {
+    reasons.push("dispensación configurada");
+  }
+  if (signals.minDpQuantity > 0) {
+    reasons.push(`umbral mínimo configurado (${signals.minDpQuantity})`);
+  }
+  if (signals.dispensingStock > 0) {
+    reasons.push(`${signals.dispensingStock} unidad(es) en el baúl dispensador`);
+  }
+  if (signals.rejectionStock > 0) {
+    reasons.push(`${signals.rejectionStock} unidad(es) en el baúl de rechazo`);
+  }
+  if (signals.acceptedStock > 0) {
+    reasons.push(`${signals.acceptedStock} unidad(es) en el aceptador`);
+  }
+  if (signals.loadedInPeriod > 0) {
+    reasons.push(`${signals.loadedInPeriod} unidad(es) cargadas en el período`);
+  }
+  if ((signals.deliveredLastArqueo ?? 0) > 0) {
+    reasons.push(`${signals.deliveredLastArqueo} entregada(s) en el último arqueo`);
+  }
+  if ((signals.rejectedLastArqueo ?? 0) > 0) {
+    reasons.push(`${signals.rejectedLastArqueo} rechazada(s) en el último arqueo`);
+  }
+  if ((signals.acceptedLastArqueo ?? 0) > 0) {
+    reasons.push(`${signals.acceptedLastArqueo} aceptada(s) en el último arqueo`);
+  }
+  if (signals.deliveredInPeriod) {
+    reasons.push("entregas registradas en el período");
+  }
+  if (signals.failedInPeriod) {
+    reasons.push("intentos fallidos registrados en el período");
+  }
+
+  return reasons;
+}

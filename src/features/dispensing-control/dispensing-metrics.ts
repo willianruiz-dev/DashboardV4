@@ -2,7 +2,7 @@ import type { CurrencyDenomination } from "@/features/denominations/schemas";
 import type { Load, PayPadStorage, Tonnage } from "@/features/paypads/schemas";
 import type { TransactionStateBucket } from "@/features/transactions/schemas";
 import { buildDenominationCurrencyIndex, denominationCurrencyText } from "./denomination-currency";
-import { DENOMINATION_NOT_IN_USE_REASON, isDenominationInUse } from "./denomination-usage";
+import { DENOMINATION_NOT_IN_USE_REASON, describeDenominationUsage, isDenominationInUse } from "./denomination-usage";
 
 /**
  * Cálculo puro de métricas de dispensado (AP/DP/RJ) para un Pay+ y un período.
@@ -53,6 +53,8 @@ export interface DispensingDenominationRow {
   negativeReport: string | null;
   /** `true` si la moneda de la denominación no es la declarada por el Pay+. */
   foreignCurrency: boolean;
+  /** Por qué la fila está en uso (señales positivas), para explicar cada baúl mostrado. */
+  inUseReasons: string[];
   denominationValue: string;
   delivered: number;
   isDispensing: boolean;
@@ -218,7 +220,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       // negativo— no es inventario de la máquina y no debe figurar en el desglose. El
       // dashboard antiguo tampoco la muestra: su «Lista de Denominaciones» filtra el
       // catálogo por la moneda del Pay+ (`idCurrency === paypad.idCurrency`).
-      const inUse = isDenominationInUse({
+      const usageSignals = {
         acceptedLastArqueo: apRaw,
         acceptedStock,
         configured: entry.isDispensing,
@@ -230,7 +232,9 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         minDpQuantity,
         rejectedLastArqueo: rejectedRaw,
         rejectionStock,
-      });
+      };
+      const inUse = isDenominationInUse(usageSignals);
+      const inUseReasons = describeDenominationUsage(usageSignals);
 
       const excludedParts: string[] = [];
       if (!inUse) {
@@ -258,6 +262,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         excludedReason: excludedParts.length === 0 ? null : excludedParts.join(" "),
         foreignCurrency,
         inUse,
+        inUseReasons,
         isDispensing: entry.isDispensing,
         loadedInRange,
         low: entry.isDispensing && balance <= minDpQuantity + LOW_BALANCE_TOLERANCE,

@@ -444,6 +444,14 @@ expect(
   "la entrega negativa del arqueo se acota a 0",
   ccCentroMetrics.excludedRows.every((row) => row.delivered >= 0 && (row.negativeReport === null || row.delivered === 0)),
 );
+expect(
+  "cada fila en uso explica por qué (tooltip del panel)",
+  ccCentroMetrics.rows.every((row) => row.inUseReasons.length > 0),
+);
+expect(
+  "el USD 1 conserva su motivo canónico",
+  (ccCentroMetrics.excludedRows.find((row) => row.currencyLabel === "USD")?.excludedReason ?? "").includes("Su moneda (USD)"),
+);
 
 /* ------------------------------------------------------------------ 7) divisa: COP ⇄ USD sin mezclas */
 
