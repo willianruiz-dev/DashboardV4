@@ -7,7 +7,7 @@ import type { CurrencyDenomination } from "@/features/denominations/schemas";
 import { usePaypadLoads, usePaypadStorage, usePaypadTonnages } from "@/features/paypads/hooks";
 import type { Tonnage } from "@/features/paypads/schemas";
 import { useTransactionSearch } from "@/features/transactions/hooks";
-import type { DashboardTransaction, TransactionSearchRequest } from "@/features/transactions/schemas";
+import type { TransactionSearchRequest } from "@/features/transactions/schemas";
 import { localDateTimeToApiIso } from "@/lib/formatters/date";
 import { computeDispensingMetrics, type DispensingMetrics } from "./dispensing-metrics";
 import type { DispensingRange, DispensingTimePreset } from "./schemas";
@@ -55,16 +55,8 @@ export function useNow(intervalMs = 60_000): Date {
 
 export interface DispensingMetricsArgs {
   from: string;
-  page: number;
-  pageSize: number;
   paypadId: number | null;
   to: string;
-}
-
-export interface DispensingSearchResult {
-  items: DashboardTransaction[];
-  total: number;
-  transactionIds: number[];
 }
 
 export interface DispensingMetricsQuery {
@@ -74,31 +66,6 @@ export interface DispensingMetricsQuery {
   metrics: DispensingMetrics | null;
   now: Date;
   refetchAll: () => void;
-  search: DispensingSearchResult | null;
-}
-
-function createSearchRequest(args: DispensingMetricsArgs | null, page: number, pageSize: number): TransactionSearchRequest | null {
-  if (args === null || args.paypadId === null) {
-    return null;
-  }
-
-  const from = localDateTimeToApiIso(args.from);
-  const to = localDateTimeToApiIso(args.to, { endOfMinute: true });
-  if (!from || !to) {
-    return null;
-  }
-
-  return {
-    from,
-    page,
-    pageSize,
-    paymentType: null,
-    paypadId: args.paypadId,
-    product: null,
-    sortDirection: "desc",
-    sortKey: "dateCreated",
-    to,
-  };
 }
 
 /**
@@ -116,31 +83,37 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
   const denominationsQuery = useDenominations(paypadId !== null);
   const now = useNow();
 
-  // Dos consultas de búsqueda con papeles distintos:
-  // - metricsRequest: página fija (1/5). El BFF calcula el summary sobre el
-  //   conjunto COMPLETO del período, así que el resumen no depende de la
-  //   paginación: mientras se navegan páginas, AP/RJ se sirven de cache sin
-  //   parpadear (y sin peticiones extra).
-  // - tableRequest: la paginación real para la tabla de transacciones.
-  // Si ambas piden lo mismo (página 1, 5 resultados), react-query deduplica
-  // la clave y solo hay UNA petición al BFF.
-  const metricsRequest = useMemo<TransactionSearchRequest | null>(() => createSearchRequest(args, 1, 5), [args]);
-  const tableRequest = useMemo<TransactionSearchRequest | null>(() => {
-    if (args === null) {
+  const searchRequest = useMemo<TransactionSearchRequest | null>(() => {
+    if (args === null || paypadId === null) {
       return null;
     }
-    return createSearchRequest(args, args.page, args.pageSize);
-  }, [args]);
 
-  const metricsSearchQuery = useTransactionSearch(metricsRequest);
-  const tableSearchQuery = useTransactionSearch(tableRequest);
+    const from = localDateTimeToApiIso(args.from);
+    const to = localDateTimeToApiIso(args.to, { endOfMinute: true });
+    if (!from || !to) {
+      return null;
+    }
+
+    return {
+      from,
+      page: 1,
+      pageSize: 5, // solo se consume el summary; los items no se muestran aquí
+      paymentType: null,
+      paypadId,
+      product: null,
+      sortDirection: "desc",
+      sortKey: "dateCreated",
+      to,
+    };
+  }, [args, paypadId]);
+
+  const searchQuery = useTransactionSearch(searchRequest);
 
   const errors: (unknown | null)[] = [
     storageQuery.error,
     tonnagesQuery.error,
     loadsQuery.error,
-    metricsSearchQuery.error,
-    tableSearchQuery.error,
+    searchQuery.error,
     denominationsQuery.error,
   ];
   const firstError = errors.find((error): error is Error => error instanceof Error) ?? null;
@@ -150,8 +123,7 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
     tonnagesQuery.isPending ||
     loadsQuery.isPending ||
     denominationsQuery.isPending ||
-    (metricsRequest !== null && metricsSearchQuery.isPending) ||
-    (tableRequest !== null && tableSearchQuery.isPending);
+    (searchRequest !== null && searchQuery.isPending);
 
   const metrics = useMemo<DispensingMetrics | null>(() => {
     if (args === null || paypadId === null) {
@@ -180,7 +152,7 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
     }, null);
 
     return computeDispensingMetrics({
-      byState: metricsSearchQuery.data?.summary.byState ?? {},
+      byState: searchQuery.data?.summary.byState ?? {},
       lastTonnage,
       loads: loadsQuery.data ?? [],
       now,
@@ -188,16 +160,7 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
       rangeTo,
       storage: storageQuery.data ?? [],
     });
-  }, [args, paypadId, metricsSearchQuery.data, storageQuery.data, tonnagesQuery.data, loadsQuery.data, now]);
-
-  const search =
-    tableRequest !== null && tableSearchQuery.data
-      ? {
-          items: tableSearchQuery.data.items,
-          total: tableSearchQuery.data.total,
-          transactionIds: tableSearchQuery.data.transactionIds,
-        }
-      : null;
+  }, [args, paypadId, searchQuery.data, storageQuery.data, tonnagesQuery.data, loadsQuery.data, now]);
 
   return {
     denominations: denominationsQuery.data ?? [],
@@ -205,17 +168,13 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
     isLoading,
     metrics,
     now,
-    search,
     refetchAll: () => {
       storageQuery.refetch();
       tonnagesQuery.refetch();
       loadsQuery.refetch();
       denominationsQuery.refetch();
-      if (metricsRequest !== null) {
-        metricsSearchQuery.refetch();
-      }
-      if (tableRequest !== null) {
-        tableSearchQuery.refetch();
+      if (searchRequest !== null) {
+        searchQuery.refetch();
       }
     },
   };
