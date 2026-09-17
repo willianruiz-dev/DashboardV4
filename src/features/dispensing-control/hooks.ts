@@ -131,12 +131,18 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
   ];
   const firstError = errors.find((error): error is Error => error instanceof Error) ?? null;
 
+  // OJO: en TanStack Query v5 una query con `enabled: false` mantiene
+  // `status: "pending"`, así que `isPending` es true aunque no haya nada cargando.
+  // Sin esta guarda, "sin máquina seleccionada" se interpretaba como "cargando" y la
+  // barra de filtros entera quedaba deshabilitada (la persona no podía volver a
+  // elegir una máquina sin salir de la ruta).
   const isLoading =
-    storageQuery.isPending ||
-    tonnagesQuery.isPending ||
-    loadsQuery.isPending ||
-    denominationsQuery.isPending ||
-    (searchRequest !== null && searchQuery.isPending);
+    paypadId !== null &&
+    (storageQuery.isPending ||
+      tonnagesQuery.isPending ||
+      loadsQuery.isPending ||
+      denominationsQuery.isPending ||
+      (searchRequest !== null && searchQuery.isPending));
 
   const metrics = useMemo<DispensingMetrics | null>(() => {
     if (args === null || paypadId === null) {

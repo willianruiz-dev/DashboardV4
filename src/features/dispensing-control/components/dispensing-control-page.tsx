@@ -103,16 +103,16 @@ export function DispensingControlPage() {
 
       {canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) > 0 ? (
         <DispensingFilters
-          disabled={metricsQuery.isLoading && selection !== null}
+          disabled={paypadId !== null && metricsQuery.isLoading}
           onApply={handleApply}
           paypadId={paypadId}
           paypads={paypadsQuery.data ?? []}
         />
       ) : null}
 
-      {selection?.paypadId === null ? (
+      {canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) > 0 && paypadId === null ? (
         <EmptyState
-          description="Elige una máquina para ver AP, DP, RJ, el último cargue y el estado de los baúles por denominación."
+          description="Busca y elige una máquina en el selector de arriba para ver AP, DP, RJ, el último cargue, el desglose por denominaciones y la detección de atascos."
           title="Selecciona una máquina"
         />
       ) : null}
