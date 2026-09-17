@@ -1,9 +1,38 @@
 # Detección temprana de atascos (monederos/billeteros) — estudio e implementación
 
-> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3)** dentro de *Control de dispensado*.
+> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C3)** dentro de *Control de dispensado*.
 > **Veredicto:** **VIABLE con la API y el dashboard actuales**, sin cambios en el backend .NET ni en la base de datos.
 > **Archivos nuevos:** `src/features/dispensing-control/dispensing-jams.ts` (motor puro), `src/app/api/dispensing/jams/route.ts` (BFF acotado + caché), `src/features/dispensing-control/components/jam-diagnostics.tsx` (panel), `src/features/dispensing-control/api.ts` (cliente) y extensiones en `schemas.ts`, `hooks.ts` y la página.
-> **Estado de validación:** TypeScript, ESLint y build **PASA** (2026-09-17) + fixture local del motor (`node --experimental-strip-types`) que reproduce los dos casos del negocio. La prueba E2E autenticada contra Pay+ real sigue pendiente (B-04/B-05 del backlog).
+> **Estado de validación:** TypeScript, ESLint y build **PASA** (2026-09-17) + tres fixtures locales del motor y uno del normalizador (`node --experimental-strip-types`): escenario de sustitución/devolución, **máquina real Pay+ Inder 2 (ID 71)** y caso ciego. La prueba E2E autenticada sigue pendiente (B-04/B-05 del backlog).
+
+---
+
+## 0. Correcciones obligadas por el caso real Pay+ Inder 2 (ID 71)
+
+El operador reportó: **«empezó a dispensar todo en monedas de 100 porque se atascó el monedero de 500»**, y el panel respondía *«No se detectaron señales de atasco»*. Tres defectos concretos, ya corregidos:
+
+| # | Defecto encontrado | Evidencia | Corrección aplicada |
+| --- | --- | --- | --- |
+| **C1** | **Los 30 detalles fallaron por contrato**: el DTO legacy `TransactionDetailDto` declara `CurrencyDenomination` y `Quantity` como **`int`**, y el schema del BFF exigía `string` para `currencyDenomination`. Zod rechazaba cada respuesta ⇒ `30 consulta(s) de detalle (30 sin respuesta)` ⇒ cero evidencia por denominación. | Captura del módulo + `dashboardv2-backend/Dashboard.Domain/DTOs/Business/TransactionDetailDto.cs` | Nuevo `detail-normalizer.ts`: **nunca rechaza una respuesta**; convierte números/strings, tolera `response: null`, arreglos planos y entradas basura, y reporta `detailsMalformed`. El BFF ya no parsea con Zod estricto. |
+| **C2** | **`isDispensing` bloqueaba la evidencia**: el monedero de 500 estaba marcado **«No dispensa»** en Pay+ → Configurar denominaciones, y el motor solo evaluaba esa bandera ⇒ la fila 500 quedaba sin señales… y también fuera de la combinación canónica, así que la sustitución por monedas de 100 no se habría detectado. | Captura: fila «$500 — No dispensa, saldo 34, caída física 97» | La configuración **informa pero no habilita ni bloquea**. El conjunto de denominaciones que pueden entregar cambio se deduce de la **evidencia**: configuración OR caída física positiva OR unidades dispensadas OR sustituciones. Nuevas señales `sustitucion_no_configurada` y `config_inconsistente`. |
+| **C3** | **El panel declaraba «limpio» estando ciego**: con 30/30 detalles fallidos el titular seguía siendo *«No se detectaron señales de atasco»*. | Captura | Nuevos campos `blind` y `failureReasons`: el titular pasa a *«Diagnóstico incompleto…»*, se muestra una alerta destructiva con el motivo sanitizado del fallo y el pie indica el método de inferencia usado. |
+
+Además: el tope de análisis subió de 30 a **60** transacciones (la máquina tenía 33 solo ese día) y `confirmado` ahora exige **evidencia independiente** (física o fallo explícito), no solo composición de pagos.
+
+### Verificación del caso real (fixture `inder2`)
+
+Con la configuración exacta de la captura (500 «No dispensa», saldo 34, caída física 97, sin ninguna `Aprobada Error Devuelta`) y 12 pagos cuyo cambio de 1.500 —que solo puede armarse con 3×500— salió en 15×100:
+
+```
+HEADLINE: 1 incidente(s) de dispensado: 0 confirmado(s), 1 probable(s) y 0 en observación.
+d=500 | saldo=34 | config=NO dispensa | evidencia=sí | disp=0 | caída=97 | nivel=probable score=4
+        señales=[sustitucion_no_configurada, config_inconsistente]
+INCIDENTE: [probable] Posible atasco en la denominación 500
+```
+
+Antes de C1–C3 el mismo escenario producía `0 incidentes` y «sin señales»: la lógica no se equivocaba al concluir, simplemente **no llegaba a mirar**. Con el caso ciego (30/30 fallos) el titular ahora es *«Diagnóstico incompleto: no se pudo leer el detalle de ninguna transacción analizada…»*.
+
+> **Acción operativa derivada:** en Inder 2 hay que marcar el 500 como dispensador en **Pay+ → Configurar denominaciones** (hoy dice «No dispensa»). Mientras siga mal, la señal `config_inconsistente` lo advierte en cada análisis.
 
 ---
 
@@ -121,9 +150,14 @@ BD). El motor no lo asume:
    aprobada cuadra con `returnAmount` (el cambio que sale del dispensador), la lectura
    queda **verificada**; si cuadra con `incomeAmount`, se marca **invertida** y se
    desactivan sustitución y participación en lugar de inventar evidencia.
-3. Si no hay nombre legible, atribuye por estado (error ⇒ intento fallido; aprobada ⇒
-   entregado) y **solo** cuando la transacción tiene devolución; las unidades así
-   atribuidas se cuentan en `inferredUnits` y el panel lo advierte.
+3. Si el nombre no es clasificable, **deduce el rol de cada `idTypeOperation` a partir de
+   los importes** (`inferOperationRoles`): la operación cuyo valor acumulado sigue a
+   `returnAmount` es de dispensado y la que sigue a `incomeAmount − returnAmount` es de
+   aceptación (comparación con 5 % de tolerancia). El método usado se publica en
+   `interpretation.roleMethod` y el panel lo indica.
+4. Como último recurso, atribuye por estado (error ⇒ intento fallido; aprobada ⇒
+   entregado) y **solo** cuando la transacción tiene devolución; esas unidades se cuentan
+   en `inferredUnits` y el panel lo advierte.
 
 ---
 
@@ -139,10 +173,15 @@ BD). El motor no lo asume:
 | `caida_insuficiente` | 1 | `caidaFisica(d) < dispensado(d)` |
 | `caida_sin_registro` | 1 | `caidaFisica(d) > sistemaTotal(d)` (extracción/liberación manual) |
 | `rafaga_salida` | 2 | ≥ 3 `Aprobada Error Devuelta` en el período (nivel máquina) |
+| `sustitucion_no_configurada` | 3 | Igual, pero la denominación está marcada «No dispensa»: posible atasco **o** configuración desactualizada |
+| `inactiva_con_saldo` | 2 (1 si el arqueo está fuera del período) | Ninguna otra denominación se movió en el intervalo de arqueo y esta tampoco, conservando saldo |
+| `rechazo_con_unidades` | 1 | El baúl de rechazo tiene unidades y hubo rechazos/intentos fallidos |
+| `config_inconsistente` | 1 | Marcada «No dispensa», pero el arqueo muestra movimiento real del baúl |
 | `descuadre_inventario` | 0 | `caidaFisica(d) < 0` (informativo; invalida la caída como evidencia) |
 
 Niveles: `sin_evidencia` → `sospecha` (score ≥ 1) → `probable` (≥ 3) → `confirmado`
-(≥ 6 con ≥ 2 señales y al menos una señal núcleo). `JAM_THRESHOLDS` se puede sobreescribir
+(≥ 6 con ≥ 2 señales, una señal núcleo **y una evidencia independiente**: física
+—`sin_caida_fisica`, `caida_*`— o fallo explícito de entrega —`devuelto_con_saldo`—). `JAM_THRESHOLDS` se puede sobreescribir
 por parámetro; la evolución natural es leerlos de `PayPadConfiguration.extraDataJson`
 (key/value, sin migración).
 
@@ -181,7 +220,7 @@ Incidentes: *Posible atasco en la denominación 50000* (confirmado), *500* (conf
 | **F1 — Motor** | Señales, pesos, niveles, umbrales, reconciliación de operaciones, tipos | **Implementado** |
 | **F2 — BFF acotado** | `POST /api/dispensing/jams` con priorización, concurrencia y caché de detalles | **Implementado** |
 | **F3 — Panel + orquestación** | Panel de incidentes, tabla de evidencia, análisis manual cacheado, invalidación por filtros | **Implementado** |
-| **F4 — Prueba con datos reales** | Verificar el catálogo real de `typeOperation`/`idTypeOperation`, calibrar `JAM_THRESHOLDS` y confirmar la ventana de arqueos con Pay+ Prueba1 | **Pendiente (B-04/B-05)** |
+| **F4 — Prueba con datos reales** | Repetir el análisis en Pay+ Inder 2 (ID 71) tras desplegar C1–C3 y confirmar el incidente del monedero de 500; verificar los valores reales de `typeOperation`/`idTypeOperation`, calibrar `JAM_THRESHOLDS` y confirmar la ventana de arqueos con Pay+ Prueba1 | **Pendiente E2E (B-04/B-05)** — el modo de fallo ya está reproducido y cubierto por fixtures |
 | **F5 — Alerta real del Pay+** | *Único caso que exige backend*: insertar la alerta (p. ej. id 2, «Atasco en monedero») en el catálogo, emitirla desde el Pay+ con la denominación y notificar por suscripción (mismo flujo del `AlertsController`/`Subscription`) | Documentado, no iniciado |
 
 ---

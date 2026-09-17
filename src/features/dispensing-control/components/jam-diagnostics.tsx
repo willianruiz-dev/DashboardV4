@@ -103,6 +103,29 @@ export function JamDiagnosticsSection({
 
         <p className="text-sm font-medium">{diagnostics.headline}</p>
 
+        {diagnostics.blind ? (
+          <Alert role="alert" variant="destructive">
+            <BellRing aria-hidden="true" className="size-4" />
+            <AlertTitle>Diagnóstico incompleto: no se pudo leer el detalle de las transacciones</AlertTitle>
+            <AlertDescription className="grid gap-2">
+              <span>
+                Sin detalles no se puede reconstruir qué denominaciones entregó cada pago, que es la evidencia principal
+                de un atasco silencioso (la máquina entrega en denominaciones menores sin registrar error).
+              </span>
+              {diagnostics.failureReasons.length > 0 ? (
+                <ul className="grid gap-1 text-xs">
+                  {diagnostics.failureReasons.map((reason) => (
+                    <li key={reason}>• {reason}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <div>
+                <Button onClick={onRetry} type="button" variant="outline">Reintentar análisis</Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
         {error !== null ? (
           <Alert role="alert" variant="destructive">
             <BellRing aria-hidden="true" className="size-4" />
@@ -186,7 +209,13 @@ export function JamDiagnosticsSection({
                           />
                           <div className="min-w-0">
                             <span className="font-numeric text-sm font-semibold">{formatDashboardMoney(row.denominationValue)}</span>
-                            <span className="block text-xs text-muted-foreground">{row.isDispensing ? "Dispensa" : "No dispensa"}</span>
+                            <span className="block text-xs text-muted-foreground">
+                              {row.configuredForDispensing
+                                ? "Dispensa (config)"
+                                : row.dispensesByEvidence
+                                  ? "No configurada, pero entrega según la evidencia"
+                                  : "No dispensa"}
+                            </span>
                           </div>
                         </div>
                       </TableCell>
@@ -206,7 +235,9 @@ export function JamDiagnosticsSection({
                       <TableCell className="text-right align-top">
                         <span className="font-numeric font-medium text-emerald-600 dark:text-emerald-400">{row.dispensedUnits}</span>
                         <span className="block text-xs text-muted-foreground">
-                          {row.substitutionEvents > 0 ? `${row.substitutionEvents} sustitución(es)` : "sin sustituciones"}
+                          {row.substitutionEvents + row.unconfiguredSubstitutionEvents > 0
+                            ? `${row.substitutionEvents + row.unconfiguredSubstitutionEvents} sustitución(es)${row.unconfiguredSubstitutionEvents > 0 ? " (no config.)" : ""}`
+                            : "sin sustituciones"}
                         </span>
                       </TableCell>
                       <TableCell className="text-right align-top">
@@ -258,7 +289,9 @@ export function JamDiagnosticsSection({
                     />
                     <div className="min-w-0">
                       <p className="font-numeric font-semibold">{formatDashboardMoney(row.denominationValue)}</p>
-                      <p className="text-xs text-muted-foreground">{row.isDispensing ? "Dispensa" : "No dispensa"} · {jamCauseLabels[row.cause]}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {row.configuredForDispensing ? "Dispensa" : row.dispensesByEvidence ? "No configurada, con evidencia de entrega" : "No dispensa"} · {jamCauseLabels[row.cause]}
+                      </p>
                     </div>
                     <Badge className="ml-auto" variant={levelTone[row.level]}>{jamLevelLabels[row.level]}</Badge>
                   </div>
@@ -295,7 +328,7 @@ export function JamDiagnosticsSection({
               {diagnostics.interpretation.inverted
                 ? "los importes indican que las operaciones describen lo aceptado; sustitución y participación quedaron desactivadas."
                 : diagnostics.interpretation.verified
-                  ? `verificada contra la devolución de ${diagnostics.interpretation.returnMatches} transacción(es).`
+                  ? `verificada contra la devolución de ${diagnostics.interpretation.returnMatches} transacción(es)${diagnostics.interpretation.roleMethod === "importes" ? " y el rol de cada operación se dedujo de los importes" : ""}.`
                   : "sin reconciliar con los importes; se usó el estado de la transacción."}{" "}
             </>
           ) : (

@@ -26,11 +26,11 @@ export const MAX_CUSTOM_RANGE_DAYS = 31;
  * la ventana se limita a las transacciones más relevantes (error devuelta primero)
  * y el resultado indica si quedó truncado.
  */
-export const JAM_SCAN_MAX_TRANSACTIONS = 30;
+export const JAM_SCAN_MAX_TRANSACTIONS = 60;
 
 export const jamScanRequestSchema = z.object({
   from: z.string().datetime({ offset: true }),
-  maxTransactions: z.number().int().min(5).max(60).default(JAM_SCAN_MAX_TRANSACTIONS),
+  maxTransactions: z.number().int().min(5).max(100).default(JAM_SCAN_MAX_TRANSACTIONS),
   paypadId: z.number().int().positive(),
   to: z.string().datetime({ offset: true }),
 });
@@ -64,7 +64,11 @@ export const jamScanTransactionSchema = z.object({
 
 export const jamScanResponseSchema = z.object({
   detailsFailures: z.number().int().nonnegative(),
+  /** Detalles recibidos con forma inesperada (se normalizaron, no se descartaron). */
+  detailsMalformed: z.number().int().nonnegative().default(0),
   detailsRequests: z.number().int().nonnegative(),
+  /** Motivos sanitizados de los fallos, para diagnosticar sin acceso al servidor. */
+  failureReasons: z.array(z.string()).default([]),
   generatedAt: z.string(),
   maxTransactions: z.number().int().positive(),
   scannedFrom: z.string().nullable(),

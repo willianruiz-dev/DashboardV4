@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { transactionSchema, type DashboardTransaction } from "@/features/transactions/schemas";
+import {
+  extractDetailEntries,
+  normalizeTransactionDetails,
+  type NormalizedTransactionDetail,
+} from "@/features/dispensing-control/detail-normalizer";
 import { jamScanRequestSchema, type JamScanResponse } from "@/features/dispensing-control/schemas";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
 import { requireDashboardToken } from "@/lib/server/require-dashboard-token";
@@ -37,12 +42,7 @@ const DETAIL_CONCURRENCY = 5;
 const DETAIL_CACHE_LIMIT = 600;
 const DETAIL_CACHE_TTL_MS = 30 * 60 * 1000;
 
-export interface JamRouteDetail {
-  denominationId: number | null;
-  operation: string | null;
-  operationId: number | null;
-  quantity: string;
-}
+type JamRouteDetail = NormalizedTransactionDetail;
 
 interface CacheEntry {
   at: number;
@@ -51,23 +51,6 @@ interface CacheEntry {
 
 /** Caché best-effort en memoria del proceso del BFF (no persistente, sin datos de sesión). */
 const detailCache = new Map<number, CacheEntry>();
-
-/** Cantidad con signo: el legacy conserva cantidades negativas en detalles históricos. */
-const signedQuantitySchema = z.union([z.number().int(), z.string().trim().regex(/^-?\d+$/)]);
-
-const transactionDetailEnvelopeSchema = httpEnvelopeSchema(
-  z.array(
-    z
-      .object({
-        currencyDenomination: z.string().nullable().optional(),
-        idCurrencyDenomination: z.number().int().positive().nullish(),
-        idTypeOperation: z.number().int().nullish(),
-        quantity: signedQuantitySchema,
-        typeOperation: z.string().nullable().optional(),
-      })
-      .passthrough(),
-  ),
-);
 
 function readCache(id: number): JamRouteDetail[] | null {
   const entry = detailCache.get(id);
@@ -94,30 +77,43 @@ function writeCache(id: number, details: JamRouteDetail[]): void {
   detailCache.set(id, { at: Date.now(), details });
 }
 
-async function getTransactionDetails(transactionId: number, token: string): Promise<JamRouteDetail[]> {
+interface DetailsResult {
+  details: JamRouteDetail[];
+  malformed: number;
+}
+
+async function getTransactionDetails(transactionId: number, token: string): Promise<DetailsResult> {
   const cached = readCache(transactionId);
   if (cached) {
-    return cached;
+    return { details: cached, malformed: 0 };
   }
 
   try {
-    const envelope = await requestBackend(["api", "Transaction", String(transactionId), "Details"], transactionDetailEnvelopeSchema, { token });
-    const details = envelope.response.map((detail) => ({
-      denominationId: detail.idCurrencyDenomination ?? null,
-      operation: detail.typeOperation ?? null,
-      operationId: detail.idTypeOperation ?? null,
-      quantity: String(detail.quantity),
-    }));
-    writeCache(transactionId, details);
-    return details;
+    const payload: unknown = await requestBackend(["api", "Transaction", String(transactionId), "Details"], z.unknown(), { token });
+    const normalized = normalizeTransactionDetails(extractDetailEntries(payload));
+    writeCache(transactionId, normalized.details);
+    return normalized;
   } catch (error) {
     if (error instanceof BackendApiError && error.status === 404) {
       // El legacy devuelve 404 cuando la transacción no tiene detalles.
       writeCache(transactionId, []);
-      return [];
+      return { details: [], malformed: 0 };
     }
     throw error;
   }
+}
+
+/** Motivo sanitizado de un fallo (sin valores financieros, acotado y deduplicado). */
+function describeFailure(error: unknown): string {
+  if (error instanceof BackendApiError) {
+    return `${error.status} · ${error.message}`.replace(/\s+/gu, " ").slice(0, 140);
+  }
+
+  if (error instanceof Error) {
+    return error.message.replace(/\s+/gu, " ").slice(0, 140);
+  }
+
+  return "Error desconocido al consultar el detalle.";
 }
 
 async function getTransactions(paypadId: number, from: string, to: string, token: string): Promise<DashboardTransaction[]> {
@@ -195,17 +191,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const selected = ordered.slice(0, scanRequest.maxTransactions);
 
     let detailsFailures = 0;
+    let detailsMalformed = 0;
     let detailsRequests = 0;
+    const failureReasons = new Set<string>();
     const scanned = await mapWithConcurrency(selected, DETAIL_CONCURRENCY, async (transaction) => {
       let details: JamRouteDetail[] = [];
       if (readCache(transaction.id) === null) {
         detailsRequests += 1;
       }
       try {
-        details = await getTransactionDetails(transaction.id, token);
-      } catch {
-        // Un detalle ilegible no debe tumbar el diagnóstico: se marca y se continúa.
+        const result = await getTransactionDetails(transaction.id, token);
+        details = result.details;
+        detailsMalformed += result.malformed;
+      } catch (error) {
+        // Un detalle ilegible no debe tumbar el diagnóstico: se marca, se registra
+        // el motivo sanitizado y se continúa.
         detailsFailures += 1;
+        if (failureReasons.size < 3) {
+          failureReasons.add(describeFailure(error));
+        }
       }
 
       return {
@@ -226,7 +230,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const times = scanned.map((transaction) => new Date(transaction.dateCreated ?? "").getTime()).filter((time) => !Number.isNaN(time));
     const response: JamScanResponse = {
       detailsFailures,
+      detailsMalformed,
       detailsRequests,
+      failureReasons: [...failureReasons],
       generatedAt: new Date().toISOString(),
       maxTransactions: scanRequest.maxTransactions,
       scannedFrom: times.length === 0 ? null : new Date(Math.min(...times)).toISOString(),
