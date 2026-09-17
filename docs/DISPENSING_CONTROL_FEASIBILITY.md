@@ -93,7 +93,7 @@ Cambios transversales pequeños:
 El acceso se resuelve **en el frontend por nombre de rol**, con el mismo patrón que ya usa la página de Usuarios para `root`:
 
 1. **`src/lib/roles/super-admin.ts`** — `isSuperAdminRole(role)`: normaliza mayúsculas/espacios/guiones y reconoce `superadmin` (y `root` como super-rol legacy). Los muchos usuarios SuperAdmin acceden sin configurar nada.
-2. **`dashboard-navigation.ts`** — `withDispensingControl(items, enabled)`: inyecta el ítem *Control de dispensado* (href `/dashboard/transactions/dispensing-control`, id `-1`) bajo el nodo *Transacciones* (o a nivel raíz si no existe) solo para SuperAdmin; no duplica si la ruta ya viniera asignada en datos.
+2. **`dashboard-navigation.ts`** — `withDispensingControl(items, enabled)`: inyecta el ítem *Control de dispensado* (href `/dashboard/transactions/dispensing-control`, id `-1`) como **ítem totalmente separado, hermano justo debajo** de la entrada *Transacciones* —la cual se conserva intacta con su enlace original, nunca se convierte en grupo— o a nivel raíz si no existe; solo para SuperAdmin y sin duplicar si la ruta ya viniera asignada en datos.
 3. **`dashboard-shell.tsx`** — aplica la inyección con `isSuperAdminRole(session.role.role ?? session.user.role)`; la navegación móvil usa el mismo árbol.
 4. **Guard de página** — la página aplica el mismo `isSuperAdminRole` y muestra `ForbiddenState` al resto.
 5. **`legacyPathToAppPath`** — el mapping `/Admin/Transactions/DispensingControl` se conserva: si algún día el rol lleva la ruta asignada en datos, el ítem se resuelve igual (sin duplicados).

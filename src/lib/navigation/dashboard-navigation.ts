@@ -90,15 +90,31 @@ function findNavigationItem(items: readonly DashboardNavigationItem[], href: str
   return null;
 }
 
-function findNavigationItemByTitle(items: readonly DashboardNavigationItem[], normalizedTitle: string): DashboardNavigationItem | null {
-  for (const item of items) {
-    if ((item.title ?? "").trim().toLowerCase() === normalizedTitle) {
-      return item;
+interface NavigationItemLocation {
+  array: DashboardNavigationItem[];
+  index: number;
+}
+
+function findNavigationItemLocation(
+  items: DashboardNavigationItem[],
+  href: string,
+  normalizedTitle: string,
+): NavigationItemLocation | null {
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (!item) {
+      continue;
     }
 
-    const child = findNavigationItemByTitle(item.children, normalizedTitle);
-    if (child) {
-      return child;
+    const matches = item.href === href || (item.title ?? "").trim().toLowerCase() === normalizedTitle;
+
+    if (matches) {
+      return { array: items, index };
+    }
+
+    const inChildren = findNavigationItemLocation(item.children, href, normalizedTitle);
+    if (inChildren) {
+      return inChildren;
     }
   }
 
@@ -107,9 +123,13 @@ function findNavigationItemByTitle(items: readonly DashboardNavigationItem[], no
 
 /**
  * Inyecta el ítem "Control de dispensado" en la navegación para roles
- * SuperAdmin (sin depender de registros de ruta en datos): se anida bajo
- * "Transacciones" si existe, o a nivel raíz si no. Si la ruta ya viene
- * asignada al rol en datos, no se duplica.
+ * SuperAdmin, **sin depender de registros de ruta en datos**. El módulo
+ * queda TOTALMENTE SEPARADO de "Transacciones":
+ * 1) Como ítem hermano justo debajo de la entrada "Transacciones" si
+ *    existe (por título o por enlace, aunque su ruta maestra esté vacía).
+ *    "Transacciones" se conserva intacta: nunca se convierte en grupo.
+ * 2) Si no existe esa entrada, a nivel raíz (debajo de "Inicio").
+ * Si la ruta ya viniera asignada al rol en datos, no se duplica.
  */
 export function withDispensingControl(items: readonly DashboardNavigationItem[], enabled: boolean): DashboardNavigationItem[] {
   if (!enabled) {
@@ -131,13 +151,13 @@ export function withDispensingControl(items: readonly DashboardNavigationItem[],
   // Preferencia de ubicación: la sección "Transacciones" por título (aunque
   // su ruta maestra esté vacía), luego por enlace de la app; si no existe
   // ninguna, el ítem va a nivel raíz (debajo de "Inicio").
-  const host =
-    findNavigationItemByTitle(rootItems, "transacciones") ??
-    findNavigationItem(rootItems, "/dashboard/transactions") ??
-    null;
+  // El módulo va TOTALMENTE SEPARADO: como ítem hermano justo DEBajo de la
+  // entrada "Transacciones" (que se conserva intacta, con su enlace
+  // original), nunca como hijo, para no alterar la navegación existente.
+  const location = findNavigationItemLocation(rootItems, "/dashboard/transactions", "transacciones");
 
-  if (host) {
-    host.children.push(dispensingItem);
+  if (location) {
+    location.array.splice(location.index + 1, 0, dispensingItem);
   } else {
     rootItems.push(dispensingItem);
   }
