@@ -154,6 +154,22 @@
 
 9. **B-10 — Dónde se prueba «como desplegado»:** GitHub no puede ejecutar Next.js (Pages sólo sirve estático y estas rutas BFF firman con RSA y guardan sesión). El despliegue se resolvió como **imagen en GHCR**: el servidor la baja con `docker pull` y la levanta con cualquier `.env` (`docs/DEPLOY.md`), o corre la app con Node 20.9+ (`npm ci && npm run build && npm start`). La verificación visual con datos reales sigue necesitando sesión del API (B-04/B-05), ahora también desde el servidor.
 
+## HIGIENE DEL REPOSITORIO (2026-09-17)
+
+- **Historias unidas.** `main` y la rama de trabajo no compartían ancestro: `main` tenía un único
+  commit (import inicial con `ManualDeMarca.md`, `dashboardv2-backend` y `dashboardv2-frontend`) y la
+  rama venía de otra raíz. Se unieron con `--allow-unrelated-histories` tras comprobar que no se
+  perdía nada (0 archivos exclusivos de `main`, 0 líneas del manual ausentes; la rama sólo agregaba
+  la paleta pastel 2026). Desde entonces `main` es ancestro de la rama y los PR son fusiones normales.
+- **`node_modules` fuera del índice.** El commit `d9a257bc` de `main` había versionado 16.715
+  archivos de dependencias (3.118.923 líneas) porque entonces no existía `.gitignore` en la raíz;
+  además los binarios perdieron el bit de ejecución (`sh: tsc: Permission denied`). Se dejaron de
+  rastrear sin reescribir la historia y se verificó con `npm ci` en limpio. Tras un `git pull` en el
+  equipo que los subió, hay que ejecutar `npm ci` una vez.
+- **La historia no se reescribió**, así que los blobs de `node_modules` siguen en los commits
+  antiguos. Purgarlos exigiría `git filter-repo` + forzar `main` y que todo el equipo vuelva a
+  clonar: decisión aparte, no tomada aquí.
+
 ## ESTADO DEL BACKLOG
 
 No se declara la migración terminada. La evidencia autenticada permitió corregir una diferencia concreta: los detalles históricos de Prueba1 contienen cantidades negativas y el dashboard antiguo las muestra, por lo que el reader de sólo lectura ya conserva su signo. También se restauró el formato de tabla, responsable, detalle expandible y filtros funcionales en desktop, manteniendo cards móviles. La revisión de Excel aisló y corrigió un 403 reproducible antes del upstream: el guard del relay confundía el listener interno `0.0.0.0` con el origen del navegador; ahora conserva la protección CSRF y admite el host público correcto. Sin embargo, todavía faltan una captura E2E posterior de Cargues/Arqueos de Prueba1 y una descarga Excel autenticada contra producción. El error `VALIDATE_PERIPHERALS` de Configuración sigue visible como fallo SQL upstream independiente. Restan esas pruebas, billetes/denominaciones, vídeo y controles visibles antes de declarar paridad funcional completa. La entrega ya no depende de un comando manual: cada push verifica tipos, estilo, suite y compilación, y publica una imagen en GHCR lista para levantar en el servidor (B-10).
