@@ -77,9 +77,12 @@ export function JamDiagnosticsSection({
               Detección de atascos en monederos y billeteros
             </h2>
             <p className="text-sm text-muted-foreground">
-              Cruza saldo del baúl, arqueos (conteo físico), cargues y las operaciones de cada transacción para distinguir{" "}
+              Analiza solo al consultar la máquina. Cruza saldo del baúl, arqueos (conteo físico), cargues y las operaciones
+              de cada transacción para distinguir{" "}
               <strong className="font-medium text-foreground">atasco</strong> (hay saldo y no sale) de{" "}
-              <strong className="font-medium text-foreground">agotamiento</strong> (no hay saldo). Período: {rangeLabel}.
+              <strong className="font-medium text-foreground">agotamiento</strong> (no hay saldo), e identifica qué
+              denominación está{" "}
+              <strong className="font-medium text-foreground">compensando</strong> la entrega. Período: {rangeLabel}.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -96,12 +99,23 @@ export function JamDiagnosticsSection({
             )}
             <Button disabled={isAnalyzing} onClick={onAnalyze} type="button" variant={analysisCurrent ? "outline" : "default"}>
               {isAnalyzing ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <Activity aria-hidden="true" className="size-4" />}
-              {isAnalyzing ? "Analizando…" : analysisCurrent ? "Re-analizar atascos" : "Analizar atascos"}
+              {isAnalyzing ? "Analizando…" : analysisCurrent ? "Re-analizar" : "Reintentar análisis"}
             </Button>
           </div>
         </div>
 
         <p className="text-sm font-medium">{diagnostics.headline}</p>
+
+        {diagnostics.primary !== null ? (
+          <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 text-sm dark:border-amber-500/30 dark:bg-amber-500/5">
+            <p className="flex flex-wrap items-center gap-2 font-semibold">
+              {diagnostics.primary.title}
+              <Badge variant={levelTone[diagnostics.primary.level]}>{jamLevelLabels[diagnostics.primary.level]}</Badge>
+            </p>
+            <p className="mt-1 text-muted-foreground">{diagnostics.primary.detail}</p>
+            <p className="mt-1 text-xs font-medium">Revisar primero: {diagnostics.primary.suggestedAction}</p>
+          </div>
+        ) : null}
 
         {diagnostics.blind ? (
           <Alert role="alert" variant="destructive">
@@ -193,6 +207,7 @@ export function JamDiagnosticsSection({
                     <TableHead className="text-right">Dispensado</TableHead>
                     <TableHead className="text-right">Caída física (arqueo)</TableHead>
                     <TableHead>Señales</TableHead>
+                    <TableHead>Rol</TableHead>
                     <TableHead>Diagnóstico</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -266,6 +281,17 @@ export function JamDiagnosticsSection({
                         </div>
                       </TableCell>
                       <TableCell className="align-top">
+                        {row.compensating ? (
+                          <Badge title="Entrega más de lo que le corresponde: está cubriendo a otra denominación" variant="secondary">
+                            Compensando
+                          </Badge>
+                        ) : row.level === "sin_evidencia" ? (
+                          <Badge variant="secondary">Normal</Badge>
+                        ) : (
+                          <Badge variant="warning">Implicada</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="align-top">
                         <Badge variant={levelTone[row.level]}>{jamLevelLabels[row.level]}</Badge>
                         <span className="mt-1 block text-xs text-muted-foreground">{jamCauseLabels[row.cause]}</span>
                         {row.lastEvidenceAt ? <span className="mt-1 block text-xs text-muted-foreground">Última evidencia: {formatDashboardDateTime(row.lastEvidenceAt)}</span> : null}
@@ -293,7 +319,9 @@ export function JamDiagnosticsSection({
                         {row.configuredForDispensing ? "Dispensa" : row.dispensesByEvidence ? "No configurada, con evidencia de entrega" : "No dispensa"} · {jamCauseLabels[row.cause]}
                       </p>
                     </div>
-                    <Badge className="ml-auto" variant={levelTone[row.level]}>{jamLevelLabels[row.level]}</Badge>
+                    <Badge className="ml-auto" variant={row.compensating ? "secondary" : levelTone[row.level]}>
+                      {row.compensating ? "Compensando" : jamLevelLabels[row.level]}
+                    </Badge>
                   </div>
                   <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
                     <div><dt className="text-xs text-muted-foreground">Saldo</dt><dd className="font-numeric font-semibold">{row.stock}</dd></div>

@@ -26,7 +26,7 @@ export const MAX_CUSTOM_RANGE_DAYS = 31;
  * la ventana se limita a las transacciones más relevantes (error devuelta primero)
  * y el resultado indica si quedó truncado.
  */
-export const JAM_SCAN_MAX_TRANSACTIONS = 60;
+export const JAM_SCAN_MAX_TRANSACTIONS = 40;
 
 export const jamScanRequestSchema = z.object({
   from: z.string().datetime({ offset: true }),

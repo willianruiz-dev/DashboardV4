@@ -45,32 +45,30 @@ export function DispensingControlPage() {
   );
   const metricsQuery = useDispensingMetrics(metricsArgs);
 
-  // El análisis de atascos con detalles es una acción explícita (una petición por
-  // transacción): se guarda la selección analizada y se invalida al cambiar filtros.
-  const [scanTarget, setScanTarget] = useState<JamScanRequest | null>(null);
-  const jamScanQuery = useDispensingJamScan(scanTarget);
-  const analysisCurrent = useMemo(() => {
-    const current = buildJamScanRequest(metricsArgs);
-    return current !== null && scanTarget !== null && current.paypadId === scanTarget.paypadId && current.from === scanTarget.from && current.to === scanTarget.to;
-  }, [metricsArgs, scanTarget]);
+  // El análisis corre AUTOMÁTICAMENTE al seleccionar la máquina o cambiar el período
+  // (el operador debe ver la alerta sin pulsar nada). La clave de la consulta incluye
+  // máquina y rango, y el BFF cachea los detalles, así que volver a un período ya
+  // analizado no vuelve a golpear el API legado.
+  const jamScanRequest = useMemo<JamScanRequest | null>(() => buildJamScanRequest(metricsArgs), [metricsArgs]);
+  const jamScanQuery = useDispensingJamScan(jamScanRequest);
+  const hasAnalysis = jamScanQuery.data !== undefined && jamScanRequest !== null;
 
   const jamDiagnostics = useMemo(
     () =>
       computeJamDiagnostics({
         byState: metricsQuery.sources.byState,
         loads: metricsQuery.sources.loads,
-        scan: analysisCurrent ? (jamScanQuery.data ?? null) : null,
+        scan: jamScanQuery.data ?? null,
         rangeFrom: metricsArgs === null ? null : localDateTimeToApiIso(metricsArgs.from),
         rangeTo: metricsArgs === null ? null : localDateTimeToApiIso(metricsArgs.to, { endOfMinute: true }),
         storage: metricsQuery.sources.storage,
         tonnages: metricsQuery.sources.tonnages,
       }),
-    [analysisCurrent, jamScanQuery.data, metricsArgs, metricsQuery.sources],
+    [jamScanQuery.data, metricsArgs, metricsQuery.sources],
   );
 
   function handleApply(next: DispensingFilterSelection): void {
     setSelection(next);
-    setScanTarget(null);
   }
 
   if (!canAccess) {
@@ -173,14 +171,11 @@ export function DispensingControlPage() {
             </div>
 
             <JamDiagnosticsSection
-              analysisCurrent={analysisCurrent}
+              analysisCurrent={hasAnalysis}
               diagnostics={jamDiagnostics}
-              error={analysisCurrent && jamScanQuery.isError && jamScanQuery.error instanceof Error ? jamScanQuery.error : null}
+              error={jamScanQuery.isError && jamScanQuery.error instanceof Error ? jamScanQuery.error : null}
               isAnalyzing={jamScanQuery.isFetching}
-              onAnalyze={() => {
-                const request = buildJamScanRequest(metricsArgs);
-                setScanTarget(request);
-              }}
+              onAnalyze={() => void jamScanQuery.refetch()}
               onRetry={() => void jamScanQuery.refetch()}
               rangeLabel={rangeLabel}
             />

@@ -1,6 +1,6 @@
 # Detección temprana de atascos (monederos/billeteros) — estudio e implementación
 
-> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C3)** dentro de *Control de dispensado*.
+> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C5)** dentro de *Control de dispensado*.
 > **Veredicto:** **VIABLE con la API y el dashboard actuales**, sin cambios en el backend .NET ni en la base de datos.
 > **Archivos nuevos:** `src/features/dispensing-control/dispensing-jams.ts` (motor puro), `src/app/api/dispensing/jams/route.ts` (BFF acotado + caché), `src/features/dispensing-control/components/jam-diagnostics.tsx` (panel), `src/features/dispensing-control/api.ts` (cliente) y extensiones en `schemas.ts`, `hooks.ts` y la página.
 > **Estado de validación:** TypeScript, ESLint y build **PASA** (2026-09-17) + tres fixtures locales del motor y uno del normalizador (`node --experimental-strip-types`): escenario de sustitución/devolución, **máquina real Pay+ Inder 2 (ID 71)** y caso ciego. La prueba E2E autenticada sigue pendiente (B-04/B-05 del backlog).
@@ -9,15 +9,37 @@
 
 ## 0. Correcciones obligadas por el caso real Pay+ Inder 2 (ID 71)
 
-El operador reportó: **«empezó a dispensar todo en monedas de 100 porque se atascó el monedero de 500»**, y el panel respondía *«No se detectaron señales de atasco»*. Tres defectos concretos, ya corregidos:
+El operador reportó: **«empezó a dispensar todo en monedas de 100 porque se atascó el monedero de 500»**. La primera respuesta del panel fue *«No se detectaron señales de atasco»* y, tras corregir eso, señalaba al monedero **equivocado**: culpaba al **100** (que era el que estaba entregando todo el cambio) y no al **500**. Cinco defectos concretos, ya corregidos:
 
 | # | Defecto encontrado | Evidencia | Corrección aplicada |
 | --- | --- | --- | --- |
 | **C1** | **Los 30 detalles fallaron por contrato**: el DTO legacy `TransactionDetailDto` declara `CurrencyDenomination` y `Quantity` como **`int`**, y el schema del BFF exigía `string` para `currencyDenomination`. Zod rechazaba cada respuesta ⇒ `30 consulta(s) de detalle (30 sin respuesta)` ⇒ cero evidencia por denominación. | Captura del módulo + `dashboardv2-backend/Dashboard.Domain/DTOs/Business/TransactionDetailDto.cs` | Nuevo `detail-normalizer.ts`: **nunca rechaza una respuesta**; convierte números/strings, tolera `response: null`, arreglos planos y entradas basura, y reporta `detailsMalformed`. El BFF ya no parsea con Zod estricto. |
 | **C2** | **`isDispensing` bloqueaba la evidencia**: el monedero de 500 estaba marcado **«No dispensa»** en Pay+ → Configurar denominaciones, y el motor solo evaluaba esa bandera ⇒ la fila 500 quedaba sin señales… y también fuera de la combinación canónica, así que la sustitución por monedas de 100 no se habría detectado. | Captura: fila «$500 — No dispensa, saldo 34, caída física 97» | La configuración **informa pero no habilita ni bloquea**. El conjunto de denominaciones que pueden entregar cambio se deduce de la **evidencia**: configuración OR caída física positiva OR unidades dispensadas OR sustituciones. Nuevas señales `sustitucion_no_configurada` y `config_inconsistente`. |
 | **C3** | **El panel declaraba «limpio» estando ciego**: con 30/30 detalles fallidos el titular seguía siendo *«No se detectaron señales de atasco»*. | Captura | Nuevos campos `blind` y `failureReasons`: el titular pasa a *«Diagnóstico incompleto…»*, se muestra una alerta destructiva con el motivo sanitizado del fallo y el pie indica el método de inferencia usado. |
+| **C4** | **Se culpaba al que entrega, no al que no entrega.** El 100 cobraba `devuelto_con_saldo` (sus intentos fallidos aparecían en transacciones con error) y señales físicas porque su arqueo no cuadraba: era el **único** incidente reportado, mientras el 500 atascado quedaba invisible. | Reporte del operador: «me dice atasco en de 100 mientras que es en el de 500» | Nuevo concepto de **compensación**: si una denominación entrega *más* de su parte canónica (≥ 2 unidades y ≥ 2 pagos), se marca `compensando_entrega` (peso 0), **se suprimen todas sus señales de atasco** y el titular nombra al culpable: *«…el cambio se entrega con 100»*. Las filas muestran el rol **Implicada / Compensando / Normal**. |
+| **C5** | **El análisis exigía pulsar un botón.** Sin clic, el motor no tenía detalles y no había alerta posible: el operador veía «Sin señales» hasta analizar manualmente. | Reporte: «primero debería lanzar la alerta apenas consulte la máquina» | El análisis se **dispara automáticamente** al seleccionar máquina o cambiar el período (clave de consulta por máquina+rango, `staleTime` 5 min y caché de detalles de 30 min en el BFF). El botón pasa a **«Re-analizar»**. |
+
+### Por qué el 500 quedaba invisible aunque estuviera atascado
+
+Además de la compensación, había un problema de circularidad: para saber que el 500 *debía* participar se usaba la configuración (`isDispensing`) o el movimiento en el arqueo… pero un monedero atascado **no se mueve** y en Inder 2 estaba marcado «No dispensa». Era imposible que apareciera. Ahora la existencia del módulo se deduce del **saldo en el baúl dispensador** (actual o histórico en cualquier arqueo): 34 monedas guardadas significan que hay un monedero de 500 que puede entregar, esté bien configurado o no.
 
 Además: el tope de análisis subió de 30 a **60** transacciones (la máquina tenía 33 solo ese día) y `confirmado` ahora exige **evidencia independiente** (física o fallo explícito), no solo composición de pagos.
+
+### Verificación del caso real (fixture `compensacion`)
+
+Máquina con el monedero de 500 atascado (34 unidades guardadas, «No dispensa»), 10 pagos
+cuyo cambio de 1.000 sale como 10 × 100, dos transacciones con error devuelta cuyos
+detalles también salen en 100 (24 unidades) y un arqueo del 100 que baja menos de lo
+dispensado — es decir, **todo lo que antes hacía señalar al 100**:
+
+```
+HEADLINE: Atasco probable · Posible atasco en la denominación 500 — el cambio se entrega con 100
+PRIMARY:  Posible atasco en la denominación 500 (probable)
+d=500 | saldo=34 | compensa=no | sust=10 (no configurada) | nivel=probable score=5
+        señales=[sustitucion_no_configurada, inactiva_con_saldo]
+d=100 | saldo=900 | compensa=SÍ | sobre-entrega=100 | devuelto=24 | caída=150
+        nivel=sin_evidencia | señales=[compensando_entrega]   ← antes: "atasco probable en 100"
+```
 
 ### Verificación del caso real (fixture `inder2`)
 
@@ -177,11 +199,24 @@ BD). El motor no lo asume:
 | `inactiva_con_saldo` | 2 (1 si el arqueo está fuera del período) | Ninguna otra denominación se movió en el intervalo de arqueo y esta tampoco, conservando saldo |
 | `rechazo_con_unidades` | 1 | El baúl de rechazo tiene unidades y hubo rechazos/intentos fallidos |
 | `config_inconsistente` | 1 | Marcada «No dispensa», pero el arqueo muestra movimiento real del baúl |
+| `compensando_entrega` | 0 | Entregó más que su parte canónica (≥ 2 unidades, ≥ 2 pagos): **suprime el resto de señales de esa denominación** |
 | `descuadre_inventario` | 0 | `caidaFisica(d) < 0` (informativo; invalida la caída como evidencia) |
 
 Niveles: `sin_evidencia` → `sospecha` (score ≥ 1) → `probable` (≥ 3) → `confirmado`
 (≥ 6 con ≥ 2 señales, una señal núcleo **y una evidencia independiente**: física
-—`sin_caida_fisica`, `caida_*`— o fallo explícito de entrega —`devuelto_con_saldo`—). `JAM_THRESHOLDS` se puede sobreescribir
+—`sin_caida_fisica`, `caida_*`— o fallo explícito de entrega —`devuelto_con_saldo`—).
+Una denominación **compensadora nunca recibe nivel de atasco**: está entregando, no fallando.
+
+### Regla de oro de la atribución
+
+> El módulo atascado es el que **debía participar y no participa**; el que **entrega de
+> más** está tapando el hueco. Nunca se culpa al que compensa.
+
+Consecuencias en el motor: (1) las señales físicas (`sin_caida_fisica`,
+`caida_insuficiente`, `inactiva_con_saldo`) y `devuelto_con_saldo` solo se evalúan para
+denominaciones no compensadoras; (2) el incidente principal (`primary`) nombra al
+sospechoso y menciona explícitamente qué denominación está compensando; (3) el titular
+del panel es el incidente principal, no un conteo genérico. `JAM_THRESHOLDS` se puede sobreescribir
 por parámetro; la evolución natural es leerlos de `PayPadConfiguration.extraDataJson`
 (key/value, sin migración).
 
