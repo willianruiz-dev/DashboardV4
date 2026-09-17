@@ -170,6 +170,15 @@ export function DispensingControlPage() {
               />
             </div>
 
+            {/* Orden pedido por operación: primero el desglose por denominaciones
+                (cargada/entregada/rechazada/saldo) y debajo la detección de atascos. */}
+            <DenominationTable
+              denominations={metricsQuery.denominations}
+              loading={metricsQuery.isLoading && metrics === null}
+              rangeLabel={rangeLabel}
+              rows={metrics?.rows ?? []}
+            />
+
             <JamDiagnosticsSection
               analysisCurrent={hasAnalysis}
               diagnostics={jamDiagnostics}
@@ -178,13 +187,6 @@ export function DispensingControlPage() {
               onAnalyze={() => void jamScanQuery.refetch()}
               onRetry={() => void jamScanQuery.refetch()}
               rangeLabel={rangeLabel}
-            />
-
-            <DenominationTable
-              denominations={metricsQuery.denominations}
-              loading={metricsQuery.isLoading && metrics === null}
-              rangeLabel={rangeLabel}
-              rows={metrics?.rows ?? []}
             />
 
             <p className="text-xs text-muted-foreground">
