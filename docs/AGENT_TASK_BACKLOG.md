@@ -121,6 +121,15 @@
 | Estados skeleton / vacío / error-reintento / sin permisos | **PENDIENTE E2E** en todas las vistas |
 | Confirmaciones destructivas/financieras | **PENDIENTE E2E** |
 
+9. **B-09 — Agregados monetarios de Transacciones/Reportes con monedas mezcladas:** el control de
+   dispensado ya separa monedas (C8/C9), pero las vistas de Transacciones y Reportes —paridad con
+   el dashboard legado— suman `cashTotal`/`cardTotal`/`approvedTotal` sobre el conjunto filtrado.
+   Si el filtro incluye una máquina de cambio divisa (o varias máquinas de monedas distintas), ese
+   total suma pesos y dólares y no es comparable. No se cambió el contrato legado sin una decisión
+   explícita; la mitigación es la misma regla de `denomination-usage.ts` (monedas por máquina) con
+   un aviso en el resumen. **Requiere decisión del negocio**: ¿se rotula, se separa por moneda o se
+   deja como el legacy?
+
 ## SUPUESTOS Y BLOQUEOS
 
 1. **B-01 — Eventos realtime:** no se encontró un contrato WebSocket/SignalR ni una implementación de Hub en el backend legado. No se inventó una conexión ni payload; la alerta de errores de devuelta del inicio usa **sondeo del navegador cada 30 s** con caché corta en el BFF (§9 de `docs/DISPENSING_JAM_DETECTION.md`), no un canal servidor→navegador.

@@ -93,7 +93,9 @@ export function DenominationTable({ denominations, excludedRows = [], loading = 
           </div>
         ) : rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            Esta máquina aún no tiene denominaciones configuradas (módulo Pay+ → Configurar denominaciones).
+            {excludedRows.length > 0
+              ? "Ninguna denominación de esta máquina está en uso con los datos actuales: revisa abajo las que quedaron fuera y por qué."
+              : "Esta máquina aún no tiene denominaciones configuradas (módulo Pay+ → Configurar denominaciones)."}
           </p>
         ) : (
           <>
@@ -206,9 +208,18 @@ export function DenominationTable({ denominations, excludedRows = [], loading = 
                           {row.currencyLabel ? <span className="mr-1 text-xs font-medium text-muted-foreground">{row.currencyLabel}</span> : null}
                           {formatDashboardMoney(image.value)}
                         </p>
-                        <p className="text-xs text-muted-foreground">{row.isDispensing ? "Dispensadora" : "No dispensa"}</p>
+                        <p className="text-xs text-muted-foreground" title={row.inUseReasons.length > 0 ? `En uso por: ${row.inUseReasons.join(", ")}` : undefined}>
+                          {row.isDispensing ? "Dispensadora" : "No dispensa"}
+                        </p>
                       </div>
-                      {row.low ? null : <Badge className="ml-auto" variant="secondary">OK</Badge>}
+                      <div className="ml-auto flex flex-col items-end gap-1">
+                        {row.low ? null : <Badge variant="secondary">OK</Badge>}
+                        {row.foreignCurrency ? (
+                          <Badge title={`La moneda de este baúl (${row.currencyLabel ?? "no declarada"}) no es la del Pay+`} variant="outline">
+                            Otra moneda
+                          </Badge>
+                        ) : null}
+                      </div>
                     </div>
                     <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
                       <div><dt className="text-xs text-muted-foreground">Cargada</dt><dd className="font-numeric font-medium text-blue-600 dark:text-blue-400">{row.loadedInRange}</dd></div>
