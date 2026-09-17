@@ -86,6 +86,18 @@ mismo artefacto publicado sirve para servidor de pruebas y producción cambiando
 `.dockerignore` excluye `.env*`, `*.pem` y `dashboardv2-frontend/` (su `.env.production` con claves
 nunca debe viajar en una capa de imagen).
 
+## Seguridad de la entrega
+
+- **La imagen no lleva credenciales.** `.dockerignore` excluye `.env*`, `*.pem` y
+  `dashboardv2-frontend/`, y el `Dockerfile` no recibe variables: es un artefacto publicable sin
+  secretos, y por eso puede vivir en un registro público.
+- **Pendiente heredado, no introducido aquí:** `dashboardv2-frontend/.env.production` está versionado
+  en este repositorio —que es público— con los valores heredados `REACT_APP_DKEYID` y
+  `REACT_APP_PUBKEY`. Son los mismos que ya viajan en el bundle del dashboard legado servido
+  públicamente, así que no es una exposición nueva; aun así conviene moverlos a variables del entorno
+  de compilación y sacarlos del repositorio (o rotarlos) si el API se apoya sólo en ese par para
+  identificar al cliente.
+
 ## Preguntas frecuentes
 
 **¿Puedo probarlo desde el navegador sin servidor?** No para el panel completo: sin las rutas BFF no
@@ -100,9 +112,12 @@ sesión.
 Compruebe `docker compose config` (no imprime valores si usa `--quiet`) y que el contenedor alcanza
 `API_BASE_ADDRESS`.
 
-**`docker pull` da `denied`.** El paquete es privado por herencia del repositorio: autentíquese una
-vez con un token de lectura de paquetes (`echo $TOKEN | docker login ghcr.io -u <usuario> --password-stdin`)
-o cambie la visibilidad del paquete en GitHub → Packages → *Package settings*.
+**¿Hace falta autenticarse para bajar la imagen?** Hoy no: el paquete es **público**, igual que el
+repositorio, así que `docker pull` funciona sin credenciales. Si prefiere restringirlo, cambie la
+visibilidad en GitHub → Packages → `dashboardv4` → *Package settings* → *Change visibility*; desde
+ese momento el servidor necesita un token de lectura de paquetes
+(`echo $TOKEN | docker login ghcr.io -u <usuario> --password-stdin`). Bajar la imagen no exige
+ninguna clave de la aplicación: la imagen no las contiene.
 
 **¿Cómo sé que la imagen publicada es la del commit que probé?** Las etiquetas `sha-<commit>` y el
 resumen del workflow muestran los tags publicados; en el servidor `docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' ghcr.io/willianruiz-dev/dashboardv4:latest`.
