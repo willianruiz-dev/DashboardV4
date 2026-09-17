@@ -4,9 +4,10 @@ import { z } from "zod";
 import { getPaypadMachineName } from "@/features/paypads/paypad-display";
 import { paypadSchema, type PayPad } from "@/features/paypads/schemas";
 import { transactionSchema, transactionSearchRequestSchema, transactionSearchResponseSchema, type DashboardTransaction } from "@/features/transactions/schemas";
-import { matchesTransactionPaymentType, sortTransactions } from "@/features/transactions/transaction-search";
+import { matchesTransactionPaymentType, sortTransactions, summarizeTransactionsByCurrency } from "@/features/transactions/transaction-search";
 import { subtractMoneyStrings, sumMoneyStrings } from "@/lib/formatters/money";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
+import { getPaypadCurrencyProfiles } from "@/lib/server/paypad-currencies";
 import { requireDashboardToken } from "@/lib/server/require-dashboard-token";
 import { createApiRouteError } from "@/lib/server/route-error";
 import { httpEnvelopeSchema } from "@/schemas/http";
@@ -116,10 +117,29 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       : paymentFilteredTransactions.filter((transaction) => transaction.product === search.product);
     const sortedTransactions = sortTransactions(matchingTransactions, search);
     const start = (search.page - 1) * search.pageSize;
+    const summary = createSummary(matchingTransactions);
+    // Totales por moneda: el dashboard antiguo sumaba pesos y dólares en un solo «Total
+    // recaudado». La moneda declarada por el Pay+ se resuelve sin costo (el listado ya está en
+    // memoria) y el baúl sólo se consulta cuando el conjunto tiene pocas máquinas (el caso de
+    // una máquina seleccionada, donde importa detectar el cambio divisa).
+    const resultPaypadIds = [...new Set(matchingTransactions.map((transaction) => transaction.idPayPad))];
+    const currencySources = paypads.filter((paypad) => resultPaypadIds.includes(paypad.id));
+    const currencyProfiles = await getPaypadCurrencyProfiles(currencySources, token, { maxLookups: 12, probeStorage: currencySources.length <= 5 });
     const response = transactionSearchResponseSchema.parse({
       items: sortedTransactions.slice(start, start + search.pageSize),
       products,
-      summary: createSummary(matchingTransactions),
+      summary: {
+        ...summary,
+        byCurrency: summarizeTransactionsByCurrency(
+          matchingTransactions,
+          new Map(
+            [...currencyProfiles].map(([paypadId, profile]) => [
+              paypadId,
+              { currencyId: profile.currencyId, label: profile.mixed ? profile.labels.join(", ") : profile.label, mixed: profile.mixed },
+            ]),
+          ),
+        ),
+      },
       total: sortedTransactions.length,
       transactionIds: sortedTransactions.map((transaction) => transaction.id),
     });

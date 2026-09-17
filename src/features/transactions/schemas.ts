@@ -86,9 +86,27 @@ export const transactionStateBucketSchema = z.object({
 });
 export type TransactionStateBucket = z.infer<typeof transactionStateBucketSchema>;
 
+export const transactionCurrencyBucketSchema = z.object({
+  approvedCount: z.number().int().nonnegative(),
+  approvedTotal: moneyStringSchema,
+  cancelledCount: z.number().int().nonnegative(),
+  cardTotal: moneyStringSchema,
+  cashTotal: moneyStringSchema,
+  currencyId: z.number().int().positive().nullable(),
+  currencyLabel: z.string(),
+  mixed: z.boolean().default(false),
+});
+export type TransactionCurrencyBucket = z.infer<typeof transactionCurrencyBucketSchema>;
+
 export const transactionSummarySchema = z.object({
   approvedCount: z.number().int().nonnegative(),
   approvedTotal: moneyStringSchema,
+  /**
+   * Totales del período por moneda. Con más de un grupo, la interfaz muestra un recaudo por
+   * moneda en lugar de un único total que sumaría monedas distintas; `mixed` agrupa las
+   * máquinas de cambio divisa, cuyos importes no son atribuibles a una sola moneda.
+   */
+  byCurrency: z.array(transactionCurrencyBucketSchema).default([]),
   byState: z.record(z.string(), transactionStateBucketSchema).default({}),
   cancelledCount: z.number().int().nonnegative(),
   cardTotal: moneyStringSchema,

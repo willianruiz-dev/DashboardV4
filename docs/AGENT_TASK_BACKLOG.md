@@ -32,6 +32,12 @@
 - `STATIC_FILES_BASE_ADDRESS` es un override exclusivamente server-side; sin configuración adicional usa el origen histórico verificado. El proxy no reenvía `DashboardKeyId`, Bearer, cookies ni otros secretos al host público de archivos. El navegador sólo recibe bytes same-origin.
 - El helper de imágenes incorpora una revisión local que fuerza un reintento de recursos que hayan quedado marcados como fallidos por el proxy anterior; el BFF descarta esa query antes de pedir el archivo remoto.
 - Se migraron los assets locales históricos de `dashboardv2-frontend/public/images` a `public/images`, incluido `profile-default.png`; perfiles sin ruta, vacíos, `NULL` o recursos que fallen conservan el fallback visual local.
+- **Transacciones/Reportes: recaudo por moneda (decisión del negocio):** el resumen del período
+  publica `summary.byCurrency` y la vista muestra una tarjeta por moneda (con aprobadas, efectivo y
+  tarjeta); las máquinas de cambio divisa van a «Varias monedas (COP, USD)» en lugar de atribuirse a
+  una moneda que no les corresponde. La resolución de moneda por máquina es compartida con la alerta
+  del inicio (`src/lib/server/paypad-currencies.ts`: `PayPad.idCurrency` gratis + sondeo de baúl con
+  caché de 10 min, concurrencia 5 y tope 12).
 - **Ningún agregado de dinero compara monedas distintas:** además del desglose, una máquina
   multimoneda (`multiCurrency` + `currencyLabels`) muestra un aviso arriba de las tarjetas y la
   nota «suma monedas distintas (no comparable)» en AP/RJ y en el total del arqueo; la alerta del
@@ -101,8 +107,9 @@
 | Motor de atascos con fixture local | **PASA (fixture local)** — el escenario del negocio (billetero de 50.000 sustituido por 20.000+10.000 y monedero de 500 con saldo que no entrega) queda en **confirmado** con caída física 0, y un fallo único aislado no genera incidente. Reconciliación del detalle verificada contra `returnAmount`. |
 | Caso real Pay+ Inder 2 (ID 71) reproducido | **PASA (fixture local)** — con la configuración de la captura (500 «No dispensa», saldo 34, caída física 97, cero `Aprobada Error Devuelta`) y 12 pagos con cambio de 1.500 entregado en 15×100, el motor emite `sustitucion_no_configurada` + `config_inconsistente` ⇒ **incidente probable en el monedero de 500**, exactamente lo reportado por el operador. Antes de C1–C3 el mismo dato daba «sin señales». |
 | Consulta sin máquina no bloquea los filtros | **PASA (código + evidencia del runtime)** — `QueryObserver` con `enabled:false` confirma `status:"pending"`, `isPending:true`; la guarda `paypadId !== null` impide que ese estado se traduzca en filtros deshabilitados. Pendiente inspección autenticada. |
-| Suite de regresiones del control de dispensado | **PASA (local)** — `npm run fixtures:dispensing` → **37/37** comprobaciones (2026-09-17), sin red ni sesión. La suite corre **dentro de `npm run check`**, así que el comando estándar ya no valida sólo tipos y estilo. |
+| Suite de regresiones del control de dispensado | **PASA (local)** — `npm run fixtures:dispensing` → **44/44** comprobaciones (2026-09-17), sin red ni sesión. La suite corre **dentro de `npm run check`**, así que el comando estándar ya no valida sólo tipos y estilo. |
 | Desglose sin filas heredadas | **PASA (fixture local)** — con el storage de C.C. Centro2 (500, 1000 y un USD 1 sin configuración, sin saldo, con arqueo −6): el desglose muestra solo `COP 1000` y `COP 500`, el USD 1 queda en excluidas con el motivo completo, los totales por moneda se quedan en COP y la entrega negativa se muestra como 0 declarando el −6. Sin incidentes en el motor. |
+| Recaudo por moneda en Transacciones | **PASA (fixture local)** — `summarizeTransactionsByCurrency` agrupa el período en COP, USD y «Varias monedas (COP, USD)»; el grupo COP suma sólo sus máquinas (50.000 + 30.000 − 5.000 devuelto = 75.000, efectivo 50.000 y tarjeta 25.000), una sola moneda no se fragmenta y el grupo mixto conserva sus monedas. |
 | Monedas separadas (máquina de cambio divisa) | **PASA (fixture local)** — con catálogo COP/USD: dos pagos de **USD 100** entregados con un billete de USD 100 y un monedero de COP 100 con saldo ya **no** producen ninguna señal sobre el 100 (antes: `sustitucion` × 2 ⇒ «Atasco probable en la denominación 100»); la sustitución **real** dentro de USD (pagos de USD 10 entregados como 2 × USD 5) sigue detectándose con el titular «Posible atasco en la denominación **USD 10** — el cambio se entrega con USD 5», y las filas `COP 100` y `USD 100` quedan distinguibles. |
 | Denominación que la máquina no usa hoy (billete de USD 1 en máquina de pesos) | **PASA (fixture local)** — réplica de la captura reportada: la fila USD 1 (sin configuración, sin saldo, arqueo antiguo con caída de 6) generaba `config_inconsistente` ⇒ «Posible atasco» / «Implicada»; ahora queda fuera del diagnóstico y se explica en la lista de no evaluadas con el motivo («el histórico de arqueos sí la movió: módulo retirado, reconfigurado o unidades extraídas»). El titular pasa a «No se detectaron señales de atasco». |
 | Totales por moneda | **PASA (fixture local)** — `storageTotalsByCurrency` devuelve `COP 40000` y `USD 200` por separado; la suma plana (40.200) ya no se muestra en la UI. |
@@ -121,14 +128,16 @@
 | Estados skeleton / vacío / error-reintento / sin permisos | **PENDIENTE E2E** en todas las vistas |
 | Confirmaciones destructivas/financieras | **PENDIENTE E2E** |
 
-9. **B-09 — Agregados monetarios de Transacciones/Reportes con monedas mezcladas:** el control de
-   dispensado ya separa monedas (C8/C9), pero las vistas de Transacciones y Reportes —paridad con
-   el dashboard legado— suman `cashTotal`/`cardTotal`/`approvedTotal` sobre el conjunto filtrado.
-   Si el filtro incluye una máquina de cambio divisa (o varias máquinas de monedas distintas), ese
-   total suma pesos y dólares y no es comparable. No se cambió el contrato legado sin una decisión
-   explícita; la mitigación es la misma regla de `denomination-usage.ts` (monedas por máquina) con
-   un aviso en el resumen. **Requiere decisión del negocio**: ¿se rotula, se separa por moneda o se
-   deja como el legacy?
+9. **B-09 — RESUELTO con decisión del negocio (separar por moneda).** El resumen de Transacciones
+   ya no publica un único «Total recaudado» cuando el período abarca varias monedas: el BFF añade
+   `summary.byCurrency` (una entrada por moneda, con efectivo/tarjeta/aprobadas) y la interfaz
+   muestra una tarjeta de recaudo por moneda. Las máquinas de cambio divisa (COP ⇄ USD) agrupan sus
+   importes en «Varias monedas (COP, USD)» porque el DTO de transacción no dice en qué moneda va
+   cada importe. La moneda declarada por el Pay+ no cuesta llamadas (el listado ya se consulta) y el
+   baúl se sondea sólo cuando el conjunto tiene ≤ 5 máquinas (`paypad-currencies.ts`, caché 10 min,
+   concurrencia 5, tope 12). **Límite declarado:** con filtros de muchas máquinas no se sondea el
+   baúl de todas, así que una máquina de cambio divisa dentro de un conjunto grande se atribuye a su
+   moneda declarada (`PayPad.idCurrency`).
 
 ## SUPUESTOS Y BLOQUEOS
 

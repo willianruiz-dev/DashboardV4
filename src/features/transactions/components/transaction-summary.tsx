@@ -29,22 +29,42 @@ const toneStyles: Record<SummaryTone, { accent: string; chip: string; value: str
 interface SummaryCard {
   icon: LucideIcon;
   label: string;
+  subtitle?: string | null;
   tone: SummaryTone;
   value: string;
 }
 
 export function TransactionSummaryCards({ summary }: { summary: TransactionSummary }) {
-  const cards: SummaryCard[] = [
-    { icon: CircleCheck, label: "Transacciones aprobadas", tone: "approved", value: String(summary.approvedCount) },
-    { icon: XCircle, label: "Transacciones rechazadas", tone: "cancelled", value: String(summary.cancelledCount) },
-    { icon: Banknote, label: "Total recaudado en efectivo", tone: "system", value: formatDashboardMoney(summary.cashTotal) },
-    { icon: CreditCard, label: "Total recaudado por tarjeta", tone: "system", value: formatDashboardMoney(summary.cardTotal) },
-    { icon: ReceiptText, label: "Total recaudado", tone: "system", value: formatDashboardMoney(summary.approvedTotal) },
-  ];
+  // Si el período abarca más de una moneda (máquinas de pesos y de dólares, o máquinas de
+  // cambio divisa), el «Total recaudado» no puede ser un solo número: se muestra un recaudo
+  // por moneda, como en el control de dispensado (C8/C9). Con una sola moneda nada cambia.
+  const currencies = summary.byCurrency;
+  const cards: SummaryCard[] =
+    currencies.length > 1
+      ? [
+          { icon: CircleCheck, label: "Transacciones aprobadas", tone: "approved", value: String(summary.approvedCount) },
+          { icon: XCircle, label: "Transacciones rechazadas", tone: "cancelled", value: String(summary.cancelledCount) },
+          ...currencies.map((bucket) => ({
+            icon: ReceiptText,
+            label: `Total recaudado · ${bucket.currencyLabel}`,
+            subtitle: `${bucket.approvedCount} aprobada(s) · efectivo ${formatDashboardMoney(bucket.cashTotal)} · tarjeta ${formatDashboardMoney(bucket.cardTotal)}${
+              bucket.mixed ? " · máquina(s) de cambio divisa: el importe no es atribuible a una sola moneda" : ""
+            }`,
+            tone: "system" as SummaryTone,
+            value: formatDashboardMoney(bucket.approvedTotal),
+          })),
+        ]
+      : [
+          { icon: CircleCheck, label: "Transacciones aprobadas", tone: "approved", value: String(summary.approvedCount) },
+          { icon: XCircle, label: "Transacciones rechazadas", tone: "cancelled", value: String(summary.cancelledCount) },
+          { icon: Banknote, label: "Total recaudado en efectivo", tone: "system", value: formatDashboardMoney(summary.cashTotal) },
+          { icon: CreditCard, label: "Total recaudado por tarjeta", tone: "system", value: formatDashboardMoney(summary.cardTotal) },
+          { icon: ReceiptText, label: "Total recaudado", tone: "system", value: formatDashboardMoney(summary.approvedTotal) },
+        ];
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-      {cards.map(({ icon: Icon, label, tone, value }, index) => {
+    <div className={cn("grid gap-4 sm:grid-cols-2", cards.length > 5 ? "xl:grid-cols-4" : "xl:grid-cols-5")}>
+      {cards.map(({ icon: Icon, label, subtitle, tone, value }, index) => {
         const styles = toneStyles[tone];
 
         return (
@@ -61,6 +81,9 @@ export function TransactionSummaryCards({ summary }: { summary: TransactionSumma
               <div className="min-w-0">
                 <p className={cn("font-numeric truncate text-xl font-semibold tracking-tight", styles.value)}>{value}</p>
                 <p className="mt-0.5 truncate text-xs font-medium text-muted-foreground">{label}</p>
+                {subtitle ? (
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground/80" title={subtitle}>{subtitle}</p>
+                ) : null}
               </div>
             </div>
           </Card>

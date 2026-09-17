@@ -3,7 +3,7 @@
 > **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C9)** dentro de *Control de dispensado*.
 > **Veredicto:** **VIABLE con la API y el dashboard actuales**, sin cambios en el backend .NET ni en la base de datos.
 > **Archivos nuevos:** `src/features/dispensing-control/dispensing-jams.ts` (motor puro), `src/app/api/dispensing/jams/route.ts` (BFF acotado + caché), `src/features/dispensing-control/components/jam-diagnostics.tsx` (panel), `src/features/dispensing-control/api.ts` (cliente) y extensiones en `schemas.ts`, `hooks.ts` y la página.
-> **Estado de validación:** `npm run check` (TypeScript, ESLint **y la suite**) y `npm run build` **PASA** (2026-09-17). La suite `npm run fixtures:dispensing` (`scripts/dispensing-fixtures.mts`, 37 comprobaciones, sin red) reproduce los ocho escenarios citados en este documento (C2, C3, C4, C6, C8, C9) y corre **dentro de `npm run check`**, así que una regresión del motor rompe la verificación estándar.
+> **Estado de validación:** `npm run check` (TypeScript, ESLint **y la suite**) y `npm run build` **PASA** (2026-09-17). La suite `npm run fixtures:dispensing` (`scripts/dispensing-fixtures.mts`, 44 comprobaciones, sin red) reproduce los nueve escenarios citados en este documento (C2, C3, C4, C6, C8, C9) y corre **dentro de `npm run check`**, así que una regresión del motor rompe la verificación estándar.
 
 ---
 
@@ -324,7 +324,9 @@ incidente publica `currencyId`/`currencyLabel` y los títulos usan `USD 10`, no 
 «DP · Real entregado» aclara que el total del arqueo es el del backend y una máquina multimoneda
 (`multiCurrency`, con sus `currencyLabels`) muestra un aviso arriba de las tarjetas y la nota
 «suma monedas distintas (no comparable)» en las de AP/RJ; la alerta del inicio sustituye el
-importe por «Importe en varias monedas» (§9);
+importe por «Importe en varias monedas» (§9) y el resumen de **Transacciones** publica
+`summary.byCurrency` (una tarjeta de recaudo por moneda, con «Varias monedas (COP, USD)» para las
+máquinas de cambio divisa), resuelto con `src/lib/server/paypad-currencies.ts`;
 (4) `ignoredDenominations` documenta qué quedó fuera y por qué, en lugar de omitirlo.
 
 ### Regla de oro de la atribución
@@ -354,10 +356,10 @@ npm run check                   # typecheck + lint + la suite de dispensado (sin
 npm run fixtures:dispensing     # sólo la suite, si se quiere iterar sobre un escenario
 ```
 
-Ocho escenarios con aserciones (37 comprobaciones; el proceso termina con código 1 si algo
+Nueve escenarios con aserciones (44 comprobaciones; el proceso termina con código 1 si algo
 falla). Cada uno corresponde a un caso reportado por el operador o a un falso positivo ya
 corregido, así que la suite es la red de seguridad de C2–C9: `usuario-actual`, `compensacion`,
-`inder2`, `jam`, `ciego`, `cc-centro-usd1`, `divisa` y `alerta-inicio`.
+`inder2`, `jam`, `ciego`, `cc-centro-usd1`, `divisa`, `alerta-inicio` y `monedas-tx`.
 
 ### Escenario clásico del motor (50.000 y 500)
 

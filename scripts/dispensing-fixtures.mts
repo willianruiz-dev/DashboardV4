@@ -14,10 +14,12 @@
  *   cc-centro-usd1  – el billete de USD 1 de una máquina de solo pesos no se evalúa (C8/C9)
  *   divisa          – máquina COP ⇄ USD: nada se mezcla entre monedas (C8)
  *   alerta-inicio   – la alerta del inicio declara las máquinas multimoneda en vez de sumar
+ *   monedas-tx      – el recaudo de Transacciones/Reportes se agrupa por moneda (nunca se suma)
  */
 import { summarizeMachineCurrencies } from "../src/features/dispensing-control/denomination-usage.ts";
 import { computeJamDiagnostics, type JamDiagnostics } from "../src/features/dispensing-control/dispensing-jams.ts";
 import { computeDispensingMetrics } from "../src/features/dispensing-control/dispensing-metrics.ts";
+import { summarizeTransactionsByCurrency } from "../src/features/transactions/transaction-search.ts";
 
 /* ------------------------------------------------------------------ utilidades */
 
@@ -580,6 +582,62 @@ expect("sus monedas son COP y USD", divisaCurrencies.labels.includes("COP") && d
 expect("la máquina de solo pesos no se declara multimoneda", ccCentroCurrencies.mixed === false);
 expect("el USD 1 heredado no cuenta como moneda en uso", !ccCentroCurrencies.labels.includes("USD"), ccCentroCurrencies.labels.join(", "));
 expect("sin catálogo cae a la moneda del Pay+", sinCatalogo.mixed === false && sinCatalogo.labels.includes("moneda del Pay+"), sinCatalogo.labels.join(", "));
+
+/* ------------------------------------------------------------------ 9) transacciones: recaudo por moneda */
+
+console.log("\n[monedas-tx] el recaudo del período se agrupa por moneda");
+
+const tx = (id: number, paypadId: number, state: string, income: string, returned: string, typePayment: string) => ({
+  dateCreated: "2026-09-17T15:00:00.000Z",
+  id,
+  idPayPad: paypadId,
+  incomeAmount: income,
+  realAmount: income,
+  returnAmount: returned,
+  stateTransaction: state,
+  totalAmount: income,
+  typePayment,
+});
+
+const txCurrencyMap = new Map([
+  [10, { currencyId: COP, label: "COP", mixed: false }],
+  [20, { currencyId: USD, label: "USD", mixed: false }],
+  [30, { currencyId: COP, label: "COP, USD", mixed: true }],
+]);
+const txRows = [
+  tx(1, 10, "Aprobada", "50000", "0", "Efectivo"),
+  tx(2, 10, "Aprobada", "30000", "5000", "Tarjeta"),
+  tx(3, 10, "Cancelada", "20000", "0", "Efectivo"),
+  tx(4, 20, "Aprobada", "100", "0", "Efectivo"),
+  tx(5, 20, "Aprobada", "50", "0", "Efectivo"),
+  tx(6, 30, "Aprobada", "500000", "0", "Efectivo"),
+];
+
+const buckets = summarizeTransactionsByCurrency(txRows, txCurrencyMap);
+console.log(`  grupos: ${buckets.map((bucket) => `${bucket.currencyLabel}=${bucket.approvedTotal} (${bucket.approvedCount})`).join(" · ")}`);
+expect("hay un grupo por moneda", buckets.length === 3, String(buckets.length));
+expect(
+  "COP suma sólo sus máquinas (50.000 + 30.000 − 5.000 devuelto)",
+  buckets.find((bucket) => bucket.currencyLabel === "COP")?.approvedTotal === "75000",
+  String(buckets.find((bucket) => bucket.currencyLabel === "COP")?.approvedTotal),
+);
+expect("USD suma sólo sus máquinas (150)", buckets.find((bucket) => bucket.currencyLabel === "USD")?.approvedTotal === "150");
+expect(
+  "la máquina de cambio divisa va al grupo «Varias monedas»",
+  buckets.some((bucket) => bucket.mixed && bucket.currencyLabel.includes("Varias monedas")),
+  buckets.map((bucket) => bucket.currencyLabel).join(" | "),
+);
+expect("el grupo mixto conserva sus propias monedas", buckets.find((bucket) => bucket.mixed)?.currencyLabel.includes("COP, USD") === true);
+expect(
+  "efectivo y tarjeta se separan dentro de cada moneda",
+  buckets.find((bucket) => bucket.currencyLabel === "COP")?.cashTotal === "50000" &&
+    buckets.find((bucket) => bucket.currencyLabel === "COP")?.cardTotal === "25000",
+  `efectivo=${buckets.find((bucket) => bucket.currencyLabel === "COP")?.cashTotal} tarjeta=${buckets.find((bucket) => bucket.currencyLabel === "COP")?.cardTotal}`,
+);
+expect(
+  "una sola moneda no se fragmenta",
+  summarizeTransactionsByCurrency([tx(9, 10, "Aprobada", "1000", "0", "Efectivo")], txCurrencyMap).length === 1,
+);
 
 /* ------------------------------------------------------------------ resumen */
 
