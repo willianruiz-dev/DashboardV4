@@ -22,6 +22,7 @@ const legacyPathToAppPath: Readonly<Record<string, string>> = {
   "/Admin/Users": "/dashboard/users",
   "/Reports": "/dashboard/reports",
   "/Transactions": "/dashboard/transactions",
+  "/Admin/Transactions/DispensingControl": "/dashboard/transactions/dispensing-control",
 };
 
 function createNavigationItem(route: RouteDefinition): DashboardNavigationItem | null {

@@ -80,9 +80,16 @@ export const transactionSearchFormSchema = z.object({
 });
 export type TransactionSearchFormValues = z.infer<typeof transactionSearchFormSchema>;
 
+export const transactionStateBucketSchema = z.object({
+  count: z.number().int().nonnegative(),
+  total: z.string(),
+});
+export type TransactionStateBucket = z.infer<typeof transactionStateBucketSchema>;
+
 export const transactionSummarySchema = z.object({
   approvedCount: z.number().int().nonnegative(),
   approvedTotal: moneyStringSchema,
+  byState: z.record(z.string(), transactionStateBucketSchema).default({}),
   cancelledCount: z.number().int().nonnegative(),
   cardTotal: moneyStringSchema,
   cashTotal: moneyStringSchema,

@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   Tags,
   Users,
+  Vault,
   WalletCards,
 } from "lucide-react";
 import Image from "next/image";
@@ -62,6 +63,8 @@ function NavigationIcon({ className, href }: { className?: string; href: string 
       return <Route {...iconProps} />;
     case "/dashboard/transactions":
       return <ReceiptText {...iconProps} />;
+    case "/dashboard/transactions/dispensing-control":
+      return <Vault {...iconProps} />;
     case "/dashboard/users":
       return <Users {...iconProps} />;
     default:

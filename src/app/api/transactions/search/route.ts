@@ -71,9 +71,22 @@ function createSummary(transactions: readonly DashboardTransaction[]) {
   const approvedExact = transactions.filter((transaction) => transaction.stateTransaction === "Aprobada");
   const netAmount = (transaction: DashboardTransaction) => subtractMoneyStrings(transaction.incomeAmount, transaction.returnAmount);
 
+  // Desglose por estado exacto (p. ej. "Control de dispensado" consume
+  // "Aprobada" y "Aprobada Error Devuelta") sobre el conjunto completo del período.
+  const byStateMap = new Map<string, { count: number; total: string }>();
+  for (const transaction of transactions) {
+    const state = text(transaction.stateTransaction).trim() || "Sin estado";
+    const entry = byStateMap.get(state) ?? { count: 0, total: "0" };
+    byStateMap.set(state, {
+      count: entry.count + 1,
+      total: sumMoneyStrings([entry.total, netAmount(transaction)]),
+    });
+  }
+
   return {
     approvedCount: approved.length,
     approvedTotal: sumMoneyStrings(approvedExact.map(netAmount)),
+    byState: Object.fromEntries(byStateMap),
     cancelledCount: transactions.filter((transaction) => transaction.stateTransaction === "Cancelada").length,
     cardTotal: sumMoneyStrings(approved.filter((transaction) => transaction.typePayment === "Tarjeta").map(netAmount)),
     cashTotal: sumMoneyStrings(approved.filter((transaction) => transaction.typePayment === "Efectivo").map(netAmount)),
