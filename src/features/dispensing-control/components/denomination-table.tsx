@@ -10,7 +10,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { CurrencyDenomination } from "@/features/denominations/schemas";
-import type { DispensingCurrencyTotal, DispensingDenominationRow } from "@/features/dispensing-control/dispensing-metrics";
+import type {
+  DispensingBaseSelfCheck,
+  DispensingCurrencyTotal,
+  DispensingDenominationRow,
+} from "@/features/dispensing-control/dispensing-metrics";
 import { LOW_BALANCE_TOLERANCE } from "@/features/dispensing-control/dispensing-metrics";
 import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardDateTime } from "@/lib/formatters/date";
@@ -40,6 +44,8 @@ export function LowBalanceAlert({ balance, minDpQuantity }: LowBalanceAlertProps
 interface DenominationTableProps {
   /** Fecha del arqueo base (`null` = la máquina nunca se arqueó: Inicial/Entregada no calculables). */
   baseAt?: string | null;
+  /** Validación del arqueo base contra sus propios totales (null = no comparable). */
+  baseSelfCheck?: DispensingBaseSelfCheck | null;
   denominations: readonly CurrencyDenomination[];
   /** Filas del storage que no son inventario en uso: se explican, no se ocultan. */
   excludedRows?: readonly DispensingDenominationRow[];
@@ -67,8 +73,51 @@ function rejectionDeltaText(delta: number | null): string | null {
   return `${delta > 0 ? "+" : ""}${delta} desde la base`;
 }
 
+/** La ecuación de la fila, visible: sin esto la «Entregada» es un número sin origen. */
+function deliveredEquation(row: DispensingDenominationRow): string {
+  return `${row.initialDp} + ${row.loadedSinceBase} − ${row.balance}`;
+}
+
+/**
+ * Explicación completa de la salida física: de dónde sale cada término y cómo se
+ * reparte entre clientes y el baúl de rechazo (las unidades que salieron del
+ * dispensador y quedaron en el rechazo NO llegaron al cliente).
+ */
+function deliveredExplanation(row: DispensingDenominationRow): string {
+  const base = `Salida física del baúl dispensador desde el arqueo base: ${row.initialDp} inicial + ${row.loadedSinceBase} cargues − ${row.balance} saldo = ${row.delivered ?? 0} unidad(es).`;
+  const rejectedDelta = row.rejectedDelta ?? 0;
+  if (rejectedDelta > 0) {
+    return `${base} De esas, ${rejectedDelta} unidad(es) fueron al baúl de rechazo desde la base: ≈${(row.delivered ?? 0) - rejectedDelta} llegaron a clientes.`;
+  }
+  return `${base} La «Cargada» es la suma de los cargues posteriores al arqueo base, no del período del filtro.`;
+}
+
+/** Trazabilidad de la columna «Cargada»: cargues con fecha y cantidad. */
+function loadsTraceText(row: DispensingDenominationRow): string | undefined {
+  if (row.loadsSinceBaseTrace.length === 0) {
+    return undefined;
+  }
+
+  const detail = row.loadsSinceBaseTrace
+    .map((entry) => `${entry.at ? formatDashboardDateTime(entry.at) : "sin fecha"} (${entry.quantity})`)
+    .join(" · ");
+  return `Cargues desde el arqueo base: ${detail}`;
+}
+
+function loadsTraceCaption(row: DispensingDenominationRow): string | null {
+  const { length } = row.loadsSinceBaseTrace;
+  if (length === 0) {
+    return null;
+  }
+  if (length === 1) {
+    return row.loadsSinceBaseTrace[0]?.at ? formatDashboardDateTime(row.loadsSinceBaseTrace[0].at) : null;
+  }
+  return `${length} cargues`;
+}
+
 export function DenominationTable({
   baseAt = null,
+  baseSelfCheck = null,
   denominations,
   excludedRows = [],
   hasBase = true,
@@ -91,8 +140,9 @@ export function DenominationTable({
             <p className="text-sm text-muted-foreground">
               {hasBase ? (
                 <>
-                  Inicial: arqueo base del {formatDashboardDateTime(baseAt)} · Cargada: desde el arqueo · Entregada: salida física
-                  (inicial + cargada − saldo) · Rechazo: baúl actual · Saldo: dispensador hoy.
+                  Inicial: arqueo base del {formatDashboardDateTime(baseAt)} · Cargada: cargues posteriores a ese arqueo · Entregada: salida del
+                  baúl dispensador (inicial + cargada − saldo; incluye lo que pasó al baúl de rechazo) · Rechazo: baúl actual · Saldo:
+                  dispensador hoy. El filtro de período NO mueve el cuadre físico: va siempre del arqueo base a hoy.
                 </>
               ) : (
                 <>
@@ -108,6 +158,25 @@ export function DenominationTable({
                 {totalsByCurrency
                   .map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`)
                   .join(" · ")}
+              </p>
+            ) : null}
+            {/* Validación del punto de partida: un arqueo cuyos detalles no explican sus
+                totales produce un cuadre que nunca va a cuadrar. Se declara aquí. */}
+            {hasBase && baseSelfCheck ? (
+              <p className={cn("mt-1 text-xs", baseSelfCheck.matches ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400")}>
+                {baseSelfCheck.matches ? (
+                  <>
+                    Arqueo base verificado contra sus propios totales: sus detalles suman {formatDashboardMoney(baseSelfCheck.details.dp)} en
+                    dispensadores y {formatDashboardMoney(baseSelfCheck.details.rj)} en rechazo.
+                  </>
+                ) : (
+                  <>
+                    El arqueo base no cuadra consigo mismo: sus detalles suman {formatDashboardMoney(baseSelfCheck.details.dp)} en dispensadores y{" "}
+                    {formatDashboardMoney(baseSelfCheck.details.rj)} en rechazo, pero el arqueo declara {formatDashboardMoney(baseSelfCheck.declared.dp)}{" "}
+                    en dispensadores y {formatDashboardMoney(baseSelfCheck.declared.rj)} en rechazo. Compáralo en «Cargues y arqueos»: el cuadre
+                    físico usa los detalles por denominación, así que una base inconsistente explica cualquier descuadre posterior.
+                  </>
+                )}
               </p>
             ) : null}
           </div>
@@ -190,32 +259,52 @@ export function DenominationTable({
                             ) : null}
                           </TableCell>
                           <TableCell className={cn("text-right align-top", tinted)}>
-                            <span className="font-numeric font-medium text-blue-600 dark:text-blue-400">{row.loadedSinceBase}</span>
+                            <span
+                              className="font-numeric font-medium text-blue-600 dark:text-blue-400"
+                              title={loadsTraceText(row) ?? "Sin cargues posteriores al arqueo base para esta denominación"}
+                            >
+                              {row.loadedSinceBase}
+                            </span>
+                            {loadsTraceCaption(row) ? (
+                              <span className="block text-xs text-muted-foreground">{loadsTraceCaption(row)}</span>
+                            ) : null}
                           </TableCell>
                           <TableCell className={cn("text-right align-top", tinted)}>
                             {row.delivered === null ? (
                               <span className="font-numeric text-muted-foreground" title="Sin arqueo base: la salida física no es calculable">—</span>
-                            ) : row.shortage ? (
-                              <span
-                                className="font-numeric font-semibold text-red-600 dark:text-red-400"
-                                title={`El conteo subió ${-row.delivered} unidad(es) desde la base: posible cargue sin registrar o descuadre previo.`}
-                              >
-                                {row.delivered}
-                              </span>
                             ) : (
-                              <span
-                                className="font-numeric font-medium text-emerald-600 dark:text-emerald-400"
-                                title={`${row.initialDp} inicial + ${row.loadedSinceBase} cargada − ${row.balance} saldo`}
-                              >
-                                {row.delivered}
-                              </span>
+                              <>
+                                <span
+                                  className={cn(
+                                    "font-numeric",
+                                    row.shortage ? "font-semibold text-red-600 dark:text-red-400" : "font-medium text-emerald-600 dark:text-emerald-400",
+                                  )}
+                                  title={deliveredExplanation(row)}
+                                >
+                                  {row.delivered}
+                                </span>
+                                {/* La ecuación a la vista: la Entregada no es un dato suelto, es
+                                    inicial + cargues − saldo (y el conteo subió si es negativa). */}
+                                <span className="block text-xs text-muted-foreground">{deliveredEquation(row)}</span>
+                                {row.shortage ? (
+                                  <span className="block text-xs text-red-600 dark:text-red-400">
+                                    el conteo subió: posible cargue sin registrar
+                                  </span>
+                                ) : null}
+                              </>
                             )}
                           </TableCell>
                           <TableCell className={cn("text-right align-top", tinted)}>
-                            <span className="font-numeric font-medium text-red-500 dark:text-red-400">{row.rejected}</span>
+                            <span
+                              className="font-numeric font-medium text-red-500 dark:text-red-400"
+                              title="Unidades que la máquina reporta hoy en el baúl de rechazo (no en el dispensador)."
+                            >
+                              {row.rejected}
+                            </span>
                             <span className="block text-xs text-muted-foreground">{formatDashboardMoney(row.rejectedValue)}</span>
                             {deltaText ? (
                               <span
+                                title="Entradas al baúl de rechazo desde el arqueo base: salieron del dispensador, así que están DENTRO de la columna Entregada."
                                 className={cn(
                                   "block text-xs",
                                   (row.rejectedDelta ?? 0) > 0
@@ -319,12 +408,17 @@ export function DenominationTable({
                     </div>
                     <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
                       <div><dt className="text-xs text-muted-foreground">Inicial</dt><dd className="font-numeric font-medium">{hasBase ? row.initialDp : "—"}</dd></div>
-                      <div><dt className="text-xs text-muted-foreground">Cargada</dt><dd className="font-numeric font-medium text-blue-600 dark:text-blue-400">{row.loadedSinceBase}</dd></div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Cargada</dt>
+                        <dd className="font-numeric font-medium text-blue-600 dark:text-blue-400" title={loadsTraceText(row)}>{row.loadedSinceBase}</dd>
+                        {loadsTraceCaption(row) ? <dd className="text-xs text-muted-foreground">{loadsTraceCaption(row)}</dd> : null}
+                      </div>
                       <div>
                         <dt className="text-xs text-muted-foreground">Entregada</dt>
                         <dd className={cn("font-numeric font-medium", row.delivered === null ? "text-muted-foreground" : row.shortage ? "font-semibold text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400")}>
                           {row.delivered === null ? "—" : row.delivered}
                         </dd>
+                        {row.delivered !== null ? <dd className="text-xs text-muted-foreground">{deliveredEquation(row)}</dd> : null}
                         {row.negativeReport ? <dd className="text-xs text-amber-600 dark:text-amber-400">arqueo negativo</dd> : null}
                       </div>
                       <div>

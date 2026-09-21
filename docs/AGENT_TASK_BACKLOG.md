@@ -56,7 +56,7 @@
   distintas (no comparable)» en máquinas de cambio divisa, y la alerta del inicio muestra
   «Importe en varias monedas» en lugar de un número que sumaba pesos y dólares.
 - **Suite de regresiones en el repositorio:** `npm run fixtures:dispensing`
-  (`scripts/dispensing-fixtures.mts`, tsx, sin red ni sesión) ejecuta diez escenarios con 62
+  (`scripts/dispensing-fixtures.mts`, tsx, sin red ni sesión) ejecuta once escenarios con 71
   comprobaciones y sale con código 1 si algo falla. Cubre C2–C10: tendencia que no debe alertar,
   atribución culpable/compensador, monedero «No dispensa» que sí entregaba, dos módulos
   atascados con ráfaga, diagnóstico ciego, fila heredada de USD 1, máquina de divisa, monedas
@@ -96,6 +96,16 @@
   el arqueo operativo con pista cuando el cargue queda fuera del período, y sin arqueo base la
   salida queda indeterminada en lugar de inventarse. La tabla de arqueos (Cargues y arqueos) se
   verificó correcta contra el viejo y no se tocó.
+- **La «Entregada» ahora es auditable (C10, revisión del caso Inder Uno id 70):** el operador vio
+  `Entregada 213` con `Cargada 140` y lo reportó como imposible. La aritmética era exacta (84 en el
+  arqueo base del 19-sep + 140 cargues − 11 saldo = 213; de esas, 5 al baúl de rechazo), pero el
+  panel no permitía verificarlo. Se añadió: la **ecuación visible por fila** (`84 + 140 − 11`) con
+  tooltip del reparto cliente/rechazo; **traza de cargues por denominación** (fecha y cantidad de
+  cada cargue desde la base, para saber qué compone la «Cargada» y qué quedó fuera del filtro);
+  **auto-cuadre del arqueo base** (suma de detalles por denominación vs `totalAp/totalDp/totalRj`
+  que muestra «Cargues y arqueos» — una base incoherente se declara, no se da por buena); y una
+  alerta que explica que el **cuadre físico no depende del filtro** (base → hoy) cuando el período
+  empieza después del arqueo. Regresión `arqueo-trazabilidad` (11 escenarios, 71 comprobaciones).
 
 ## Validación actual
 

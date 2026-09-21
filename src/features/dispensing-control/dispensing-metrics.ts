@@ -85,6 +85,12 @@ export interface DispensingDenominationRow {
    * período UI como referencia y la tabla lo declara.
    */
   loadedSinceBase: number;
+  /**
+   * Trazabilidad de la «Cargada»: cada cargue posterior al arqueo base que incluyó esta
+   * denominación, con su fecha y cantidad. Un mismo total puede venir de varios cargues
+   * (o de uno anterior al período filtrado): sin esto, la columna no es auditable.
+   */
+  loadsSinceBaseTrace: DispensingLoadTraceEntry[];
   /** Existencias del arqueo base (negativos legacy acotados a 0, ver `negativeReport`). */
   initialDp: number;
   initialRj: number;
@@ -106,14 +112,46 @@ export interface DispensingCurrencyTotal {
   total: string;
 }
 
+/** Un cargue que aportó unidades a la columna «Cargada (desde base)». */
+export interface DispensingLoadTraceEntry {
+  /** Fecha del cargue (ISO del API); `null` si el histórico no la trae. */
+  at: string | null;
+  quantity: number;
+}
+
+/**
+ * Cuadre interno del arqueo base: la suma valorizada de sus detalles por denominación
+ * contra los totales que el propio arqueo declara (los mismos que muestra la tabla
+ * «Cargues y arqueos»). Si no coinciden, el punto de partida del cuadre físico es
+ * sospechoso y el panel lo dice en lugar de dar por buena la salida calculada.
+ */
+export interface DispensingBaseSelfCheck {
+  /** Totales declarados por el arqueo (`totalAp/totalDp/totalRj`). */
+  declared: { ap: string; dp: string; rj: string };
+  /** Suma de los detalles del arqueo (unidades × valor de la denominación). */
+  details: { ap: string; dp: string; rj: string };
+  /** `false` = los detalles no explican los totales declarados. */
+  matches: boolean;
+}
+
 export interface DispensingMetrics {
   ap: { count: number; total: string };
   apPhysical: { at: string | null; currentTotal: string; total: string | null };
   cancelled: { count: number; total: string };
   dp: { at: string | null; outflowTotal: string | null; storageTotal: string; total: string | null };
   lastLoad: { at: string | null; elapsedMs: number | null; total: string | null };
-  /** Ventana del cuadre físico: del arqueo base hasta hoy (o del período UI si no hay base). */
-  reconciliation: { baseAt: string | null; hasBase: boolean; loadsSinceBaseCount: number; loadsSinceBaseTotal: string };
+  /**
+   * Ventana del cuadre físico: del arqueo base hasta hoy (o del período UI si no hay
+   * base). `baseSelfCheck` valida que el arqueo base cuadre consigo mismo; `null` cuando
+   * no es comparable (sin base, sin detalles, cantidades firmadas legacy o varias monedas).
+   */
+  reconciliation: {
+    baseAt: string | null;
+    baseSelfCheck: DispensingBaseSelfCheck | null;
+    hasBase: boolean;
+    loadsSinceBaseCount: number;
+    loadsSinceBaseTotal: string;
+  };
   rj: { count: number; currentTotal: string; physicalTotal: string | null; total: string };
   /** Etiquetas de las monedas que la máquina trabaja hoy (p. ej. `["COP","USD"]`). */
   currencyLabels: string[];
@@ -245,6 +283,11 @@ function detailQuantity(
   return total;
 }
 
+function traceTime(value: string | null): number {
+  const time = toMillis(value);
+  return Number.isNaN(time) ? 0 : time;
+}
+
 function tonnageDetailFor(
   tonnage: Tonnage | null,
   denominationId: number,
@@ -314,6 +357,15 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         entry.idCurrencyDenomination,
         entry.denominationValue,
       );
+      // Trazabilidad: qué cargues (con fecha) aportaron esta cifra. Ordenada por fecha
+      // para que el operador vea si alguno quedó fuera del período filtrado.
+      const loadsSinceBaseTrace = loadsSinceBase
+        .flatMap((load) =>
+          load.details
+            .filter((detail) => detailMatches(detail, entry.idCurrencyDenomination, entry.denominationValue) && toInt(detail.quantity) !== 0)
+            .map((detail) => ({ at: load.dateCreated ?? null, quantity: toInt(detail.quantity) })),
+        )
+        .sort((left, right) => traceTime(left.at) - traceTime(right.at));
 
       // Un arqueo legacy puede traer cantidades NEGATIVAS (firmadas). El inicial se
       // acota a 0 y se declara el valor reportado; la SALIDA física, en cambio, sí
@@ -392,6 +444,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         isDispensing: entry.isDispensing,
         loadedInRange,
         loadedSinceBase,
+        loadsSinceBaseTrace,
         low: entry.isDispensing && balance <= minDpQuantity + LOW_BALANCE_TOLERANCE,
         minDpQuantity,
         negativeReport,
@@ -452,6 +505,50 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
   const rejectCurrentTotal = sumDecimalStrings(inUseStorage.map((entry) => entry.rjTotal));
   const acceptorCurrentTotal = sumDecimalStrings(inUseStorage.map((entry) => entry.apTotal));
 
+  // ¿El arqueo base cuadra consigo mismo? El operador ve sus totales en «Cargues y
+  // arqueos»; si sus detalles no los explican, el punto de partida del cuadre físico no
+  // es confiable y hay que decirlo ANTES de discutir la salida. Se omite cuando no es
+  // comparable: sin detalles, con cantidades firmadas legacy (Prueba1) o con varias
+  // monedas (los totales del arqueo no se pueden sumar entre monedas).
+  const baseSelfCheck = (() => {
+    if (!hasBase || lastTonnage === null || lastTonnage.details.length === 0) {
+      return null;
+    }
+    if (lastTonnage.details.some((detail) => toInt(detail.quantityDp) < 0)) {
+      return null;
+    }
+
+    let ap = 0n;
+    let dp = 0n;
+    let rj = 0n;
+    const currencyIds = new Set<number | null>();
+    for (const detail of lastTonnage.details) {
+      if (detail.idCurrencyDenomination === null) {
+        return null;
+      }
+      currencyIds.add(currencyIndex.get(detail.idCurrencyDenomination)?.currencyId ?? null);
+      ap += unitsValueCents(detail.denominationValue, toInt(detail.quantityAp));
+      dp += unitsValueCents(detail.denominationValue, toInt(detail.quantityDp));
+      rj += unitsValueCents(detail.denominationValue, toInt(detail.quantityRj));
+    }
+    if (currencyIds.size > 1) {
+      return null;
+    }
+
+    const declaredAp = decimalToCents(lastTonnage.totalAp);
+    const declaredDp = decimalToCents(lastTonnage.totalDp);
+    const declaredRj = decimalToCents(lastTonnage.totalRj);
+    if (declaredAp === null || declaredDp === null || declaredRj === null) {
+      return null;
+    }
+
+    return {
+      declared: { ap: lastTonnage.totalAp, dp: lastTonnage.totalDp, rj: lastTonnage.totalRj },
+      details: { ap: centsToDecimal(ap), dp: centsToDecimal(dp), rj: centsToDecimal(rj) },
+      matches: declaredAp === ap && declaredDp === dp && declaredRj === rj,
+    };
+  })();
+
   return {
     ap: {
       count: byState[APPROVED_STATE]?.count ?? 0,
@@ -481,6 +578,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     },
     reconciliation: {
       baseAt: lastTonnage?.dateCreated ?? null,
+      baseSelfCheck,
       hasBase,
       loadsSinceBaseCount: loadsSinceBase.length,
       loadsSinceBaseTotal,

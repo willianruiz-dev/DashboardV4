@@ -788,6 +788,94 @@ expect("sin base la entregada es indeterminada (null)", arqueoNoBase.rows[0]?.de
 expect("sin base no hay total de salida", arqueoNoBase.dp.outflowTotal === null, String(arqueoNoBase.dp.outflowTotal));
 expect("sin base el delta de rechazo es indeterminado", arqueoNoBase.rows[0]?.rejectedDelta === null);
 
+/* ---------------------------- 11) caso del operador: 84 + 140 − 11 = 213 (Inder Uno) */
+
+console.log("\n[arqueo-trazabilidad] la «Entregada» se explica, se audita y se valida contra el arqueo");
+
+const inderBase = {
+  ...tonnage(31, "2026-09-19T17:56:44.000Z", [tonnageDetail("2000", 5, "84")]),
+  total: "168000",
+  totalAp: "0",
+  totalDp: "168000",
+  totalRj: "0",
+};
+const inderStorage = [storageRow("2000", 5, "11", { dispensingTotal: "22000", min: "5", rejected: "5", rejectedTotal: "10000" })];
+
+function inderCase(loads: ReturnType<typeof load>[], storage = inderStorage) {
+  return computeDispensingMetrics({
+    byState: {},
+    denominations: [catalogDenomination(5, COP, "2000", "Peso colombiano")],
+    lastTonnage: inderBase,
+    loads,
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-21T21:00:00.000Z"),
+    rangeFrom: new Date("2026-09-20T15:00:00.000Z"),
+    rangeTo: new Date("2026-09-21T21:00:00.000Z"),
+    storage,
+  });
+}
+
+// Dos cargues posteriores al arqueo (100 + 40) y el informe del operador («le cargaron
+// 140»): la salida debe seguir siendo exacta y la «Cargada» debe poder auditarse.
+const inder = inderCase([
+  // Cargue ANTERIOR al arqueo base: sus 60 unidades ya están dentro del snapshot de la
+  // base (84), así que no deben volver a sumarse a la «Cargada».
+  load(40, "2026-09-19T12:00:00.000Z", [loadDetail(5, "2000", "60")], "120000"),
+  load(41, "2026-09-20T15:00:00.000Z", [loadDetail(5, "2000", "100")], "200000"),
+  load(42, "2026-09-21T13:30:00.000Z", [loadDetail(5, "2000", "40")], "80000"),
+]);
+const inderRow = inder.rows[0] ?? null;
+
+console.log(`  entregada 2.000: ${String(inderRow?.delivered)} · cargada: ${String(inderRow?.loadedSinceBase)} · traza: ${inderRow?.loadsSinceBaseTrace.length ?? 0} cargues`);
+
+expect("el caso 84 + 140 − 11 sigue dando 213", inderRow?.delivered === 213 && inderRow?.initialDp === 84, `delivered=${String(inderRow?.delivered)} inicial=${String(inderRow?.initialDp)}`);
+expect("la cargada suma los dos cargues (100 + 40)", inderRow?.loadedSinceBase === 140, String(inderRow?.loadedSinceBase));
+expect(
+  "la traza dice de dónde sale la cargada, con fecha y orden",
+  (inderRow?.loadsSinceBaseTrace.length ?? 0) === 2 &&
+    inderRow?.loadsSinceBaseTrace[0]?.quantity === 100 &&
+    inderRow?.loadsSinceBaseTrace[0]?.at === "2026-09-20T15:00:00.000Z" &&
+    inderRow?.loadsSinceBaseTrace[1]?.quantity === 40,
+  JSON.stringify(inderRow?.loadsSinceBaseTrace),
+);
+expect(
+  "el arqueo base se valida contra sus propios totales (168.000 en dispensadores)",
+  inder.reconciliation.baseSelfCheck?.matches === true && inder.reconciliation.baseSelfCheck?.details.dp === "168000",
+  JSON.stringify(inder.reconciliation.baseSelfCheck),
+);
+expect(
+  "las 5 unidades del rechazo se declaran dentro de la salida (Δ +5)",
+  inderRow?.rejected === 5 && inderRow?.rejectedDelta === 5,
+  `rejected=${String(inderRow?.rejected)} delta=${String(inderRow?.rejectedDelta)}`,
+);
+expect(
+  "un cargue previo al arqueo base no vuelve a sumarse (ni entra a la traza)",
+  (inderRow?.loadsSinceBaseTrace.length ?? 0) === 2 && inder.reconciliation.loadsSinceBaseCount === 2,
+  `traza=${String(inderRow?.loadsSinceBaseTrace.length)} cargues=${String(inder.reconciliation.loadsSinceBaseCount)}`,
+);
+
+// Un arqueo que NO cuadra consigo mismo se detecta: sus detalles no explican sus totales.
+const inderIncoherentBase = inderCase([], inderStorage);
+const inderIncoherent = computeDispensingMetrics({
+  byState: {},
+  denominations: [catalogDenomination(5, COP, "2000", "Peso colombiano")],
+  lastTonnage: { ...inderBase, totalDp: "999000" },
+  loads: [],
+  machineCurrency: { id: COP, label: "COP" },
+  now: new Date("2026-09-21T21:00:00.000Z"),
+  rangeFrom: new Date("2026-09-20T15:00:00.000Z"),
+  rangeTo: new Date("2026-09-21T21:00:00.000Z"),
+  storage: inderStorage,
+});
+expect(
+  "un arqueo base incoherente se declara (no se da por bueno)",
+  inderIncoherent.reconciliation.baseSelfCheck?.matches === false &&
+    inderIncoherent.reconciliation.baseSelfCheck?.declared.dp === "999000",
+  JSON.stringify(inderIncoherent.reconciliation.baseSelfCheck),
+);
+expect("sin cargues posteriores la traza queda vacía", inderIncoherentBase.rows[0]?.loadsSinceBaseTrace.length === 0);
+expect("sin cargues la salida sigue siendo 84 − 11 = 73", inderIncoherentBase.rows[0]?.delivered === 73, String(inderIncoherentBase.rows[0]?.delivered));
+
 /* ------------------------------------------------------------------ resumen */
 
 console.log(`\n${checks - failures}/${checks} comprobaciones correctas.`);

@@ -13,6 +13,19 @@
 > DP es la salida física valorizada, y hay preset «Desde último cargue» para el arqueo
 > operativo. Sin arqueo base la salida queda indeterminada (no se inventa). D3/D5 y §5.1
 > actualizados; regresión `arqueo-cargue` en `scripts/dispensing-fixtures.mts`.
+>
+> **Auditoría de la «Entregada» (2026-09-21, caso Inder Uno id 70):** con el filtro «Desde
+> último cargue» el operador vio `Entregada 213` frente a `Cargada 140` y lo reportó como
+> imposible. La aritmética era exacta (`84` inicial en el arqueo del 19-sep `+ 140` cargues
+> `− 11` saldo `= 213`, de las cuales `5` quedaron en el baúl de rechazo), pero el panel no
+> dejaba verificarlo. Ahora: (a) **cada fila muestra su ecuación** (`84 + 140 − 11`) y su
+> tooltip explica el reparto cliente/rechazo; (b) la «Cargada» lleva **traza de cargues**
+> (fecha y cantidad de cada uno, para auditar de dónde sale y qué cargues quedaron fuera del
+> período filtrado); (c) el arqueo base se **valida contra sus propios totales** (suma de
+> detalles por denominación vs `totalAp/totalDp/totalRj`, los mismos de «Cargues y arqueos»)
+> y una base incoherente se declara en vez de darse por buena; (d) una alerta explica que el
+> **cuadre físico no depende del filtro** (va del arqueo base a hoy) cuando el período
+> empieza después del arqueo. Regresión `arqueo-trazabilidad` (71 comprobaciones).
 
 > **Extensión 2026-09-17 — detección de atascos:** el módulo incorpora el diagnóstico de
 > atascos por denominación (motor `dispensing-jams.ts`, BFF `POST /api/dispensing/jams` y
@@ -170,6 +183,12 @@ Alerta(d) = storage(M, d).isDispensing && storage(M, d).dpStored <= storage(M, d
 
 últimoCargue = max(carga.fecha) ;  transcurrido = t − últimoCargue
 preset "Desde último cargue" = período AP/RJ [últimoCargue → ahora] (arqueo operativo)
+
+trazada(d)   = [ {fecha: carga.fecha, unidades: carga.detalle.cantidad(d)} | carga.fecha > base.fecha ]
+               [auditoría de la «Cargada»: qué cargues la componen y con qué fechas]
+autoCuadre   = Σ base.details × valor  vs  base.totalAp/totalDp/totalRj     [el arqueo base debe
+               explicarse a sí mismo; si no, el panel lo declara en vez de dar la salida por buena]
+ventanaFísica = (base.fecha → hoy] SIEMPRE: el filtro de período sólo mueve AP/RJ
 ```
 
 ### 5.2 Hook central (contrato)
@@ -214,6 +233,7 @@ interface DenominationRow {
   id: number; value: string; img: string | null;
   initialDp/Rj/Ap: number;  // Inicial (arqueo base; negativos legacy → 0 + nota)
   loadedSinceBase: number;  // Cargada (desde la base; sin base: período UI)
+  loadsSinceBaseTrace: { at: string | null; quantity: number }[];  // auditoría de la Cargada
   delivered: number | null; // Entregada física (inicial + cargada − saldo; null sin base)
   rejected: number;         // Rechazo actual (rjStored) + rejectedDelta (hoy − base)
   balance: number;          // Saldo actual (dpStored)
@@ -223,6 +243,9 @@ interface DenominationRow {
   low: boolean;             // saldo <= umbral
   shortage: boolean;        // delivered < 0: el conteo subió (revisar, no es entrega)
 }
+
+// reconciliation.baseSelfCheck: detalles del arqueo base vs sus totales declarados.
+// `null` = no comparable (sin detalles, cantidades firmadas legacy o varias monedas).
 ```
 
 ### 5.3 Orquestación (grafo de datos)

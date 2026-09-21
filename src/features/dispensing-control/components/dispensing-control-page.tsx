@@ -155,6 +155,16 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
   const dpOutflowTotal = metrics?.dp.outflowTotal ?? null;
   const hasArqueoBase = metrics?.reconciliation.hasBase ?? false;
   const lastLoadElapsed = metrics?.lastLoad.elapsedMs ?? null;
+  // El cuadre físico NO depende del filtro: va del arqueo base a hoy. Cuando el período
+  // elegido empieza después del arqueo base, las columnas físicas abarcan más tiempo que
+  // AP/RJ — el caso real «Desde último cargue» posterior al arqueo, que hace ver una
+  // «Entregada» mayor que lo cargado. Se explica en vez de dejarlo a interpretación.
+  const baseAtIso = metrics?.reconciliation.baseAt ?? null;
+  const physicalFromIso = selection === null ? null : localDateTimeToApiIso(selection.range.from);
+  const physicalBaseTime = baseAtIso === null ? Number.NaN : new Date(baseAtIso).getTime();
+  const physicalFromTime = physicalFromIso === null ? Number.NaN : new Date(physicalFromIso).getTime();
+  const baseOlderThanPeriod =
+    hasArqueoBase && !Number.isNaN(physicalBaseTime) && !Number.isNaN(physicalFromTime) && physicalFromTime > physicalBaseTime;
 
   return (
     <div className="grid gap-6">
@@ -222,6 +232,17 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 </AlertDescription>
               </Alert>
             ) : null}
+            {baseOlderThanPeriod && baseAtIso && physicalFromIso ? (
+              <Alert>
+                <PackageOpen aria-hidden="true" className="size-4" />
+                <AlertTitle>El cuadre físico abarca desde el arqueo base, no desde el período ({rangeLabel})</AlertTitle>
+                <AlertDescription>
+                  Inicial, Cargada y Entregada van del arqueo base del {formatDashboardDateTime(baseAtIso)} hasta el inventario de hoy; AP y RJ
+                  cubren solo desde el {formatDashboardDateTime(physicalFromIso)}. Por eso la «Entregada» puede superar lo cargado en el período:
+                  parte de los billetes ya estaban en el dispensador cuando se hizo el arqueo. Cada columna muestra su ecuación para auditarla.
+                </AlertDescription>
+              </Alert>
+            ) : null}
             {!hasArqueoBase && metrics && !metricsQuery.isLoading ? (
               <Alert variant="warning">
                 <TriangleAlert aria-hidden="true" className="size-4" />
@@ -281,6 +302,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 (inicial/cargada/entregada/rechazo/saldo) y debajo la detección de atascos. */}
             <DenominationTable
               baseAt={metrics?.reconciliation.baseAt ?? null}
+              baseSelfCheck={metrics?.reconciliation.baseSelfCheck ?? null}
               denominations={metricsQuery.denominations}
               excludedRows={metrics?.excludedRows ?? []}
               hasBase={metrics?.reconciliation.hasBase ?? false}
