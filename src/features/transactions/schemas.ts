@@ -108,6 +108,8 @@ export const transactionSummarySchema = z.object({
    */
   byCurrency: z.array(transactionCurrencyBucketSchema).default([]),
   byState: z.record(z.string(), transactionStateBucketSchema).default({}),
+  /** Σ `returnAmount` de las transacciones aprobadas: el cambio que el sistema registró (verificación del cuadre físico). */
+  cashDispensedTotal: moneyStringSchema.default("0"),
   cancelledCount: z.number().int().nonnegative(),
   cardTotal: moneyStringSchema,
   cashTotal: moneyStringSchema,

@@ -35,6 +35,11 @@ export const LOW_BALANCE_TOLERANCE = 10;
 export interface DispensingMetricsInput {
   /** Desglose por estado exacto del período (BFF). Puede ser {} si la búsqueda aún no responde. */
   byState: Readonly<Record<string, TransactionStateBucket>>;
+  /**
+   * Σ `returnAmount` de las transacciones aprobadas del período (BFF): el cambio que el
+   * SISTEMA registró haber devuelto. Verificación independiente del cuadre físico.
+   */
+  cashDispensedTotal?: string | null;
   /** Catálogo de denominaciones: aporta la MONEDA de cada baúl (máquinas de cambio divisa). */
   denominations?: readonly CurrencyDenomination[];
   machineCurrency?: { id: number; label: string | null } | null;
@@ -80,8 +85,7 @@ export interface DispensingDenominationRow {
    * se acota: el conteo subió (cargue no registrado o descuadre).
    * @deprecated usar `deliveredFromBase` (misma cifra).
    */
-  delivered: number | null;
-  /** El conteo físico SUBIÓ desde la base (`delivered < 0`): revisar, no es una entrega. */
+  delivered: number | null;  /** El conteo físico SUBIÓ desde la base (`delivered < 0`): revisar, no es una entrega. */
   shortage: boolean;
   isDispensing: boolean;
   /** Cargues del período UI (Hoy/24h/7d/rango): referencia para AP/RJ, no entra al cuadre. */
@@ -97,8 +101,20 @@ export interface DispensingDenominationRow {
    */
   loadedSinceLastLoad: number;
   /**
-   * Salida desde el último cargue: `cargues − saldo actual` — nunca supera lo cargado.
-   * Es la cifra del operador; `null` si la máquina no tiene cargues registrados.
+   * ENTREGADO A CLIENTES, modelo A (el arqueo base como saldo de apertura):
+   * `inicial + recibido − virtual hoy − rechazo(Δ positivo)`. Es la cifra principal de la
+   * tabla. `null` sin arqueo base.
+   */
+  deliveredToClients: number | null;
+  /**
+   * ENTREGADO A CLIENTES, modelo B (baúl llenado desde vacío en el último cargue):
+   * `recibido − virtual hoy − rechazo actual`. `null` sin cargues.
+   */
+  deliveredToClientsFromLoad: number | null;
+  /** El baúl de rechazo bajó desde la base: se vació y la separación no es exacta. */
+  rejectServiced: boolean;
+  /**
+   * @deprecated usar `deliveredToClients` (modelo A) o `deliveredToClientsFromLoad` (modelo B).
    */
   deliveredFromLoad: number | null;
   /**
@@ -143,6 +159,27 @@ export interface DispensingLoadTraceEntry {
 }
 
 /**
+ * Verificación del cuadre contra lo que el SISTEMA registró: los modelos físicos posibles
+ * (el arqueo base como saldo de apertura, o el baúl llenado desde vacío) contra
+ * `Σ returnAmount` de las transacciones aprobadas (el cambio efectivamente devuelto).
+ * Es la única medición independiente del inventario que reporta la máquina.
+ */
+export interface DispensingReconciliationCheck {
+  /** Modelo que mejor explica el registro del sistema (tolerancia 1 %). */
+  best: "base" | "load" | "ninguno" | null;
+  /** Diferencia `modelo − sistema` para cada modelo (con signo; `null` si no es calculable). */
+  differences: { base: string | null; load: string | null };
+  /** Entregado a clientes desde el arqueo base (modelo A), valorizado por moneda en `dp`. */
+  fromBaseTotal: string | null;
+  /** Entregado a clientes contando sólo el último cargue (modelo B, baúl desde vacío). */
+  fromLoadTotal: string | null;
+  /** Σ `returnAmount` de las transacciones aprobadas del período. */
+  systemTotal: string | null;
+  /** Cuántas transacciones aprobadas respaldan `systemTotal`. */
+  transactionCount: number;
+}
+
+/**
  * Cuadre interno del arqueo base: la suma valorizada de sus detalles por denominación
  * contra los totales que el propio arqueo declara (los mismos que muestra la tabla
  * «Cargues y arqueos»). Si no coinciden, el punto de partida del cuadre físico es
@@ -166,14 +203,21 @@ export interface DispensingMetrics {
    * cifra operativa). `baseOutflowTotal` = salida desde el arqueo base (referencia).
    * `storageTotal` = inventario actual.
    */
+  /**
+   * Entregado a clientes. `clientsFromBaseTotal` = modelo A (arqueo base como apertura,
+   * cifra principal de la tabla); `clientsFromLoadTotal` = modelo B (baúl desde vacío en
+   * el último cargue). `storageTotal` = inventario hoy. `total` = `totalDp` del arqueo.
+   */
   dp: {
     at: string | null;
-    baseOutflowTotal: string | null;
-    outflowTotal: string | null;
+    clientsFromBaseTotal: string | null;
+    clientsFromLoadTotal: string | null;
     storageTotal: string;
     total: string | null;
   };
   lastLoad: { at: string | null; elapsedMs: number | null; total: string | null };
+  /** Verificación del cuadre físico contra `Σ returnAmount` (lo que el sistema registró). */
+  reconciliationCheck: DispensingReconciliationCheck | null;
   /**
    * Ventana del cuadre físico: del arqueo base hasta hoy (o del período UI si no hay
    * base). `baseSelfCheck` valida que el arqueo base cuadre consigo mismo; `null` cuando
@@ -441,10 +485,17 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       const initialDp = Math.max(0, rawInitialDp);
       const initialRj = Math.max(0, rawInitialRj);
       const initialAp = Math.max(0, rawInitialAp);
+      // Salieron del dispensador desde el arqueo (incluye lo que falló y cayó al rechazo).
       const deliveredFromBase = hasBase ? initialDp + loadedSinceBase - balance : null;
-      // Cuadre operativo (el del cargue): cargué N, quedan M ⇒ salieron N − M. Es
-      // imposible que supere lo cargado, que es justo lo que el operador exige.
-      const deliveredFromLoad = hasLastLoad ? loadedSinceLastLoad - balance : null;
+      // ENTREGADO AL CLIENTE (modelo A): lo que salió menos lo que quedó en el rechazo.
+      // Sólo se descuenta el CRECIMIENTO del rechazo: si el baúl se vació, ese dinero no
+      // pasó por el dispensador y no se puede sumar como entregado (se declara).
+      const rejectedDelta = hasBase ? rejectionStock - initialRj : null;
+      const rejectGrowth = rejectedDelta === null ? 0 : Math.max(0, rejectedDelta);
+      const deliveredToClients = deliveredFromBase === null ? null : deliveredFromBase - rejectGrowth;
+      // ENTREGADO AL CLIENTE (modelo B, baúl desde vacío): recibido − virtual − rechazo.
+      const deliveredToClientsFromLoad = hasLastLoad ? loadedSinceLastLoad - balance - rejectionStock : null;
+      const deliveredFromLoad = deliveredToClientsFromLoad;
       // Puente entre el cuadre del cargue y el del arqueo: lo que el baúl tenía cuando se
       // cargó (arqueo + cargues intermedios, sin poder descontar lo dispensado en medio).
       // Sólo tiene sentido si el último cargue es POSTERIOR al arqueo.
@@ -452,7 +503,6 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         hasBase && hasLastLoad && lastLoadTime > baseTime
           ? Math.max(0, initialDp + (loadedSinceBase - loadedSinceLastLoad))
           : null;
-      const rejectedDelta = hasBase ? rejectionStock - initialRj : null;
       const currency = currencyIndex.get(entry.idCurrencyDenomination);
       const foreignCurrency = machineCurrencyId !== null && currency?.currencyId != null && currency.currencyId !== machineCurrencyId;
 
@@ -502,6 +552,9 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         delivered: deliveredFromBase,
         deliveredFromBase,
         deliveredFromLoad,
+        deliveredToClients,
+        deliveredToClientsFromLoad,
+        rejectServiced: rejectedDelta !== null && rejectedDelta < 0,
         excludedReason: excludedParts.length === 0 ? null : excludedParts.join(" "),
         foreignCurrency,
         initialAp,
@@ -551,45 +604,84 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     totalsByCurrency.set(key, current);
   }
 
-  // Salida física valorizada (unidades × denominación, con signo): sin base no existe.
-  let outflowTotal: string | null = null;
-  const outflowByCurrency = new Map<string, DispensingCurrencyTotal>();
-  if (hasBase) {
-    let outflowCents = 0n;
+  /**
+   * Entregado a clientes valorizado, por modelo y moneda. Se valoriza al final
+   * (unidades × valor) y NUNCA se suman monedas distintas entre sí.
+   */
+  function valueByCurrency(pick: (row: DispensingDenominationRow) => number | null): { byCurrency: Map<string, DispensingCurrencyTotal>; total: string } {
+    const byCurrency = new Map<string, DispensingCurrencyTotal>();
     const centsByCurrency = new Map<string, { currencyId: number | null; cents: bigint; label: string | null }>();
     for (const row of rows) {
-      const cents = unitsValueCents(row.denominationValue, row.delivered ?? 0);
-      outflowCents += cents;
+      const cents = unitsValueCents(row.denominationValue, pick(row) ?? 0);
       const key = row.currencyId === null ? "none" : String(row.currencyId);
       const current = centsByCurrency.get(key) ?? { currencyId: row.currencyId, cents: 0n, label: row.currencyLabel };
       current.cents += cents;
       centsByCurrency.set(key, current);
     }
-    outflowTotal = centsToDecimal(outflowCents);
     for (const [key, entry] of centsByCurrency) {
-      outflowByCurrency.set(key, { currencyId: entry.currencyId, label: entry.label, total: centsToDecimal(entry.cents) });
+      byCurrency.set(key, { currencyId: entry.currencyId, label: entry.label, total: centsToDecimal(entry.cents) });
+    }
+    return { byCurrency, total: centsToDecimal([...centsByCurrency.values()].reduce((sum, entry) => sum + entry.cents, 0n)) };
+  }
+
+  // Modelo A (arqueo base como apertura): la cifra principal de la tabla.
+  let clientsFromBaseTotal: string | null = null;
+  const outflowByCurrency = new Map<string, DispensingCurrencyTotal>();
+  if (hasBase) {
+    const valued = valueByCurrency((row) => row.deliveredToClients);
+    clientsFromBaseTotal = valued.total;
+    for (const [key, entry] of valued.byCurrency) {
+      outflowByCurrency.set(key, entry);
     }
   }
 
-  // Salida valorizada del período del CARGUE (Σ (cargada − saldo) × valor): es la cifra
-  // operativa y por construcción nunca excede lo cargado. Se calcula por moneda por la
-  // misma razón que todo lo demás: dos monedas no se suman.
-  let loadOutflowTotal: string | null = null;
+  // Modelo B (baúl llenado desde vacío en el último cargue): candidato de verificación.
+  let clientsFromLoadTotal: string | null = null;
   const loadOutflowByCurrency = new Map<string, DispensingCurrencyTotal>();
   if (hasLastLoad) {
-    const centsByCurrency = new Map<string, { currencyId: number | null; cents: bigint; label: string | null }>();
-    for (const row of rows) {
-      const cents = unitsValueCents(row.denominationValue, row.deliveredFromLoad ?? 0);
-      const key = row.currencyId === null ? "none" : String(row.currencyId);
-      const current = centsByCurrency.get(key) ?? { currencyId: row.currencyId, cents: 0n, label: row.currencyLabel };
-      current.cents += cents;
-      centsByCurrency.set(key, current);
-    }
-    loadOutflowTotal = centsToDecimal([...centsByCurrency.values()].reduce((sum, entry) => sum + entry.cents, 0n));
-    for (const [key, entry] of centsByCurrency) {
-      loadOutflowByCurrency.set(key, { currencyId: entry.currencyId, label: entry.label, total: centsToDecimal(entry.cents) });
+    const valued = valueByCurrency((row) => row.deliveredToClientsFromLoad);
+    clientsFromLoadTotal = valued.total;
+    for (const [key, entry] of valued.byCurrency) {
+      loadOutflowByCurrency.set(key, entry);
     }
   }
+
+  // Verificación contra el sistema: `Σ returnAmount` de las transacciones aprobadas (el
+  // cambio que el sistema registró haber devuelto) contra cada modelo físico. Tolerancia
+  // 1 % (billetes sueltos, redondeos del API). Es la única medición independiente del
+  // inventario que reporta la máquina, y decide cuál apertura explica el cuadre.
+  const systemCents = input.cashDispensedTotal == null ? null : decimalToCents(input.cashDispensedTotal);
+  const reconciliationCheck: DispensingReconciliationCheck | null =
+    systemCents === null
+      ? null
+      : (() => {
+          const tolerance = (value: bigint) => {
+            const magnitude = value < 0n ? -value : value;
+            return magnitude / 100n > 1n ? magnitude / 100n : 1n;
+          };
+          const difference = (modelTotal: string | null): bigint | null => {
+            if (modelTotal === null) {
+              return null;
+            }
+            const modelCents = decimalToCents(modelTotal);
+            return modelCents === null ? null : modelCents - systemCents;
+          };
+          const baseDiff = difference(clientsFromBaseTotal);
+          const loadDiff = difference(clientsFromLoadTotal);
+          const baseMatches = baseDiff !== null && (baseDiff < 0n ? -baseDiff : baseDiff) <= tolerance(systemCents);
+          const loadMatches = loadDiff !== null && (loadDiff < 0n ? -loadDiff : loadDiff) <= tolerance(systemCents);
+          return {
+            best: baseMatches ? "base" : loadMatches ? "load" : systemCents === 0n && clientsFromBaseTotal === null && clientsFromLoadTotal === null ? null : "ninguno",
+            differences: {
+              base: baseDiff === null ? null : centsToDecimal(baseDiff),
+              load: loadDiff === null ? null : centsToDecimal(loadDiff),
+            },
+            fromBaseTotal: clientsFromBaseTotal,
+            fromLoadTotal: clientsFromLoadTotal,
+            systemTotal: centsToDecimal(systemCents),
+            transactionCount: byState[APPROVED_STATE]?.count ?? 0,
+          };
+        })();
 
   const inUseStorage = storage.filter((entry) => inUseIds.has(entry.idCurrencyDenomination));
   const rejectCurrentTotal = sumDecimalStrings(inUseStorage.map((entry) => entry.rjTotal));
@@ -655,8 +747,8 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     },
     dp: {
       at: lastTonnage?.dateCreated ?? null,
-      baseOutflowTotal: outflowTotal,
-      outflowTotal: loadOutflowTotal,
+      clientsFromBaseTotal,
+      clientsFromLoadTotal,
       storageTotal,
       total: lastTonnage?.totalDp ?? null,
     },
@@ -667,6 +759,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       // su valor; si no, la suma de cargues del rango (puede ser "0").
       total: lastLoadInRange ? (lastLoad?.totalLoaded ?? null) : rangeLoadsTotal === "0" ? null : rangeLoadsTotal,
     },
+    reconciliationCheck,
     reconciliation: {
       baseAt: lastTonnage?.dateCreated ?? null,
       baseSelfCheck,

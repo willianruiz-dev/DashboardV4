@@ -213,6 +213,7 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
 
     return computeDispensingMetrics({
       byState: searchQuery.data?.summary.byState ?? {},
+      cashDispensedTotal: searchQuery.data?.summary.cashDispensedTotal ?? null,
       denominations: denominationsQuery.data ?? [],
       lastTonnage,
       loads: loadsQuery.data ?? [],

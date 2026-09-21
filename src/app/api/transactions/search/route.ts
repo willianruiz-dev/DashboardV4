@@ -71,7 +71,6 @@ function createSummary(transactions: readonly DashboardTransaction[]) {
   const approved = transactions.filter((transaction) => text(transaction.stateTransaction).includes("Aprobada"));
   const approvedExact = transactions.filter((transaction) => transaction.stateTransaction === "Aprobada");
   const netAmount = (transaction: DashboardTransaction) => subtractMoneyStrings(transaction.incomeAmount, transaction.returnAmount);
-
   // Desglose por estado exacto (p. ej. "Control de dispensado" consume
   // "Aprobada" y "Aprobada Error Devuelta") sobre el conjunto completo del período.
   const byStateMap = new Map<string, { count: number; total: string }>();
@@ -88,6 +87,11 @@ function createSummary(transactions: readonly DashboardTransaction[]) {
     approvedCount: approved.length,
     approvedTotal: sumMoneyStrings(approvedExact.map(netAmount)),
     byState: Object.fromEntries(byStateMap),
+    // Σ `returnAmount` de las transacciones aprobadas: lo que el SISTEMA registró haber
+    // DEVUELTO al cliente (el cambio dispensado). Es la única medición independiente del
+    // inventario que reporta la máquina, y la que permite verificar el cuadre físico del
+    // control de dispensado (`returnAmount` es «dinero que sale», ver el motor de atascos).
+    cashDispensedTotal: sumMoneyStrings(approvedExact.map((transaction) => transaction.returnAmount)),
     cancelledCount: transactions.filter((transaction) => transaction.stateTransaction === "Cancelada").length,
     cardTotal: sumMoneyStrings(approved.filter((transaction) => transaction.typePayment === "Tarjeta").map(netAmount)),
     cashTotal: sumMoneyStrings(approved.filter((transaction) => transaction.typePayment === "Efectivo").map(netAmount)),

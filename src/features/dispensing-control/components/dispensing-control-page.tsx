@@ -137,27 +137,30 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
   const metrics = metricsQuery.metrics;
   const rangeLabel = selection ? dispensingPresetLabels[selection.preset] : "";
   // Máquina de cambio divisa (COP ⇄ USD): los importes de cada moneda no se suman.
+  // Inventario del dispensador por moneda (la tabla lo declara cuando hay más de una).
   const currencyTotals = metrics?.storageTotalsByCurrency ?? [];
-  const currencyBreakdown =
+  const storageByCurrencyNote =
     currencyTotals.length > 1
-      ? currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
-      : null;
-  // Salida del período del cargue: la cifra operativa (nunca supera lo cargado).
+      ? `Virtual hoy por moneda: ${currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")}`
+      : "";
+  // ENTREGADO AL CLIENTE: modelo A (arqueo base como apertura) y modelo B (baúl desde vacío).
+  const clientsFromBaseTotal = metrics?.dp.clientsFromBaseTotal ?? null;
+  const clientsFromLoadTotal = metrics?.dp.clientsFromLoadTotal ?? null;
+  const deliveredTotal = clientsFromBaseTotal ?? clientsFromLoadTotal;
   const loadOutflowTotals = metrics?.loadOutflowTotalsByCurrency ?? [];
   const loadOutflowBreakdown =
     loadOutflowTotals.length > 1
       ? loadOutflowTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
       : null;
-  const baseOutflowTotal = metrics?.dp.baseOutflowTotal ?? null;
-  // Fila con saldo mayor que lo cargado: el cargue no explica el inventario actual
-  // (cargue sin registrar). Se declara en la tarjeta, no se esconde.
-  const loadOutflowInconsistent = (metrics?.rows ?? []).some((row) => (row.deliveredFromLoad ?? 0) < 0);
+  const check = metrics?.reconciliationCheck ?? null;
+  // El cuadre sin el inventario previo del arqueo (sólo el cargue): se declara cuando existe
+  // y difiere, para que la verificación contra el sistema muestre ambos candidatos.
+  const baseVsLoadDifferent = clientsFromBaseTotal !== null && clientsFromLoadTotal !== null && clientsFromBaseTotal !== clientsFromLoadTotal;
   const multiCurrency = metrics?.multiCurrency ?? false;
   const currencyLabels = (metrics?.currencyLabels ?? []).join(", ");
   // Se declara en las tarjetas para que nadie lea un total agregado como si fuera
   // comparable: para eso está el desglose por moneda.
   const mixedCurrencyNote = multiCurrency ? " · suma monedas distintas (no comparable)" : "";
-  const dpOutflowTotal = metrics?.dp.outflowTotal ?? null;
   const hasArqueoBase = metrics?.reconciliation.hasBase ?? false;
   const lastLoadElapsed = metrics?.lastLoad.elapsedMs ?? null;
   // El cuadre físico NO depende del filtro: va del arqueo base a hoy. Cuando el período
@@ -237,6 +240,41 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 </AlertDescription>
               </Alert>
             ) : null}
+            {/* VERIFICACIÓN: lo que el sistema registró haber devuelto (Σ returnAmount) contra
+                el cuadre físico. Es la medición independiente que decide si la apertura del
+                cuadre (el arqueo) explica el inventario. */}
+            {check && check.systemTotal !== null ? (
+              <Alert variant={check.best === "ninguno" ? "warning" : "default"}>
+                <CircleCheck aria-hidden="true" className="size-4" />
+                <AlertTitle>
+                  {check.best === "base"
+                    ? "El cuadro físico cuadra con lo que el sistema registró"
+                    : check.best === "load"
+                      ? "El registro del sistema coincide con el cargue, no con el arqueo"
+                      : "El cuadre físico no coincide con lo que el sistema registró"}
+                </AlertTitle>
+                <AlertDescription>
+                  <span className="block">
+                    Sistema (Σ devuelto de {check.transactionCount} transacción(es) aprobadas): <strong>{formatDashboardMoney(check.systemTotal)}</strong>
+                    {" · "}
+                    Cuadre físico desde el arqueo: <strong>{check.fromBaseTotal === null ? "no calculable" : formatDashboardMoney(check.fromBaseTotal)}</strong>
+                    {check.differences.base === null ? "" : ` (diferencia ${formatDashboardMoney(check.differences.base)})`}
+                    {baseVsLoadDifferent && check.fromLoadTotal !== null
+                      ? ` · Cuadre contando sólo el último cargue: ${formatDashboardMoney(check.fromLoadTotal)}${
+                          check.differences.load === null ? "" : ` (diferencia ${formatDashboardMoney(check.differences.load)})`
+                        }`
+                      : ""}
+                  </span>
+                  <span className="mt-1 block">
+                    {check.best === "base"
+                      ? "El inventario del dispensador queda explicado: la apertura del arqueo es la correcta."
+                      : check.best === "load"
+                        ? "El baúl tenía inventario que el arqueo no refleja (o se arqueó en otro momento): para que el cuadre cierre hay que registrar un arqueo en el momento correcto."
+                        : "Hay dinero sin registro en una de las dos partes: revisa cargues no registrados, extracciones manuales o el estado del arqueo."}
+                  </span>
+                </AlertDescription>
+              </Alert>
+            ) : null}
             {baseOlderThanPeriod && baseAtIso && physicalFromIso ? (
               <Alert>
                 <PackageOpen aria-hidden="true" className="size-4" />
@@ -270,17 +308,27 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               />
               <MetricCard
                 icon={PackageOpen}
-                label="DP · Salida desde el último cargue"
+                label="DP · Entregado al cliente"
                 loading={metricsQuery.isLoading && metrics === null}
                 subtitle={
-                  metrics?.lastLoad.at
-                    ? `Cargada desde el ${formatDashboardDateTime(metrics.lastLoad.at)}: ${formatDashboardMoney(metrics.reconciliation.loadsSinceLastLoadTotal)} · Inventario hoy: ${formatDashboardMoney(metrics.dp.storageTotal)}${loadOutflowInconsistent ? " · hay baúles con más saldo que lo cargado (revisa cargues sin registrar)" : ""}${loadOutflowBreakdown ? ` · por moneda: ${loadOutflowBreakdown}` : ""}${mixedCurrencyNote}${baseOutflowTotal ? ` · desde arqueo (referencia): ${formatDashboardMoney(baseOutflowTotal)}` : ""}`
-                    : metrics
-                      ? `Sin cargues registrados · inventario hoy${currencyBreakdown ? " por moneda" : ""}: ${currencyBreakdown ?? formatDashboardMoney(metrics.dp.storageTotal)}`
-                      : null
+                  metrics
+                    ? [
+                        metrics.reconciliation.hasBase
+                          ? `Arqueado ${formatDashboardDateTime(metrics.reconciliation.baseAt)} + recibido ${formatDashboardMoney(metrics.reconciliation.loadsSinceBaseTotal)} − virtual hoy ${formatDashboardMoney(metrics.dp.storageTotal)} − rechazo`
+                          : `Sin arqueo base · recibido ${formatDashboardMoney(metrics.reconciliation.loadsSinceBaseTotal)} − virtual hoy ${formatDashboardMoney(metrics.dp.storageTotal)} − rechazo`,
+                        baseVsLoadDifferent && clientsFromLoadTotal !== null
+                          ? `sólo el cargue daría ${formatDashboardMoney(clientsFromLoadTotal)}`
+                          : "",
+                        loadOutflowBreakdown ? `por moneda: ${loadOutflowBreakdown}` : "",
+                        storageByCurrencyNote,
+                        mixedCurrencyNote.trim(),
+                      ]
+                        .filter((part) => part.length > 0)
+                        .join(" · ")
+                    : null
                 }
                 tone="system"
-                value={dpOutflowTotal === null ? "—" : formatDashboardMoney(dpOutflowTotal)}
+                value={deliveredTotal === null ? "—" : formatDashboardMoney(deliveredTotal)}
               />
               <MetricCard
                 icon={XCircle}

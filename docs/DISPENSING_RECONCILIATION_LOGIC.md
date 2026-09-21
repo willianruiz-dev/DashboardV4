@@ -27,37 +27,51 @@ un número llamado «virtual» en otro lugar, hay que decir dónde para mapearlo
 Para una denominación, en una ventana de tiempo:
 
 ```
-virtual_inicio + recibido  =  virtual_hoy + entregado + Δrechazo
+virtual_inicio + recibido  =  virtual_hoy + entregado_al_cliente + Δrechazo
 ```
 
 Despejando lo que se quiere medir:
 
 ```
-entregado   = virtual_inicio + recibido − virtual_hoy − Δrechazo
-virtual_hoy = virtual_inicio + recibido − entregado − Δrechazo
-Δrechazo    = virtual_inicio + recibido − virtual_hoy − entregado
+entregado_al_cliente = virtual_inicio + recibido − virtual_hoy − Δrechazo
+virtual_hoy          = virtual_inicio + recibido − entregado_al_cliente − Δrechazo
+Δrechazo             = virtual_inicio + recibido − virtual_hoy − entregado_al_cliente
 ```
 
 Todo se mide por **denominación** y se valoriza al final (`unidades × valor`); nunca se suman
-monedas distintas.
+monedas distintas. «Salieron del dispensador» = `entregado_al_cliente + Δrechazo` (incluye lo que
+falló y cayó al baúl de rechazo).
 
-### El término que causó las tres vueltas: `virtual_inicio`
+### Flujo confirmado de la máquina real (Inder Uno id 70)
 
-Es «qué había en el dispensador cuando empezó la ventana». Con el caso real (Inder Uno, 2.000):
+Del panel y del histórico: **el arqueo del 19-sep 12:56:44 es 25 segundos anterior al cargue del
+19-sep 12:57:09**. El cargue no genera arqueo (el formulario legado `PayPadLoadForm.js` sólo envía
+`POST Load`), así que **la operación arquea a propósito y luego carga**: el arqueo es la **apertura
+del cuadre** y el cargue es el **recibido**. Eso es exactamente lo que el operador describe como
+«el arqueo es la lógica desde cargue».
 
-| Escenario | virtual_inicio | Cuenta | Entregado |
-| --- | --- | --- | --- |
-| El baúl se llenó **desde vacío** en el cargue | `0` | 0 + 140 − 11 − 5 | **124** ← tu número |
-| El baúl **ya tenía** billetes al cargar (el arqueo dice 84) | `84` | 84 + 140 − 11 − 5 | **208** |
-| Sólo se cuenta lo que salió del dispensador (incluye el reject) | `84` | 84 + 140 − 11 | **213** ← lo que el panel mostró primero |
+Datos reales de esa máquina en el período (panel del 2026-09-21):
 
-Los tres son «correctos» con una base distinta. **La pregunta no es aritmética, es de negocio: ¿de
-dónde sale el saldo de apertura del dispensador?** Sólo hay dos mediciones posibles:
+| Billete | Arqueado | Recibido | Virtual hoy | Rechazo (Δ) | Entregado al cliente |
+| --- | --- | --- | --- | --- | --- |
+| COP 50.000 | 0 | 0 | 0 | 0 | 0 |
+| COP 20.000 | 0 | 0 | 0 | 0 | 0 |
+| COP 10.000 | 8 | 20 | 11 | 0 | 8 + 20 − 11 = **17** |
+| COP 5.000 | 0 | 0 | 0 | 0 | 0 |
+| COP 2.000 | 84 | 140 | 11 | 5 (+5) | 84 + 140 − 11 − 5 = **208** |
+| COP 500 | 60 | 100 | 46 | 0 | 60 + 100 − 46 = **114** |
+| **Total** | | 280.000 | 165.000 | 10.000 | **$643.000** |
 
-1. **El arqueo** (la máquina reportó 84 el 19-sep 12:56). Sólo sirve si el arqueo se hace en el
-   momento correcto (con el baúl como estaba).
-2. **El propio cargue**, cuando el baúl se llena desde vacío (llenado total). Ahí `virtual_inicio = 0`
-   y la cuenta es la tuya: **recibido − virtual − Δrechazo**.
+### Las tres cifras que se confundían
+
+| Cuenta | virtual_inicio | 2.000 | Total valorizado | Qué es |
+| --- | --- | --- | --- | --- |
+| Modelo A (arqueo) | `84` | 84 + 140 − 11 − 5 = **208** | $643.000 | Arqueado + recibido − virtual − rechazo |
+| Modelo B (sólo cargue) | `0` | 140 − 11 − 5 = **124** | $365.000 | Si el baúl se hubiera llenado desde vacío |
+| Salieron del dispensador | `84` | 84 + 140 − 11 = **213** | $653.000 | Incluye lo que fue al rechazo |
+
+No es aritmética: es **qué saldo de apertura explica el inventario**. El panel publica las tres y la
+verificación de §3 decide cuál es la correcta para esta máquina.
 
 ## 3. Cómo se verifica (evidencia dura, no interpretación)
 
@@ -78,42 +92,45 @@ entregado_físico  (identidad §2)   vs   entregado_sistema (Σ returnAmount apr
 Esta comparación es la que cierra el caso: con el período del cargue (19-sep → hoy) y `Σ returnAmount`
 de 2.000 en ese rango sabemos si lo entregado al cliente fue 124, 208 o 213 — sin discutir fórmulas.
 
-## 4. La tabla que pides (columnas separadas, nada mezclado)
+## 4. La tabla (IMPLEMENTADA: columnas separadas, nada mezclado)
 
-| Billete | **Recibido** (cargue del rango) | **Virtual** (dispensador hoy) | **Rechazo (RJ)** hoy y Δ | **Entregado** = recibido − virtual − Δreject | Entregado según el **sistema** (Σ devuelto) | **Diferencia** | **Arqueado** (último arqueo) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| COP 2.000 | 140 (19-sep 13:20) | 11 · $22.000 | 5 · $10.000 (Δ +5) | **124** | (a calcular) | (a calcular) | 84 · $168.000 (19-sep 12:56) |
+| Billete | **Arqueado** (apertura) | **Recibido** (cargues desde el arqueo) | **Virtual hoy** | **Rechazo (RJ)** hoy y Δ | **Entregado** = arqueado + recibido − virtual − rechazo |
+| --- | --- | --- | --- | --- | --- |
+| COP 2.000 | 84 · $168.000 | 140 (19-sep 12:57) | 11 · $22.000 | 5 · $10.000 (Δ +5) | **208** (`84 + 140 − 11 − 5`) |
 
-- **Total por moneda** al pie (nunca sumando monedas distintas).
-- Cada celda declara su origen y su fecha al pasar el cursor (trazabilidad que ya quedó hecha).
-- Fila de cierre: `virtual_inicio + recibido − virtual_hoy − Δrechazo − entregado = 0`.
+- Cada celda declara su origen y su fecha en el tooltip; el **Recibido** lleva la traza de cargues.
+- El **Entregado** muestra su ecuación debajo del número y, si no hay arqueo, cae al modelo B
+  declarándolo («sólo cargue: 124 (140 − 11 − 5)»).
+- El rechazo negativo (baúl vaciado) se declara: la separación cliente/rechazo deja de ser exacta.
+- La verificación de §3 va arriba, en una tarjeta propia: sistema vs modelo A vs modelo B con sus
+  diferencias.
 
-**Nombres que se eliminan para no confundir:** «Inicial (arqueo → cargue)», «Entregada (física)» y el
-subtítulo «desde arqueo» desaparecen como columnas; el arqueo queda **sólo** en su columna
-(«Arqueado») y en la fila de cierre. Un número, un nombre, una fuente.
+**Decisiones de nombre ya aplicadas:** se eliminaron «Inicial (arqueo → cargue)», «Cargada»,
+«Entregada (física)», «Saldo actual» y el subtítulo «desde arqueo». Ahora cada columna se llama
+como el concepto (§1): Arqueado, Recibido, Virtual hoy, Rechazo, Entregado.
 
 ## 5. Plan de implementación (5 pasos, cada uno verificable)
 
-| Paso | Qué | Dónde | Verificación |
+| Paso | Qué | Dónde | Estado |
 | --- | --- | --- | --- |
-| **P1** | Tabla con las columnas de §4: Recibido / Virtual / Rechazo (hoy + Δ) / Entregado / Arqueado, con la fila de cierre | `denomination-table.tsx` + `dispensing-metrics.ts` | Regresión con 140 / 11 / 5 ⇒ 124 |
-| **P2** | `Δrechazo` del rango con su origen declarado: arqueo anterior al rango (si existe) o último arqueo; si no hay ninguno, se muestra el valor de hoy y se declara que no hay Δ | `dispensing-metrics.ts` | Regresión: Δ = 5 con arqueo base; Δ desconocido sin arqueos |
-| **P3** | Publicar `Σ returnAmount` y `Σ incomeAmount` por estado en el BFF (`summary` ya se calcula server-side: sumar `returnAmount` es una línea, sin tocar .NET) y traerlo a la columna «según el sistema» + Diferencia | `api/transactions/search/route.ts` + `transactions/schemas.ts` | Regresión del resumen (devuelto ≠ neto) |
-| **P4** | Selector explícito del **saldo de apertura**: «Baúl llenado desde vacío (0)» / «Usar el arqueo del …» / «Usar el arqueo anterior al período», por máquina, con el valor aplicado a la vista | `dispensing-filters.tsx` + métricas | En Inder Uno: 124 con la 1.ª opción, 208 con la 2.ª |
-| **P5** | Documentar y fijar los números reales de Inder Uno en la regresión (140 / 11 / 5 / 84) y el caso de baúl con inventario previo | `scripts/dispensing-fixtures.mts` | `npm run check` verde |
+| **P1** | Tabla con las columnas de §4 (Arqueado / Recibido / Virtual hoy / Rechazo + Δ / Entregado) con la ecuación visible | `denomination-table.tsx` + `dispensing-metrics.ts` | **HECHO** |
+| **P2** | `Δrechazo` contra el arqueo base (Δ > 0 se resta del entregado; Δ < 0 se declara «baúl vaciado») | `dispensing-metrics.ts` | **HECHO** |
+| **P3** | `Σ returnAmount` de transacciones aprobadas en el BFF (`cashDispensedTotal`) y verificación sistema vs modelo A vs modelo B con diferencias | `api/transactions/search/route.ts` + `dispensing-control-page.tsx` | **HECHO** |
+| **P4** | Selector explícito del saldo de apertura por máquina | `dispensing-filters.tsx` | **PENDIENTE** (sólo si la verificación de P3 no basta) |
+| **P5** | Números reales de Inder Uno fijados en la regresión (84 / 140 / 11 / 5) + los tres desenlaces de la verificación | `scripts/dispensing-fixtures.mts` | **HECHO** (84/84 comprobaciones) |
 
 Nada de esto toca el backend .NET ni las tablas de arqueo (que ya se verificaron correctas contra el
 dashboard viejo).
 
-## 6. Las 3 decisiones que necesito (son las que evitan otra vuelta)
+## 6. Decisiones abiertas (ya no bloquean: el panel las resuelve con datos)
 
-- **D1 — «Virtual»:** ¿es el saldo del dispensador que reporta el sistema (`dpStored`, lo que muestra
-  Pay+ → Almacenamiento → Dispensadores) o un número distinto que ves en otra pantalla?
-- **D2 — Saldo de apertura (§2):** ¿el cargue de 140 fue un **llenado desde vacío** (el baúl quedó
-  lleno y `virtual_inicio = 0`) o el baúl **ya tenía** billetes? Si ya tenía, ¿el arqueo es la
-  referencia válida para arrancar la cuenta?
-- **D3 — Origen del rechazo:** el baúl de rechazo, ¿recibe **sólo** lo que el dispensador intentó
-  entregar y no pudo (error devuelta), o **también** billetes que un cliente metió y la máquina
-  rechazó? Si es mixto, el Δrechazo que se resta debe ser sólo la parte del dispensador (se puede
-  separar con los detalles de transacción, como ya hace el motor de atascos) — si no, restaríamos
-  dinero que nunca salió del dispensador.
+- **D1 — «Virtual»:** mapeado a `dpStored` (Pay+ → Almacenamiento → Dispensadores). No existe ningún
+  campo `virtual` en el API (`PayPadStorage` es una vista con `AP/DP/RJ_STORED`). Si aparece otro
+  número con ese nombre en otra pantalla, hay que re-mapear.
+- **D2 — Saldo de apertura:** resuelto por la verificación de §3. El panel publica el modelo del
+  arqueo (A) y el del baúl desde vacío (B) y declara cuál coincide con `Σ returnAmount`. Si no
+  coincide ninguno, hay dinero sin registro y lo dice.
+- **D3 — Origen del rechazo:** se asume que el crecimiento del baúl de rechazo viene del dispensador
+  (por eso se resta del entregado) y el caso «baúl vaciado» se declara. Si algún día se comprueba que
+  también recibe billetes rechazados de clientes, habrá que separar con los detalles de transacción
+  (el motor de atascos ya clasifica `acept`/`dispense`/`failed` por operación).
