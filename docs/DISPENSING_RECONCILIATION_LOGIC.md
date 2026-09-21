@@ -1,9 +1,16 @@
-# Lógica y plan de cuadre — Control de dispensado (Pay+ / Inder Uno)
+# Lógica del cuadre — Control de dispensado (Pay+ / Inder Uno)
 
-> **Para qué es este documento:** fijar la lógica ANTES de seguir tocando el panel. El 2026-09-21
-> dimos tres vueltas al mismo número (213 / 129 / 124) porque nunca escribimos la identidad
-> completa: cada versión usaba una «base» distinta. Aquí queda explícito qué es cada concepto, de
-> dónde sale cada número, qué NO podemos saber con los datos disponibles y qué falta decidir.
+> **Regla única (decisión del operador, 2026-09-21):**
+>
+> ```
+> CARGADO = DISPENSADO + RECHAZADO + EN DISPENSADORES
+> 140      = 124        + 5         + 11
+> ```
+>
+> El período consultado manda el «Cargado». El inventario previo de los arqueos **no** entra a esta
+> cuenta: se muestra aparte como auditoría, y el sistema (Σ devuelto de las transacciones) decide si
+> hubo algo más. Todo se mide por denominación y se valoriza al final; las monedas nunca se suman
+> entre sí.
 
 ## 1. Los conceptos, separados (nada se suma entre sí)
 
