@@ -733,9 +733,9 @@ expect(
   `rejected=${String(arqueoRow("2000")?.rejected)}`,
 );
 expect(
-  "la salida valorizada suma 625.000 (7×50.000 + 5×20.000 + 4×10.000 + 15×5.000 + 30×2.000)",
-  arqueoCase.dp.outflowTotal === "625000",
-  String(arqueoCase.dp.outflowTotal),
+  "la salida valorizada desde el arqueo suma 625.000 (7×50.000 + 5×20.000 + 4×10.000 + 15×5.000 + 30×2.000)",
+  arqueoCase.dp.baseOutflowTotal === "625000",
+  String(arqueoCase.dp.baseOutflowTotal),
 );
 expect("el baúl de rechazo actual vale 19.000", arqueoCase.rj.currentTotal === "19000", arqueoCase.rj.currentTotal);
 expect("los aceptadores de hoy valen 35.000", arqueoCase.apPhysical.currentTotal === "35000", arqueoCase.apPhysical.currentTotal);
@@ -815,27 +815,64 @@ function inderCase(loads: ReturnType<typeof load>[], storage = inderStorage) {
   });
 }
 
-// Dos cargues posteriores al arqueo (100 + 40) y el informe del operador («le cargaron
-// 140»): la salida debe seguir siendo exacta y la «Cargada» debe poder auditarse.
+// La secuencia real del operador: arqueo (19-sep 12:56) → cargue de 140 (19-sep 13:20) →
+// hoy le quedan 11 en el baúl y 5 en el rechazo. Él espera 140 − 16 = 124.
 const inder = inderCase([
-  // Cargue ANTERIOR al arqueo base: sus 60 unidades ya están dentro del snapshot de la
-  // base (84), así que no deben volver a sumarse a la «Cargada».
-  load(40, "2026-09-19T12:00:00.000Z", [loadDetail(5, "2000", "60")], "120000"),
-  load(41, "2026-09-20T15:00:00.000Z", [loadDetail(5, "2000", "100")], "200000"),
-  load(42, "2026-09-21T13:30:00.000Z", [loadDetail(5, "2000", "40")], "80000"),
+  load(42, "2026-09-19T18:20:00.000Z", [loadDetail(5, "2000", "140")], "280000"),
 ]);
 const inderRow = inder.rows[0] ?? null;
 
-console.log(`  entregada 2.000: ${String(inderRow?.delivered)} · cargada: ${String(inderRow?.loadedSinceBase)} · traza: ${inderRow?.loadsSinceBaseTrace.length ?? 0} cargues`);
+console.log(
+  `  entregada desde cargue: ${String(inderRow?.deliveredFromLoad)} (140 − 11) · desde arqueo: ${String(inderRow?.deliveredFromBase)} (84 + 140 − 11) · al cargar había: ${String(inderRow?.stockAtLastLoad)}`,
+);
 
-expect("el caso 84 + 140 − 11 sigue dando 213", inderRow?.delivered === 213 && inderRow?.initialDp === 84, `delivered=${String(inderRow?.delivered)} inicial=${String(inderRow?.initialDp)}`);
-expect("la cargada suma los dos cargues (100 + 40)", inderRow?.loadedSinceBase === 140, String(inderRow?.loadedSinceBase));
+// LA CIFRA OPERATIVA: la del cargue. Nunca puede superar lo cargado — es exactamente lo
+// que el operador exige («si cargué 140 no puedo tener 200 entregados»).
 expect(
-  "la traza dice de dónde sale la cargada, con fecha y orden",
-  (inderRow?.loadsSinceBaseTrace.length ?? 0) === 2 &&
-    inderRow?.loadsSinceBaseTrace[0]?.quantity === 100 &&
-    inderRow?.loadsSinceBaseTrace[0]?.at === "2026-09-20T15:00:00.000Z" &&
-    inderRow?.loadsSinceBaseTrace[1]?.quantity === 40,
+  "la Entregada desde el cargue es 140 − 11 = 129 (nunca supera lo cargado)",
+  inderRow?.deliveredFromLoad === 129 && inderRow?.loadedSinceLastLoad === 140,
+  `deliveredFromLoad=${String(inderRow?.deliveredFromLoad)} cargada=${String(inderRow?.loadedSinceLastLoad)}`,
+);
+expect(
+  "la Entregada desde el cargue nunca excede lo cargado (invariante)",
+  inder.rows.every((row) => row.deliveredFromLoad === null || row.deliveredFromLoad <= row.loadedSinceLastLoad),
+);
+expect(
+  "descontando las 5 del rechazo quedan 124 entregadas al cliente (el número del operador)",
+  (inderRow?.deliveredFromLoad ?? 0) - (inderRow?.rejectedDelta ?? 0) === 124,
+  String((inderRow?.deliveredFromLoad ?? 0) - (inderRow?.rejectedDelta ?? 0)),
+);
+expect(
+  "el período del cargue incluye sólo el último cargue (140)",
+  inder.reconciliation.loadsSinceLastLoadCount === 1 && inder.reconciliation.loadsSinceLastLoadTotal === "280000",
+  `cargues=${String(inder.reconciliation.loadsSinceLastLoadCount)} total=${inder.reconciliation.loadsSinceLastLoadTotal}`,
+);
+expect(
+  "el puente dice que había 84 al cargar (arqueo), y 84 + 140 − 11 = 213 cierra el cuadre del arqueo",
+  inderRow?.stockAtLastLoad === 84 && (inderRow?.stockAtLastLoad ?? 0) + (inderRow?.loadedSinceLastLoad ?? 0) - (inderRow?.balance ?? 0) === 213,
+  `alCargar=${String(inderRow?.stockAtLastLoad)}`,
+);
+expect(
+  "la salida valorizada del cargue es 129 × 2.000 = 258.000",
+  inder.dp.outflowTotal === "258000",
+  String(inder.dp.outflowTotal),
+);
+expect(
+  "la salida desde el arqueo queda como referencia (213 × 2.000 = 426.000)",
+  inder.dp.baseOutflowTotal === "426000",
+  String(inder.dp.baseOutflowTotal),
+);
+
+// El caso imposible del operador: la base (84) prueba que el baúl tenía 224 disponibles,
+// así que la salida desde el arqueo SÍ puede superar lo cargado — y el panel ahora explica
+// por qué, en vez de mostrar 213 como si fuera un movimiento del cargue.
+expect("el cuadre desde el arqueo sigue calculable y declarado", inderRow?.deliveredFromBase === 213 && inderRow?.initialDp === 84);
+expect("la cargada desde el arqueo coincide con el cargue de 140", inderRow?.loadedSinceBase === 140, String(inderRow?.loadedSinceBase));
+expect(
+  "la traza dice de dónde sale la cargada, con fecha y cantidad",
+  (inderRow?.loadsSinceBaseTrace.length ?? 0) === 1 &&
+    inderRow?.loadsSinceBaseTrace[0]?.quantity === 140 &&
+    inderRow?.loadsSinceBaseTrace[0]?.at === "2026-09-19T18:20:00.000Z",
   JSON.stringify(inderRow?.loadsSinceBaseTrace),
 );
 expect(
@@ -848,10 +885,22 @@ expect(
   inderRow?.rejected === 5 && inderRow?.rejectedDelta === 5,
   `rejected=${String(inderRow?.rejected)} delta=${String(inderRow?.rejectedDelta)}`,
 );
+
+// Un cargue ANTERIOR al arqueo, con otro posterior: la «Cargada» del cargue es sólo la
+// última ventana y el puente no aplica si el último cargue quedó antes del arqueo.
+const inderTwoLoads = inderCase([
+  load(40, "2026-09-19T12:00:00.000Z", [loadDetail(5, "2000", "60")], "120000"),
+  load(42, "2026-09-19T18:20:00.000Z", [loadDetail(5, "2000", "40")], "80000"),
+]);
 expect(
-  "un cargue previo al arqueo base no vuelve a sumarse (ni entra a la traza)",
-  (inderRow?.loadsSinceBaseTrace.length ?? 0) === 2 && inder.reconciliation.loadsSinceBaseCount === 2,
-  `traza=${String(inderRow?.loadsSinceBaseTrace.length)} cargues=${String(inder.reconciliation.loadsSinceBaseCount)}`,
+  "un cargue anterior al arqueo no vuelve a sumarse a la cargada desde la base",
+  inderTwoLoads.rows[0]?.loadedSinceBase === 40 && inderTwoLoads.rows[0]?.loadsSinceBaseTrace.length === 1,
+  `cargada=${String(inderTwoLoads.rows[0]?.loadedSinceBase)} traza=${String(inderTwoLoads.rows[0]?.loadsSinceBaseTrace.length)}`,
+);
+expect(
+  "con dos cargues el puente suma el intermedio: 84 + (40 − 40) = 84 al cargar",
+  inderTwoLoads.rows[0]?.stockAtLastLoad === 84,
+  String(inderTwoLoads.rows[0]?.stockAtLastLoad),
 );
 
 // Un arqueo que NO cuadra consigo mismo se detecta: sus detalles no explican sus totales.
@@ -874,7 +923,11 @@ expect(
   JSON.stringify(inderIncoherent.reconciliation.baseSelfCheck),
 );
 expect("sin cargues posteriores la traza queda vacía", inderIncoherentBase.rows[0]?.loadsSinceBaseTrace.length === 0);
-expect("sin cargues la salida sigue siendo 84 − 11 = 73", inderIncoherentBase.rows[0]?.delivered === 73, String(inderIncoherentBase.rows[0]?.delivered));
+expect(
+  "sin cargues registrados no hay cifra desde el cargue, pero el arqueo sigue dando 84 − 11 = 73",
+  inderIncoherentBase.rows[0]?.deliveredFromLoad === null && inderIncoherentBase.rows[0]?.deliveredFromBase === 73,
+  `desdeCargue=${String(inderIncoherentBase.rows[0]?.deliveredFromLoad)} desdeArqueo=${String(inderIncoherentBase.rows[0]?.deliveredFromBase)}`,
+);
 
 /* ------------------------------------------------------------------ resumen */
 

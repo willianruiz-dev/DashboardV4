@@ -70,9 +70,15 @@ export interface DispensingDenominationRow {
   inUseReasons: string[];
   denominationValue: string;
   /**
-   * Salida física del dispensador desde el arqueo base
-   * (`inicial + cargada − saldo`). `null` = sin arqueo base (no calculable).
-   * Un valor NEGATIVO no se acota: el conteo subió (cargue no registrado o descuadre).
+   * Salida física desde el arqueo base (`inicial + cargada − saldo`). Incluye lo que el
+   * arqueo declaraba en el baúl ANTES del cargue: se conserva como referencia/auditoría,
+   * no como la cifra operativa (ver `deliveredFromLoad`).
+   */
+  deliveredFromBase: number | null;
+  /**
+   * `deliveredFromBase` — alias histórico del cuadre desde la base. Un valor NEGATIVO no
+   * se acota: el conteo subió (cargue no registrado o descuadre).
+   * @deprecated usar `deliveredFromBase` (misma cifra).
    */
   delivered: number | null;
   /** El conteo físico SUBIÓ desde la base (`delivered < 0`): revisar, no es una entrega. */
@@ -81,10 +87,27 @@ export interface DispensingDenominationRow {
   /** Cargues del período UI (Hoy/24h/7d/rango): referencia para AP/RJ, no entra al cuadre. */
   loadedInRange: number;
   /**
-   * Cargues desde el arqueo base (los que alimentan la ecuación). Sin base, cae al
-   * período UI como referencia y la tabla lo declara.
+   * Cargues desde el arqueo base (los que alimentan el cuadre desde la base). Sin base,
+   * cae al período UI como referencia y la tabla lo declara.
    */
   loadedSinceBase: number;
+  /**
+   * Cargues desde el ÚLTIMO CARGUE (incluido él mismo): la base del cuadre que usa la
+   * operación («cargué 140, quedan 11»). No depende del arqueo.
+   */
+  loadedSinceLastLoad: number;
+  /**
+   * Salida desde el último cargue: `cargues − saldo actual` — nunca supera lo cargado.
+   * Es la cifra del operador; `null` si la máquina no tiene cargues registrados.
+   */
+  deliveredFromLoad: number | null;
+  /**
+   * Puente entre ambos cuadres: unidades que había en el baúl al momento del último
+   * cargue (según el arqueo base + los cargues intermedios). De ahí:
+   * `unidadesAlCargar + carguesDesdeElCargue − saldo = salida desde el arqueo`.
+   * `null` si el último cargue es anterior al arqueo o no hay base.
+   */
+  stockAtLastLoad: number | null;
   /**
    * Trazabilidad de la «Cargada»: cada cargue posterior al arqueo base que incluyó esta
    * denominación, con su fecha y cantidad. Un mismo total puede venir de varios cargues
@@ -138,7 +161,18 @@ export interface DispensingMetrics {
   ap: { count: number; total: string };
   apPhysical: { at: string | null; currentTotal: string; total: string | null };
   cancelled: { count: number; total: string };
-  dp: { at: string | null; outflowTotal: string | null; storageTotal: string; total: string | null };
+  /**
+   * `outflowTotal` = salida del período del cargue (`Σ (cargada − saldo) × valor`, la
+   * cifra operativa). `baseOutflowTotal` = salida desde el arqueo base (referencia).
+   * `storageTotal` = inventario actual.
+   */
+  dp: {
+    at: string | null;
+    baseOutflowTotal: string | null;
+    outflowTotal: string | null;
+    storageTotal: string;
+    total: string | null;
+  };
   lastLoad: { at: string | null; elapsedMs: number | null; total: string | null };
   /**
    * Ventana del cuadre físico: del arqueo base hasta hoy (o del período UI si no hay
@@ -151,6 +185,9 @@ export interface DispensingMetrics {
     hasBase: boolean;
     loadsSinceBaseCount: number;
     loadsSinceBaseTotal: string;
+    /** Cargues desde el último cargue (incluido él): base del cuadre operativo. */
+    loadsSinceLastLoadCount: number;
+    loadsSinceLastLoadTotal: string;
   };
   rj: { count: number; currentTotal: string; physicalTotal: string | null; total: string };
   /** Etiquetas de las monedas que la máquina trabaja hoy (p. ej. `["COP","USD"]`). */
@@ -167,7 +204,9 @@ export interface DispensingMetrics {
   excludedRows: DispensingDenominationRow[];
   /** Inventario del baúl dispensador separado por moneda (una entrada por moneda en uso). */
   storageTotalsByCurrency: DispensingCurrencyTotal[];
-  /** Salida física del dispensador desde la base, por moneda (vacío sin arqueo base). */
+  /** Salida del período del cargue por moneda (`Σ (cargada − saldo) × valor`); vacío sin cargues. */
+  loadOutflowTotalsByCurrency: DispensingCurrencyTotal[];
+  /** Salida física desde el arqueo base, por moneda (vacío sin arqueo base). */
   outflowTotalsByCurrency: DispensingCurrencyTotal[];
 }
 
@@ -337,6 +376,18 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     : loadsInRange;
   const loadsSinceBaseTotal = sumDecimalStrings(loadsSinceBase.map((load) => load.totalLoaded));
 
+  // Ventana del ÚLTIMO CARGUE (INCLUSIVO: el cargue mismo es la base). Es el cuadre que
+  // la operación usa a diario — «cargué 140 el 19 y hoy quedan 16 ⇒ entregó 124» — y no
+  // depende de ningún arqueo: por eso nunca puede dar más de lo cargado.
+  const hasLastLoad = lastLoad !== null && !Number.isNaN(lastLoadTime);
+  const loadsSinceLastLoad = hasLastLoad
+    ? loads.filter((load) => {
+        const time = toMillis(load.dateCreated);
+        return !Number.isNaN(time) && time >= lastLoadTime;
+      })
+    : [];
+  const loadsSinceLastLoadTotal = sumDecimalStrings(loadsSinceLastLoad.map((load) => load.totalLoaded));
+
   const allRows: DispensingDenominationRow[] = storage
     .map((entry) => {
       const baseDetail = tonnageDetailFor(lastTonnage, entry.idCurrencyDenomination, entry.denominationValue);
@@ -354,6 +405,11 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       );
       const loadedSinceBase = detailQuantity(
         loadsSinceBase.flatMap((load) => load.details),
+        entry.idCurrencyDenomination,
+        entry.denominationValue,
+      );
+      const loadedSinceLastLoad = detailQuantity(
+        loadsSinceLastLoad.flatMap((load) => load.details),
         entry.idCurrencyDenomination,
         entry.denominationValue,
       );
@@ -385,7 +441,17 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       const initialDp = Math.max(0, rawInitialDp);
       const initialRj = Math.max(0, rawInitialRj);
       const initialAp = Math.max(0, rawInitialAp);
-      const delivered = hasBase ? initialDp + loadedSinceBase - balance : null;
+      const deliveredFromBase = hasBase ? initialDp + loadedSinceBase - balance : null;
+      // Cuadre operativo (el del cargue): cargué N, quedan M ⇒ salieron N − M. Es
+      // imposible que supere lo cargado, que es justo lo que el operador exige.
+      const deliveredFromLoad = hasLastLoad ? loadedSinceLastLoad - balance : null;
+      // Puente entre el cuadre del cargue y el del arqueo: lo que el baúl tenía cuando se
+      // cargó (arqueo + cargues intermedios, sin poder descontar lo dispensado en medio).
+      // Sólo tiene sentido si el último cargue es POSTERIOR al arqueo.
+      const stockAtLastLoad =
+        hasBase && hasLastLoad && lastLoadTime > baseTime
+          ? Math.max(0, initialDp + (loadedSinceBase - loadedSinceLastLoad))
+          : null;
       const rejectedDelta = hasBase ? rejectionStock - initialRj : null;
       const currency = currencyIndex.get(entry.idCurrencyDenomination);
       const foreignCurrency = machineCurrencyId !== null && currency?.currencyId != null && currency.currencyId !== machineCurrencyId;
@@ -433,7 +499,9 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         currencyLabel: denominationCurrencyText(currency),
         denominationId: entry.idCurrencyDenomination,
         denominationValue: entry.denominationValue,
-        delivered,
+        delivered: deliveredFromBase,
+        deliveredFromBase,
+        deliveredFromLoad,
         excludedReason: excludedParts.length === 0 ? null : excludedParts.join(" "),
         foreignCurrency,
         initialAp,
@@ -444,6 +512,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         isDispensing: entry.isDispensing,
         loadedInRange,
         loadedSinceBase,
+        loadedSinceLastLoad,
         loadsSinceBaseTrace,
         low: entry.isDispensing && balance <= minDpQuantity + LOW_BALANCE_TOLERANCE,
         minDpQuantity,
@@ -451,7 +520,8 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         rejected: rejectionStock,
         rejectedDelta,
         rejectedValue: entry.rjTotal,
-        shortage: delivered !== null && delivered < 0,
+        shortage: deliveredFromBase !== null && deliveredFromBase < 0,
+        stockAtLastLoad,
       };
     })
     // Moneda primero (agrupada) y valor descendente dentro de ella: sin esto, un
@@ -498,6 +568,26 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     outflowTotal = centsToDecimal(outflowCents);
     for (const [key, entry] of centsByCurrency) {
       outflowByCurrency.set(key, { currencyId: entry.currencyId, label: entry.label, total: centsToDecimal(entry.cents) });
+    }
+  }
+
+  // Salida valorizada del período del CARGUE (Σ (cargada − saldo) × valor): es la cifra
+  // operativa y por construcción nunca excede lo cargado. Se calcula por moneda por la
+  // misma razón que todo lo demás: dos monedas no se suman.
+  let loadOutflowTotal: string | null = null;
+  const loadOutflowByCurrency = new Map<string, DispensingCurrencyTotal>();
+  if (hasLastLoad) {
+    const centsByCurrency = new Map<string, { currencyId: number | null; cents: bigint; label: string | null }>();
+    for (const row of rows) {
+      const cents = unitsValueCents(row.denominationValue, row.deliveredFromLoad ?? 0);
+      const key = row.currencyId === null ? "none" : String(row.currencyId);
+      const current = centsByCurrency.get(key) ?? { currencyId: row.currencyId, cents: 0n, label: row.currencyLabel };
+      current.cents += cents;
+      centsByCurrency.set(key, current);
+    }
+    loadOutflowTotal = centsToDecimal([...centsByCurrency.values()].reduce((sum, entry) => sum + entry.cents, 0n));
+    for (const [key, entry] of centsByCurrency) {
+      loadOutflowByCurrency.set(key, { currencyId: entry.currencyId, label: entry.label, total: centsToDecimal(entry.cents) });
     }
   }
 
@@ -565,7 +655,8 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     },
     dp: {
       at: lastTonnage?.dateCreated ?? null,
-      outflowTotal,
+      baseOutflowTotal: outflowTotal,
+      outflowTotal: loadOutflowTotal,
       storageTotal,
       total: lastTonnage?.totalDp ?? null,
     },
@@ -582,6 +673,8 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       hasBase,
       loadsSinceBaseCount: loadsSinceBase.length,
       loadsSinceBaseTotal,
+      loadsSinceLastLoadCount: loadsSinceLastLoad.length,
+      loadsSinceLastLoadTotal,
     },
     rj: {
       count: byState[RETURNED_ERROR_STATE]?.count ?? 0,
@@ -591,6 +684,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     },
     excludedRows,
     currencyLabels: [...new Set(rows.map((row) => row.currencyLabel ?? "moneda no declarada"))],
+    loadOutflowTotalsByCurrency: [...loadOutflowByCurrency.values()],
     multiCurrency: new Set(rows.map((row) => row.currencyId)).size > 1,
     outflowTotalsByCurrency: [...outflowByCurrency.values()],
     rows,

@@ -142,11 +142,16 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
     currencyTotals.length > 1
       ? currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
       : null;
-  const outflowTotals = metrics?.outflowTotalsByCurrency ?? [];
-  const outflowBreakdown =
-    outflowTotals.length > 1
-      ? outflowTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
+  // Salida del período del cargue: la cifra operativa (nunca supera lo cargado).
+  const loadOutflowTotals = metrics?.loadOutflowTotalsByCurrency ?? [];
+  const loadOutflowBreakdown =
+    loadOutflowTotals.length > 1
+      ? loadOutflowTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
       : null;
+  const baseOutflowTotal = metrics?.dp.baseOutflowTotal ?? null;
+  // Fila con saldo mayor que lo cargado: el cargue no explica el inventario actual
+  // (cargue sin registrar). Se declara en la tarjeta, no se esconde.
+  const loadOutflowInconsistent = (metrics?.rows ?? []).some((row) => (row.deliveredFromLoad ?? 0) < 0);
   const multiCurrency = metrics?.multiCurrency ?? false;
   const currencyLabels = (metrics?.currencyLabels ?? []).join(", ");
   // Se declara en las tarjetas para que nadie lea un total agregado como si fuera
@@ -264,13 +269,13 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               />
               <MetricCard
                 icon={PackageOpen}
-                label="DP · Salida física desde la base"
+                label="DP · Salida desde el último cargue"
                 loading={metricsQuery.isLoading && metrics === null}
                 subtitle={
-                  metrics?.reconciliation.hasBase && metrics.dp.at
-                    ? `Base: ${formatDashboardDateTime(metrics.dp.at)} · Cargado: ${formatDashboardMoney(metrics.reconciliation.loadsSinceBaseTotal)} · Inventario hoy: ${formatDashboardMoney(metrics.dp.storageTotal)}${outflowBreakdown ? ` · por moneda: ${outflowBreakdown}` : ""}${mixedCurrencyNote}`
+                  metrics?.lastLoad.at
+                    ? `Cargada desde el ${formatDashboardDateTime(metrics.lastLoad.at)}: ${formatDashboardMoney(metrics.reconciliation.loadsSinceLastLoadTotal)} · Inventario hoy: ${formatDashboardMoney(metrics.dp.storageTotal)}${loadOutflowInconsistent ? " · hay baúles con más saldo que lo cargado (revisa cargues sin registrar)" : ""}${loadOutflowBreakdown ? ` · por moneda: ${loadOutflowBreakdown}` : ""}${mixedCurrencyNote}${baseOutflowTotal ? ` · desde arqueo (referencia): ${formatDashboardMoney(baseOutflowTotal)}` : ""}`
                     : metrics
-                      ? `Sin arqueo base · inventario hoy${currencyBreakdown ? " por moneda" : ""}: ${currencyBreakdown ?? formatDashboardMoney(metrics.dp.storageTotal)}`
+                      ? `Sin cargues registrados · inventario hoy${currencyBreakdown ? " por moneda" : ""}: ${currencyBreakdown ?? formatDashboardMoney(metrics.dp.storageTotal)}`
                       : null
                 }
                 tone="system"
@@ -306,6 +311,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               denominations={metricsQuery.denominations}
               excludedRows={metrics?.excludedRows ?? []}
               hasBase={metrics?.reconciliation.hasBase ?? false}
+              lastLoadAt={metrics?.lastLoad.at ?? null}
               loading={metricsQuery.isLoading && metrics === null}
               rangeLabel={rangeLabel}
               rows={metrics?.rows ?? []}

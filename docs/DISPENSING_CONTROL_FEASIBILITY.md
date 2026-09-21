@@ -14,18 +14,20 @@
 > operativo. Sin arqueo base la salida queda indeterminada (no se inventa). D3/D5 y §5.1
 > actualizados; regresión `arqueo-cargue` en `scripts/dispensing-fixtures.mts`.
 >
-> **Auditoría de la «Entregada» (2026-09-21, caso Inder Uno id 70):** con el filtro «Desde
-> último cargue» el operador vio `Entregada 213` frente a `Cargada 140` y lo reportó como
-> imposible. La aritmética era exacta (`84` inicial en el arqueo del 19-sep `+ 140` cargues
-> `− 11` saldo `= 213`, de las cuales `5` quedaron en el baúl de rechazo), pero el panel no
-> dejaba verificarlo. Ahora: (a) **cada fila muestra su ecuación** (`84 + 140 − 11`) y su
-> tooltip explica el reparto cliente/rechazo; (b) la «Cargada» lleva **traza de cargues**
-> (fecha y cantidad de cada uno, para auditar de dónde sale y qué cargues quedaron fuera del
-> período filtrado); (c) el arqueo base se **valida contra sus propios totales** (suma de
-> detalles por denominación vs `totalAp/totalDp/totalRj`, los mismos de «Cargues y arqueos»)
-> y una base incoherente se declara en vez de darse por buena; (d) una alerta explica que el
-> **cuadre físico no depende del filtro** (va del arqueo base a hoy) cuando el período
-> empieza después del arqueo. Regresión `arqueo-trazabilidad` (71 comprobaciones).
+> **Corrección D5 — la «Entregada» es la del CARGUE (2026-09-21, caso Inder Uno id 70):** el
+> operador vio `Entregada 213` frente a `Cargada 140` y lo rechazó con razón: «si cargué 140
+> no puedo tener 213 entregados». El 213 era el cuadre **desde el arqueo base** (`84` que ya
+> había en el baúl al arquear `+ 140` cargues `− 11` saldo), una cifra legítima de inventario
+> pero **no** lo que él pide: la salida atribuible a su cargue. Ahora la columna «Entregada»
+> y la tarjeta DP usan el **período del último cargue** (`cargues − saldo`, que por
+> construcción **nunca supera lo cargado**), y el cuadre desde el arqueo queda como
+> **referencia auditada** en el subtítulo de la fila. Además: (a) cada fila muestra su
+> **ecuación** y el reparto cliente/rechazo (con tu caso: `140 − 11 = 129` salidas, `5` al
+> rechazo ⇒ `124` al cliente, el número del operador); (b) la columna «Inicial (arqueo →
+> cargue)» es el **puente**: `84` había al cargar, y `84 + 140 − 11 = 213` cierra el cuadre
+> del arqueo; (c) la «Cargada» lleva **traza de cargues** (fecha y unidades); (d) el arqueo
+> base se **valida contra sus propios totales** (`totalAp/totalDp/totalRj` de «Cargues y
+> arqueos») y una base incoherente se declara. Regresión `arqueo-trazabilidad` (79 checks).
 
 > **Extensión 2026-09-17 — detección de atascos:** el módulo incorpora el diagnóstico de
 > atascos por denominación (motor `dispensing-jams.ts`, BFF `POST /api/dispensing/jams` y
@@ -158,7 +160,7 @@ El acceso se resuelve **en el frontend por nombre de rol**, con el mismo patrón
 | **D2** | Umbral de alerta del baúl (el spec dice "20% de capacidad máxima", **que no existe como campo en la BD**) | A) `minDpQuantity` ya existente por denominación (el backend legado ya usa `dpStored <= minDpQuantity + 10` para alertar) · B) % contra capacidad: almacenar `maxDpCapacity` por denominación en `PayPadConfiguration.extraDataJson` (key/value existente, **sin migración**) · C) Nueva columna + stored procedure (los SP no están en el repo; la más pesada) | **A** como v1 (cero cambios), **B** si se exige el porcentaje literal |
 | **D3** | Semántica de la tarjeta **DP** ("valor real entregado") | A) ~~Último arqueo `totalDp`~~ (era stock, no entrega: corregido en C10) · B) Salida física desde la base (`Σ entregada × valor`) + subtítulo base/cargado/inventario · C) Transacciones exitosas del período | **B** (es lo realmente salido); sin base: «—» + inventario como referencia |
 | **D4** | Desglose por estado del período (RJ por `"Aprobada Error Devuelta"`) | A) Extensión BFF `byState` (~15 líneas, sin .NET) · B) Paginar `items` (pageSize≤100) en el cliente — inviable para períodos grandes | **A** |
-| **D5** | Columna "Cantidad Entregada" de la tabla de denominaciones | A) ~~`quantityDp` del último arqueo~~ (es inventario, no movimiento: corregido en C10) · B) Salida física `inicial (base) + cargada (desde la base) − saldo (hoy)` + rechazo actual con delta | **B**; el preset «Desde último cargue» fija el período AP/RJ del arqueo operativo |
+| **D5** | Columna "Cantidad Entregada" de la tabla de denominaciones | A) ~~`quantityDp` del último arqueo~~ (inventario, no movimiento: C10) · B) ~~`inicial (base) + cargada (desde la base) − saldo`~~ (puede superar lo cargado: rechazado por el operador) · C) **`cargada (desde el último cargue) − saldo (hoy)`** — la cifra del arqueo operativo, nunca mayor que lo cargado, con el cuadre desde el arqueo como referencia auditada y el puente «al cargar había X» | **C**; sin cargues se degrada a B y se declara |
 
 ---
 
@@ -171,13 +173,20 @@ AP   = Σ neto(t)   donde t.estado = "Aprobada"                        [transacc
 RJ   = Σ neto(t)   donde t.estado = "Aprobada Error Devuelta"         [transacciones, período]
 neto(t) = incomeAmount(t) − returnAmount(t)                           [misma fórmula del BFF]
 
-base(M) = últimoArqueo(M)               [snapshot físico; sin arqueo, DP es indeterminado]
+base(M) = últimoArqueo(M)               [snapshot físico; sin arqueo, el cuadre desde base no existe]
 InicialDP(d) = base.details(d).quantityDp      (inventario de ese día, acotado ≥ 0)
-Cargada(d)   = Σ carga.detalle.cantidad(d)  donde carga.fecha > base.fecha   [cargues]
-Saldo(d)     = storage(M, d).dpStored     (valor: storage(M, d).dpTotal)      [storage]
-Entregada(d) = InicialDP(d) + Cargada(d) − Saldo(d)     [física; negativa = conteo subió]
+Cargada(d)   = Σ carga.detalle.cantidad(d)  donde carga.fecha > base.fecha     [cargues, desde base]
+Saldo(d)     = storage(M, d).dpStored     (valor: storage(M, d).dpTotal)       [storage]
 Rechazo(d)   = storage(M, d).rjStored     (Δ = hoy − base.details(d).quantityRj)
-DP   = Σ Entregada(d) × valor(d)          [valorizada por moneda; sin base: indeterminada]
+
+CARGUE(d)    = Σ carga.detalle.cantidad(d)  donde carga.fecha >= últimoCargue.fecha  [incluye el cargue]
+Entregada(d) = CARGUE(d) − Saldo(d)            [CIFRA OPERATIVA: nunca > CARGUE(d)]
+  alCliente(d) ≈ Entregada(d) − ΔRechazo(d)    [lo que quedó en el baúl de rechazo NO llegó al cliente]
+AlCargar(d)  = InicialDP(d) + (Cargada(d) − CARGUE(d))   [puente: lo que había al cargar;
+                AlCargar + CARGUE − Saldo = InicialDP + Cargada − Saldo = cuadre del arqueo]
+DesdeBase(d) = InicialDP(d) + Cargada(d) − Saldo(d)   [REFERENCIA auditada; puede superar lo cargado]
+DP   = Σ Entregada(d) × valor(d)          [valorizada por moneda; sin cargues: indeterminada]
+DP_referencia = Σ DesdeBase(d) × valor(d) [la cifra C10 anterior, mostrada como referencia]
 AP_físico: base.totalAp → aceptadores hoy (Σ apTotal)     RJ_físico: base.totalRj → reject hoy (Σ rjTotal)
 Alerta(d) = storage(M, d).isDispensing && storage(M, d).dpStored <= storage(M, d).minDpQuantity (+10 tol. legacy)
 
@@ -233,8 +242,12 @@ interface DenominationRow {
   id: number; value: string; img: string | null;
   initialDp/Rj/Ap: number;  // Inicial (arqueo base; negativos legacy → 0 + nota)
   loadedSinceBase: number;  // Cargada (desde la base; sin base: período UI)
+  loadedSinceLastLoad: number;      // Cargada (desde el último cargue, incluido él)
   loadsSinceBaseTrace: { at: string | null; quantity: number }[];  // auditoría de la Cargada
-  delivered: number | null; // Entregada física (inicial + cargada − saldo; null sin base)
+  deliveredFromLoad: number | null; // OPERATIVA: cargada(último cargue) − saldo; nunca > cargada
+  stockAtLastLoad: number | null;   // puente: unidades en el baúl al momento del último cargue
+  deliveredFromBase: number | null; // REFERENCIA: inicial(base) + cargada(base) − saldo
+  delivered: number | null;         // alias histórico de deliveredFromBase
   rejected: number;         // Rechazo actual (rjStored) + rejectedDelta (hoy − base)
   balance: number;          // Saldo actual (dpStored)
   balanceValue: string;     // dpTotal
