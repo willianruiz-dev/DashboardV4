@@ -84,6 +84,31 @@ entregado_físico  (identidad §2)   vs   entregado_sistema (Σ returnAmount apr
 Esta comparación es la que cierra el caso: con el período del cargue (19-sep → hoy) y `Σ returnAmount`
 de 2.000 en ese rango sabemos si lo entregado al cliente fue 124, 208 o 213 — sin discutir fórmulas.
 
+### Cuándo la comparación NO aplica (el caso «Hoy» sin cargues)
+
+> Caso real reportado por el operador (Pay+ Inder 1, 2026-09-21, preset «Hoy»): arriba salía
+> «El último cargue está fuera del período (Hoy)» y abajo, en la misma tarjeta,
+> «El dispensado no coincide con lo que el sistema registró · Hay dinero sin registro…»
+> con Sistema **$0** (0 aprobadas), dispensado del período «no calculable» y, contando el
+> inventario previo del arqueo, **$653.000** de diferencia.
+
+El aviso de descuadre **no puede dispararse cuando el período elegido no tiene cargues.** Sin
+cargues no existe «cargado − en dispensadores − rechazado» que calcular (antes se restaba de cero y
+daba un negativo absurdo) y las dos cifras comparadas miden ventanas distintas: el sistema
+(Σ `returnAmount`) cubre el rango consultado, la auditoría del arqueo arranca días antes, en la
+base del arqueo. La diferencia entre ambas **no es dinero perdido, es diferencia de ventanas.**
+
+| Estado | `best` | Qué muestra la tarjeta |
+| --- | --- | --- |
+| Período con cargues y cuadra con «cargado − en dispensadores − rechazado» | `periodo` | «El dispensado coincide con lo que el sistema registró» |
+| Período con cargues y sólo cuadra contando el inventario previo del arqueo | `arqueo` | «Sólo cuadra contando el inventario previo del arqueo» |
+| Período con cargues y no cuadra con ningún modelo | `ninguno` | «El dispensado no coincide… Hay dinero sin registro» (**warning**) |
+| Período **sin cargues** (o sin ningún modelo calculable) | `null` | «Sin período comparable para verificar»: explica las dos ventanas y sugiere «Desde último cargue» |
+
+Regla implementada: `periodComparable = hasLoadInRange`; `best` sólo puede ser `"ninguno"`
+cuando el período **sí** tiene cargues. El código distingue «no se puede comparar» (neutro) de
+«no coincide» (advertencia) y nunca los mezcla.
+
 ## 4. La tabla (IMPLEMENTADA)
 
 | Billete | Cargado | Dispensado | Rechazado (RJ) | En dispensadores | Estado |
@@ -106,7 +131,7 @@ de 2.000 en ese rango sabemos si lo entregado al cliente fue 124, 208 o 213 — 
 | **P2** | Rechazado del período = baúl hoy − rechazo al inicio del período (arqueo anterior al rango) | `dispensing-metrics.ts` | **HECHO** |
 | **P3** | Verificación con `Σ returnAmount` del sistema (BFF `cashDispensedTotal`) contra el dispensado del período y contra la auditoría del arqueo | `api/transactions/search/route.ts` + `dispensing-control-page.tsx` | **HECHO** |
 | **P4** | Fila «inventario previo» cuando el baúl tiene más unidades que las cargadas en el período | `dispensing-metrics.ts` + tabla | **HECHO** |
-| **P5** | Regresión con los números reales (140 / 124 / 5 / 11 y el cierre valorizado) | `scripts/dispensing-fixtures.mts` | **HECHO** (84/84) |
+| **P5** | Regresión con los números reales (140 / 124 / 5 / 11 y el cierre valorizado) | `scripts/dispensing-fixtures.mts` | **HECHO** (99/99) |
 
 Nada de esto toca el backend .NET ni las tablas de arqueo (que ya se verificaron correctas contra el
 dashboard viejo).

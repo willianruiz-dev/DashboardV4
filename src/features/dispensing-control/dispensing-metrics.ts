@@ -170,8 +170,19 @@ export interface DispensingLoadTraceEntry {
  * Es la única medición independiente del inventario que reporta la máquina.
  */
 export interface DispensingReconciliationCheck {
-  /** Modelo que mejor explica el registro del sistema (tolerancia 1 %). */
+  /**
+   * Modelo que mejor explica el registro del sistema (tolerancia 1 %). `null` = la comparación
+   * NO aplica: o no hay ningún modelo, o el período elegido no tiene cargues y la auditoría del
+   * arqueo abarca días anteriores (dos ventanas distintas no se pueden comparar).
+   */
   best: "arqueo" | "periodo" | "ninguno" | null;
+  /**
+   * El período elegido incluye algún cargue, así que «cargado − en dispensadores − rechazado»
+   * es calculable y la comparación es entre ventanas comparables. Con `false` (máquina sin
+   * cargues en el período, caso real Pay+ Inder 1 mirando «Hoy» con el último cargue de hace
+   * días) la diferencia contra la auditoría NO es un descuadre y se declara como tal.
+   */
+  periodComparable: boolean;
   /** Diferencia `modelo − sistema` (con signo; `null` si no es calculable). */
   differences: { arqueo: string | null; periodo: string | null };
   /** DISPENSADO del período (cifra principal), valorizado. */
@@ -684,8 +695,13 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
           const loadDiff = difference(clientsFromLoadTotal);
           const baseMatches = baseDiff !== null && (baseDiff < 0n ? -baseDiff : baseDiff) <= tolerance(systemCents);
           const loadMatches = loadDiff !== null && (loadDiff < 0n ? -loadDiff : loadDiff) <= tolerance(systemCents);
+          // Sin cargues en el período no hay «dispensado del período» contra el que comparar
+          // (la auditoría del arqueo cubre desde la base, que puede ser de días antes). Solo
+          // se conserva el resultado cuando un modelo explica el registro del sistema.
+          const periodComparable = hasLoadInRange;
           return {
-            best: loadMatches ? "periodo" : baseMatches ? "arqueo" : systemCents === 0n && clientsFromBaseTotal === null && clientsFromLoadTotal === null ? null : "ninguno",
+            best: loadMatches ? "periodo" : baseMatches ? "arqueo" : periodComparable ? "ninguno" : null,
+            periodComparable,
             differences: {
               arqueo: baseDiff === null ? null : centsToDecimal(baseDiff),
               periodo: loadDiff === null ? null : centsToDecimal(loadDiff),

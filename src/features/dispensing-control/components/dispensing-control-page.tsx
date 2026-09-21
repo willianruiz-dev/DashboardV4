@@ -170,6 +170,15 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
   const physicalFromTime = physicalFromIso === null ? Number.NaN : new Date(physicalFromIso).getTime();
   const baseOlderThanPeriod =
     hasArqueoBase && !Number.isNaN(physicalBaseTime) && !Number.isNaN(physicalFromTime) && physicalFromTime > physicalBaseTime;
+  // Cuando el período elegido no tiene cargues, la verificación contra el sistema NO aplica:
+  // el registro del sistema cubre el período y la auditoría del arqueo arranca días antes.
+  // El aviso explica las dos ventanas en vez de acusar un descuadre inexistente.
+  const notComparableNote =
+    baseAtIso === null
+      ? ""
+      : metrics?.lastLoad.at
+        ? `: la auditoría del arqueo arranca el ${formatDashboardDateTime(baseAtIso)} y el último cargue fue el ${formatDashboardDateTime(metrics.lastLoad.at)}`
+        : `: la auditoría del arqueo arranca el ${formatDashboardDateTime(baseAtIso)}, antes del período`;
 
   return (
     <div className="grid gap-6">
@@ -240,6 +249,30 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
             {/* VERIFICACIÓN: lo que el sistema registró haber devuelto (Σ returnAmount) contra
                 el dispensado del período. Es la medición independiente que valida el cuadre. */}
             {check && check.systemTotal !== null ? (
+              check.best === null ? (
+                /* Sin cargues en el período la comparación NO aplica: el registro del sistema
+                   cubre el período y la auditoría del arqueo cubre desde la base (días antes).
+                   Antes se mostraba como «hay dinero sin registro», que era una falsa alarma
+                   (caso real Pay+ Inder 1 mirando «Hoy» con el último cargue de hace días). */
+                <Alert>
+                  <TimerReset aria-hidden="true" className="size-4" />
+                  <AlertTitle>Sin período comparable para verificar</AlertTitle>
+                  <AlertDescription>
+                    <span className="block">
+                      Sistema (Σ devuelto de {check.transactionCount} transacción(es) aprobadas):{" "}
+                      <strong>{formatDashboardMoney(check.systemTotal)}</strong>
+                      {check.fromArqueoTotal === null
+                        ? ""
+                        : ` · entregado desde la base del arqueo: ${formatDashboardMoney(check.fromArqueoTotal)}`}
+                    </span>
+                    <span className="mt-1 block">
+                      {rangeLabel} no tiene cargues, así que «cargado − en dispensadores − rechazado» no es calculable: no hay dispensado
+                      del período que comparar y las dos cifras de arriba miden ventanas distintas{notComparableNote}. Su diferencia
+                      {" "}no es un descuadre. Para cuadrar el tramo completo usa el preset «Desde último cargue».
+                    </span>
+                  </AlertDescription>
+                </Alert>
+              ) : (
               <Alert variant={check.best === "ninguno" ? "warning" : "default"}>
                 <CircleCheck aria-hidden="true" className="size-4" />
                 <AlertTitle>
@@ -270,6 +303,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                   </span>
                 </AlertDescription>
               </Alert>
+              )
             ) : null}
             {baseOlderThanPeriod && baseAtIso && physicalFromIso ? (
               <Alert>

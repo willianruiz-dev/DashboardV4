@@ -809,9 +809,15 @@ const inderBase = {
 };
 const inderStorage = [storageRow("2000", 5, "11", { dispensingTotal: "22000", min: "5", rejected: "5", rejectedTotal: "10000" })];
 
-function inderCase(loads: ReturnType<typeof load>[], storage = inderStorage, cashDispensedTotal: string | null = null) {
+function inderCase(
+  loads: ReturnType<typeof load>[],
+  storage = inderStorage,
+  cashDispensedTotal: string | null = null,
+  byState: Record<string, { count: number; total: string }> = { Aprobada: { count: 3, total: "6000" } },
+  rangeFrom = new Date("2026-09-19T18:20:00.000Z"),
+) {
   return computeDispensingMetrics({
-    byState: { Aprobada: { count: 3, total: "6000" } },
+    byState,
     cashDispensedTotal,
     denominations: [catalogDenomination(5, COP, "2000", "Peso colombiano")],
     tonnages: [inderBase],
@@ -820,7 +826,7 @@ function inderCase(loads: ReturnType<typeof load>[], storage = inderStorage, cas
     machineCurrency: { id: COP, label: "COP" },
     now: new Date("2026-09-21T21:00:00.000Z"),
     // Período «Desde último cargue»: el cargue mismo abre la ventana.
-    rangeFrom: new Date("2026-09-19T18:20:00.000Z"),
+    rangeFrom,
     rangeTo: new Date("2026-09-21T21:00:00.000Z"),
     storage,
   });
@@ -880,6 +886,65 @@ expect(
   "la auditoría valorizada con el inventario previo es 208 × 2.000 = 416.000",
   inder.dp.arqueoTotal === "416000",
   String(inder.dp.arqueoTotal),
+);
+
+// CASO REAL INDER 1 (reportado con captura): preset «Hoy» (21-sep) mientras el último
+// cargue fue el 19-sep a las 12:57 p.m. El período no tiene cargues, así que
+// «cargado − en dispensadores − rechazado» no es calculable y el sistema no registró
+// ninguna transacción aprobada (Σ devuelto = 0). Antes esto se pintaba como
+// «el dispensado no coincide con lo que el sistema registró · hay dinero sin registro»:
+// una acusación falsa, porque las dos cifras miden ventanas distintas.
+const inderTodayNoLoad = inderCase(
+  [load(42, "2026-09-19T18:20:00.000Z", [loadDetail(5, "2000", "140")], "280000")],
+  inderStorage,
+  "0",
+  { Aprobada: { count: 0, total: "0" } },
+  new Date("2026-09-21T05:00:00.000Z"),
+);
+const inderTodayCheck = inderTodayNoLoad.reconciliationCheck;
+console.log(
+  `  período «Hoy» sin cargues: best=${String(inderTodayCheck?.best)} comparable=${String(inderTodayCheck?.periodComparable)} · sistema=${String(inderTodayCheck?.systemTotal)} (${String(inderTodayCheck?.transactionCount)} aprobadas) · arqueo=${String(inderTodayCheck?.fromArqueoTotal)} · diferencia arqueo=${String(inderTodayCheck?.differences.arqueo)}`,
+);
+expect(
+  "sin cargues en el período no hay dispensado del período (no se resta de cero: era el −11 falso)",
+  inderTodayNoLoad.rows[0]?.dispensedInPeriod === null && inderTodayNoLoad.rows[0]?.loadedInPeriod === 0,
+  JSON.stringify({ disp: inderTodayNoLoad.rows[0]?.dispensedInPeriod, carg: inderTodayNoLoad.rows[0]?.loadedInPeriod }),
+);
+expect(
+  "sin cargues el veredicto es NULL: no hay período comparable que acusar (antes «ninguno» = dinero sin registro)",
+  inderTodayCheck?.best === null && inderTodayCheck?.periodComparable === false,
+  JSON.stringify({ best: inderTodayCheck?.best, comparable: inderTodayCheck?.periodComparable }),
+);
+expect(
+  "el aviso de descuadre NO debe dispararse: no hay dispensado del período que comparar",
+  inderTodayCheck?.fromPeriodTotal === null && inderTodayCheck?.differences.periodo === null,
+  JSON.stringify({ periodo: inderTodayCheck?.fromPeriodTotal, diff: inderTodayCheck?.differences.periodo }),
+);
+expect(
+  "pero la auditoría del arqueo sí se informa (sistema 0 contra la base), sin llamarlo descuadre",
+  inderTodayCheck?.systemTotal === "0" && inderTodayCheck?.transactionCount === 0 && inderTodayCheck?.fromArqueoTotal === "416000",
+  JSON.stringify({ sistema: inderTodayCheck?.systemTotal, tx: inderTodayCheck?.transactionCount, arqueo: inderTodayCheck?.fromArqueoTotal }),
+);
+expect(
+  "la diferencia contra el arqueo queda explícita como diferencia de ventanas, no de dinero perdido",
+  inderTodayCheck?.differences.arqueo === "416000",
+  String(inderTodayCheck?.differences.arqueo),
+);
+// Si en el MISMO período sí entra un cargue, el veredicto vuelve a aplicarse (la condición
+// no es «hoy» sino «hay cargues con los que cuadrar»).
+const inderTodayWithLoad = inderCase(
+  [load(42, "2026-09-21T15:00:00.000Z", [loadDetail(5, "2000", "140")], "280000")],
+  inderStorage,
+  "0",
+  { Aprobada: { count: 0, total: "0" } },
+  new Date("2026-09-21T05:00:00.000Z"),
+);
+expect(
+  "con un cargue en el período el veredicto vuelve (aquí «ninguno»: el sistema no registró nada)",
+  inderTodayWithLoad.reconciliationCheck?.best === "ninguno" &&
+    inderTodayWithLoad.reconciliationCheck?.periodComparable === true &&
+    inderTodayWithLoad.reconciliationCheck?.differences.periodo === "248000",
+  JSON.stringify(inderTodayWithLoad.reconciliationCheck),
 );
 
 // Caso del operador con baúl SIN inventario previo (arqueo de apertura en cero): el mismo
