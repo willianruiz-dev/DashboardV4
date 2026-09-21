@@ -140,6 +140,8 @@ base del arqueo. La diferencia entre ambas **no es dinero perdido, es diferencia
 | Período con cargues y cuadra con «cargado − en dispensadores − rechazado» | `periodo` | `null` | «El dispensado coincide con lo que el sistema registró» |
 | Período con cargues y sólo cuadra contando el inventario previo del arqueo | `arqueo` | `null` | «Sólo cuadra contando el inventario previo del arqueo» |
 | Período con cargues y no cuadra con ningún modelo | `ninguno` | `null` | «El dispensado no coincide… Hay dinero sin registro» (**warning**) |
+| Período **sin transacciones** (0 aprobadas/rechazadas/devueltas **y** ninguna salida física) | `null` | `sin-transacciones` | «Sin transacciones en el período: nada que verificar»: el cargue sigue íntegro en los baúles; no hay veredicto, **no se audita contra el arqueo** (sería `$0 contra $X`) y la tarjeta explica que las operaciones visibles están ANTES del último cargue |
+| Período **sin transacciones pero con salida física** | `ninguno` | `null` | «Hay dinero sin registro…»: con 0 transacciones `Σ returnAmount = 0` no es ambiguo, se admite como medición en cualquier moneda y se acusa (fixture `odrbQuietLeak`) |
 | Período **sin cargues** (o sin ningún modelo calculable) | `null` | `sin-cargues` | «Sin período comparable para verificar»: explica las dos ventanas y sugiere «Desde último cargue» |
 | Máquina **multimoneda** sin detalle utilizable (caso ODRB Rionegro) | `null` | `multimoneda` | «Σ devuelto no es comparable en esta máquina»: explica AP vs DP y remite al detalle por denominación |
 | Barrido de detalles **parcial** (truncado, fallido o ilegible) en máquina multimoneda | `null` | `cobertura` | «El detalle del período está incompleto: la verificación no concluye» |
@@ -147,6 +149,11 @@ base del arqueo. La diferencia entre ambas **no es dinero perdido, es diferencia
 
 Reglas implementadas: `periodComparable = hasLoadInRange`; `best` sólo puede ser `"ninguno"`
 cuando el período **sí** tiene cargues **y** existe una medición admisible (`systemSource ≠ null`).
+Precedencia de bloqueos: `sin-transacciones` (período quieto) → `sin-cargues` → `cobertura` →
+`multimoneda` → `sin-medicion`. Un período quieto **nunca** se declara incompleto ni se audita contra
+el arqueo, y con `periodTransactionCount === 0` se admite `Σ returnAmount` (= 0) incluso en
+multimoneda: cero billetes devueltos no tiene moneda y sin esa admisión una salida física sin
+transacciones caía en `cobertura` y no acusaba nada.
 El código distingue «no se puede comparar» (neutro) de «no coincide» (advertencia) y nunca los
 mezcla. `systemSource` dice qué cifra se usó (`"detalles"` o `"returnAmount"`), `currencies[]` trae
 la comparación por moneda (con lo aceptado aparte) y `note` explica la salvedad del origen.
@@ -200,6 +207,12 @@ dashboard viejo).
   paneles no se contradigan. Límite declarado: el barrido está acotado a 40 transacciones
   (`JAM_SCAN_MAX_TRANSACTIONS`); fuera de esa cobertura la verificación se declara parcial.
 - **D3 — Origen del rechazo:** se asume que el crecimiento del baúl de rechazo viene del dispensador y
-  por eso se resta del dispensado («salió del dispensador pero no llegó al cliente»). Pendiente
+  por eso se resta del dispensado («salió del dispensador pero no llegó al cliente»). El Δ se sujeta a
+  `rejectedInPeriod = max(0, stock − stockBase)`: si el baúl **baja** respecto del arqueo (caso real
+  `−9 desde la base`), esas unidades salieron por mantenimiento o extracción, no por el dispensador, y
+  no pueden sumar al dispensado del período; sin ese piso un Δ −9 inventaba «+9 unidades dispensadas»,
+  rompía la identidad y convertía un período quieto en «dinero sin registro». `rejectionDelta` sigue
+  publicado **con signo** y la tabla lo explica: `−9 desde la base (baúl vaciado: no cuenta como
+  dispensado)`. Pendiente
   menor: si algún día se comprueba que también recibe billetes rechazados de clientes, separar con los
   detalles de transacción (el motor de atascos ya clasifica `acept`/`dispense`/`failed`).

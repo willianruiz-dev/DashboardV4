@@ -32,6 +32,7 @@ const blockerTitles: Record<DispensingReconciliationBlockerCode, string> = {
   multimoneda: "«Σ devuelto» no es comparable en esta máquina (trabaja varias monedas)",
   "sin-cargues": "Sin período comparable para verificar",
   "sin-medicion": "Sin medición del sistema para verificar",
+  "sin-transacciones": "Sin transacciones en el período: nada que verificar",
 };
 
 const blockerIcons: Record<DispensingReconciliationBlockerCode, typeof TimerReset> = {
@@ -39,6 +40,7 @@ const blockerIcons: Record<DispensingReconciliationBlockerCode, typeof TimerRese
   multimoneda: Scale,
   "sin-cargues": TimerReset,
   "sin-medicion": TimerReset,
+  "sin-transacciones": CircleCheck,
 };
 
 function money(value: string | null, fallback = "sin dato"): string {
@@ -74,9 +76,17 @@ function isAcceptOnlyRow(row: DispensingReconciliationCurrencyRow): boolean {
 }
 
 /** Texto de una moneda: físico contra sistema, con la auditoría del arqueo y el lado AP aparte. */
-function describeRow(row: DispensingReconciliationCurrencyRow, fromDetails: boolean): string {
+function describeRow(row: DispensingReconciliationCurrencyRow, fromDetails: boolean, quiet: boolean): string {
   if (isAcceptOnlyRow(row)) {
     return `no se dispensa en el período: entra al aceptador (AP) ${formatDashboardMoney(row.acceptedTotal ?? "0")} · nada que verificar`;
+  }
+
+  // Período sin transacciones y sin salida física: se dice qué pasó con el cargue en vez de
+  // poner «sistema: sin medición» al lado de un $0 (eso era el ruido que confundía).
+  if (quiet && row.systemTotal === null && isZero(row.periodTotal)) {
+    return row.loadedTotal === null
+      ? "sin cargue de esta moneda en el período: nada que despejar"
+      : `sin movimiento: cargado ${formatDashboardMoney(row.loadedTotal)}, sigue íntegro en los dispensadores (dispensado $0)`;
   }
 
   const parts: string[] = [
@@ -87,7 +97,15 @@ function describeRow(row: DispensingReconciliationCurrencyRow, fromDetails: bool
           row.differencePeriodo === null || row.periodTotal === null ? "" : ` · diferencia ${formatDashboardMoney(row.differencePeriodo)}`
         }`,
   ];
-  if (row.arqueoTotal !== null && row.arqueoTotal !== row.periodTotal && !(isZero(row.arqueoTotal) && isZero(row.systemTotal))) {
+  // La auditoría del arqueo sólo se muestra cuando hay algo contra qué compararla: con el
+  // período quieto y sin cifra del sistema, «$0 contra $8.013.400» parece un faltante y no lo es.
+  const comparable = row.systemTotal !== null || !isZero(row.periodTotal);
+  if (
+    comparable &&
+    row.arqueoTotal !== null &&
+    row.arqueoTotal !== row.periodTotal &&
+    !(isZero(row.arqueoTotal) && isZero(row.systemTotal))
+  ) {
     parts.push(
       `contando el inventario previo del arqueo: ${formatDashboardMoney(row.arqueoTotal)}${
         row.differenceArqueo === null ? "" : ` (diferencia ${formatDashboardMoney(row.differenceArqueo)})`
@@ -140,17 +158,20 @@ export function ReconciliationCheckAlert({ baseAtIso, check, lastLoadAt, rangeLa
         ? ` La auditoría del arqueo arranca el ${formatDashboardDateTime(baseAtIso)} y el último cargue fue el ${formatDashboardDateTime(lastLoadAt)}.`
         : ` La auditoría del arqueo arranca el ${formatDashboardDateTime(baseAtIso)}, antes del período.`;
 
-  const systemLine = fromDetails
-    ? `Sistema por moneda, lado DP (detalle de ${check.coverage?.analyzed ?? 0} transacción(es) del período): ${
+  const quiet = blocker?.code === "sin-transacciones";
+  const systemLine = quiet
+    ? "Sin transacciones aprobadas ni con error en el período: el sistema no registró entradas ni salidas que comparar."
+    : fromDetails
+      ? `Sistema por moneda, lado DP (detalle de ${check.coverage?.analyzed ?? 0} transacción(es) del período): ${
         rows
           .filter((row) => row.systemTotal !== null)
           .map((row) => `${currencyName(row)} ${money(row.systemTotal)}`)
           .join(" · ") || "sin salidas registradas"
       }`
-    : check.systemSource === "returnAmount"
-      ? `Sistema (Σ devuelto de ${check.transactionCount} transacción(es) aprobadas): ${money(check.systemTotal)}`
-      : // Sin medición admisible: el número se muestra como referencia, rotulado como tal.
-        `Σ devuelto de ${check.transactionCount} transacción(es) aprobadas (referencia, no comparable): ${money(check.returnAmountTotal)}`;
+      : check.systemSource === "returnAmount"
+        ? `Sistema (Σ devuelto de ${check.transactionCount} transacción(es) aprobadas): ${money(check.systemTotal)}`
+        : // Sin medición admisible: el número se muestra como referencia, rotulado como tal.
+          `Σ devuelto de ${check.transactionCount} transacción(es) aprobadas (referencia, no comparable): ${money(check.returnAmountTotal)}`;
 
   return (
     <Alert variant={variant}>
@@ -165,7 +186,7 @@ export function ReconciliationCheckAlert({ baseAtIso, check, lastLoadAt, rangeLa
           <span className="mt-1 block">
             {rows.map((row) => (
               <span className="block" key={row.currencyId === null ? "none" : String(row.currencyId)}>
-                <strong>{currencyName(row)}</strong> · {describeRow(row, fromDetails)}
+                <strong>{currencyName(row)}</strong> · {describeRow(row, fromDetails, quiet)}
               </span>
             ))}
           </span>
@@ -187,7 +208,11 @@ export function ReconciliationCheckAlert({ baseAtIso, check, lastLoadAt, rangeLa
               : blocker.code === "multimoneda"
                 ? "La comparación válida es por moneda y con el detalle por denominación (sección «Detección de atascos»): ahí cada billete tiene moneda y dirección (AP entra, DP sale). Sin ese detalle el panel no concluye descuadre."
                 : blocker.code === "cobertura"
-                  ? "Re-analiza el período (o acótalo) para completar el detalle: mientras la cobertura sea parcial no se declara descuadre."
+                ? "Re-analiza el período (o acótalo) para completar el detalle: mientras la cobertura sea parcial no se declara descuadre."
+                : blocker.code === "sin-transacciones"
+                  ? rows.some((row) => row.loadedTotal !== null)
+                    ? "El cuadre físico confirma que no salió nada: lo cargado sigue íntegro en los dispensadores. Las operaciones que buscas ocurrieron ANTES del último cargue (quedaron fuera de esta ventana): amplía el período («Últimos 7 días» o un rango personalizado desde el cargue anterior) para incluirlas en el cuadre."
+                    : "El período no tiene cargues ni transacciones: no hay cuadre que calcular. Elige una ventana con actividad (p. ej. «Desde último cargue» o «Últimos 7 días»)."
                   : "Selecciona un período con cargues y transacciones para poder verificar el cuadre."
             : check.best === "periodo"
               ? "El cuadre cierra por moneda: cargado − en dispensadores − rechazado explica lo entregado a clientes."
@@ -213,7 +238,7 @@ export function ReconciliationCheckAlert({ baseAtIso, check, lastLoadAt, rangeLa
         ) : null}
 
         {check.note ? <span className="mt-1 block text-muted-foreground">{check.note}</span> : null}
-        {blocker !== null && blocker.code !== "sin-cargues" ? (
+        {blocker !== null && blocker.code !== "sin-cargues" && blocker.code !== "sin-transacciones" ? (
           <span className="mt-1 block text-muted-foreground">{blocker.detail}</span>
         ) : null}
       </AlertDescription>

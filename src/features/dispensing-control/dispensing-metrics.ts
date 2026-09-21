@@ -219,7 +219,8 @@ export type DispensingReconciliationBlockerCode =
   | "cobertura"
   | "multimoneda"
   | "sin-cargues"
-  | "sin-medicion";
+  | "sin-medicion"
+  | "sin-transacciones";
 
 /** Comparación por moneda: el registro del sistema contra cada modelo físico. */
 export interface DispensingReconciliationCurrencyRow {
@@ -233,6 +234,8 @@ export interface DispensingReconciliationCurrencyRow {
   differenceArqueo: string | null;
   differencePeriodo: string | null;
   label: string | null;
+  /** Cargado del período en esta moneda (`null` si no tuvo cargues). */
+  loadedTotal: string | null;
   /** Dispensado del período (cifra principal del cuadre físico). */
   periodTotal: string | null;
   /** Lo que el sistema registró como DISPENSADO (DP) en esta moneda. */
@@ -631,7 +634,10 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       const startDetail = tonnageDetailFor(periodStartTonnage, entry.idCurrencyDenomination, entry.denominationValue);
       const rejectedAtPeriodStart = startDetail ? Math.max(0, toInt(startDetail.quantityRj)) : null;
       const stockAtPeriodStart = startDetail ? Math.max(0, toInt(startDetail.quantityDp)) : null;
-      const rejectedInPeriod = rejectionStock - (rejectedAtPeriodStart ?? 0);
+      // El baúl de rechazo que CRECE viene del dispensador (salió y no llegó al cliente); el que
+      // BAJA se vació en mantenimiento o extracción: no es entrega a clientes y no puede sumar al
+      // dispensado (antes un Δ −9 producía «dispensado +9» y rompía el cuadre y el estado quieto).
+      const rejectedInPeriod = Math.max(0, rejectionStock - (rejectedAtPeriodStart ?? 0));
       const dispensedInPeriod = hasLoadInRange ? loadedInPeriod - balance - rejectedInPeriod : null;
       const deliveredFromLoad = dispensedInPeriod;
       const currency = currencyIndex.get(entry.idCurrencyDenomination);
@@ -885,11 +891,27 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     /** Tolerancia 1 % (billetes sueltos, redondeos del API), mínimo un centavo. */
     const tolerance = (value: bigint): bigint => (abs(value) / 100n > 1n ? abs(value) / 100n : 1n);
 
+    // Período SIN transacciones y sin salida física (máquina recién cargada, cargue íntegro en
+    // los baúles): no hay dos cifras que comparar. Antes caía en «cobertura»/«multimoneda» y
+    // pintaba «$0 contra $8.013.400 del arqueo»: ruido que parece faltante y no lo es. OJO: con
+    // salida física y cero transacciones SÍ es descuadre (salió dinero sin registro) y se acusa.
+    const periodTransactionCount = Object.values(byState).reduce((sum, bucket) => sum + bucket.count, 0);
+    const physicallyQuiet =
+      identityByCurrency.length > 0 &&
+      identityByCurrency.every((entry) => !entry.hasLoad || (decimalToCents(entry.dispensed) ?? 1n) === 0n);
+    const quietPeriod = periodTransactionCount === 0 && physicallyQuiet && identityByCurrency.some((entry) => entry.hasLoad);
+
     const systemSource: DispensingReconciliationCheck["systemSource"] = evidenceUsable
       ? "detalles"
-      : !machineMultiCurrency && returnAmountCents !== null
-        ? "returnAmount"
-        : null;
+      : quietPeriod
+        ? null
+        : !machineMultiCurrency && returnAmountCents !== null
+          ? "returnAmount"
+          : // Con cero transacciones «Σ devuelto» es 0 en cualquier moneda (no mezcla nada): es
+            // admisible incluso en multimoneda, y es lo que permite acusar una salida sin registro.
+            periodTransactionCount === 0 && returnAmountCents !== null
+            ? "returnAmount"
+            : null;
 
     const coverage =
       evidence === null
@@ -973,6 +995,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
           differenceArqueo: arqueoCents === null || systemCents === null ? null : centsToDecimal(arqueoCents - systemCents),
           differencePeriodo: periodCents === null || systemCents === null ? null : centsToDecimal(periodCents - systemCents),
           label: currency.label,
+          loadedTotal: fallbackRow ? (periodComparable ? valuedLoaded.total : null) : (currencyHasLoad ? (valuedLoaded.byCurrency.get(key)?.total ?? null) : null),
           periodTotal,
           systemTotal,
           transactions: detailEntry?.payoutTransactions ?? 0,
@@ -1015,6 +1038,13 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     const blocker: DispensingReconciliationCheck["blocker"] = (() => {
       if (systemSource !== null && best !== null) {
         return null;
+      }
+      if (quietPeriod) {
+        return {
+          code: "sin-transacciones",
+          detail:
+            "El período no tiene transacciones (ni aprobadas ni con error) y el cuadre físico confirma que no salió nada del dispensador: no hay dos cifras que comparar.",
+        };
       }
       if (!periodComparable) {
         return {

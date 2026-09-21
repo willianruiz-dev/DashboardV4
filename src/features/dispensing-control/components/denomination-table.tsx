@@ -80,7 +80,12 @@ function rejectionDeltaText(delta: number | null): string | null {
   if (delta === 0) {
     return "sin cambio desde la base";
   }
-  return `${delta > 0 ? "+" : ""}${delta} desde la base`;
+  if (delta < 0) {
+    // El baúl se vació después del arqueo: esas unidades salieron por mantenimiento o extracción,
+    // no por el dispensador, y por eso no entran al dispensado del período.
+    return `${delta} desde la base (baúl vaciado: no cuenta como dispensado)`;
+  }
+  return `+${delta} desde la base`;
 }
 
 /** El cuadre del período, visible: cargado − en dispensadores hoy − rechazado. */

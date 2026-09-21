@@ -193,6 +193,18 @@
    baúl de todas, así que una máquina de cambio divisa dentro de un conjunto grande se atribuye a su
    moneda declarada (`PayPad.idCurrency`).
 
+10. **B-11 — RESUELTO: el período quieto ya no se explica como un descuadre.** Con 0 transacciones
+    (caso real Pay+ ODRB Rionegro, 43 min después de un cargue de $8.041.000) la tarjeta acusaba
+    «El detalle del período está incompleto» y auditaba `$0 contra $8.013.400 del arqueo`: ruido
+    alarmante sobre una máquina recién cargada. Ahora `computeDispensingMetrics` publica
+    `periodTransactionCount` y el bloqueo `sin-transacciones`, la fila por moneda dice
+    «cargado X, sigue íntegro en los dispensadores (dispensado $0)», la auditoría del arqueo se
+    silencia cuando no es comparable y la tarjeta remite al operador a una ventana más amplia (las
+    13 aprobadas eran ANTERIORES al cargue). Contraparte cubierta: con salida física y 0
+    transacciones **sí** se acusa (`odrbQuietLeak`), y un baúl de rechazo vaciado (Δ −9) ya no suma
+    al dispensado (`odrbQuietDrained`). Evidencia: `npm run fixtures:dispensing` 127/127, `npm run
+    check`, `npm run lint` y `npx tsc --noEmit` limpios.
+
 ## SUPUESTOS Y BLOQUEOS
 
 1. **B-01 — Eventos realtime:** no se encontró un contrato WebSocket/SignalR ni una implementación de Hub en el backend legado. No se inventó una conexión ni payload; la alerta de errores de devuelta del inicio usa **sondeo del navegador cada 30 s** con caché corta en el BFF (§9 de `docs/DISPENSING_JAM_DETECTION.md`), no un canal servidor→navegador.

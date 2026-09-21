@@ -1368,6 +1368,98 @@ expect(
   JSON.stringify(odrbIdentidadUsd),
 );
 
+// ── Período quieto (máquina recién cargada, 0 transacciones): nada que verificar ─────────
+// Captura real del operador (2026-09-21, «Desde último cargue», 43 min después de un cargue de
+// $8.041.000 con 0 aprobadas): todo el dispensado es $0 y el cargue sigue íntegro en los baúles.
+// Antes esto caía en «cobertura» y pintaba «$0 contra $8.013.400 del arqueo»: ruido alarmante.
+const odrbQuietStorage = [
+  storageRow("50000", 1, "130", { dispensingTotal: "6500000", min: "5" }),
+  storageRow("20000", 2, "130", { dispensingTotal: "2600000", min: "5" }),
+  storageRow("10000", 3, "0", { dispensing: false }),
+  storageRow("1000", 5, "93", { dispensingTotal: "93000", min: "5", rejected: "2", rejectedTotal: "2000" }),
+  storageRow("100", 6, "118", { dispensingTotal: "11800", min: "5", rejected: "1", rejectedTotal: "100" }),
+  storageRow("100", 11, "0", { accepted: "13", acceptedTotal: "1300", dispensing: false }),
+  storageRow("50", 12, "0", { accepted: "13", acceptedTotal: "650", dispensing: false }),
+];
+// Base del caso quieto: el rechazo que hay hoy YA estaba al arquear (no se generó en el período).
+const odrbQuietBase = tonnage(52, "2026-09-19T10:00:00.000Z", [
+  tonnageDetail("50000", 1, "4"),
+  tonnageDetail("20000", 2, "0"),
+  tonnageDetail("10000", 3, "0"),
+  tonnageDetail("1000", 5, "0", "2"),
+  tonnageDetail("100", 6, "0", "1"),
+]);
+function odrbQuietCase(storage: ReturnType<typeof storageRow>[]) {
+  return computeDispensingMetrics({
+    byState: {},
+    cashDispensedTotal: "0",
+    denominations: odrbDenominations,
+    lastTonnage: odrbQuietBase,
+    loads: odrbLoads,
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-21T02:00:00.000Z"),
+    rangeFrom: new Date("2026-09-20T12:00:00.000Z"),
+    rangeTo: new Date("2026-09-21T02:00:00.000Z"),
+    storage,
+    systemEvidence: buildSystemDispensedEvidence({
+      denominations: odrbDenominations,
+      machineCurrency: { id: COP, label: "COP" },
+      scan: scan([]),
+      storage,
+    }),
+    tonnages: [odrbQuietBase],
+  });
+}
+const odrbQuiet = odrbQuietCase(odrbQuietStorage);
+const odrbQuietCop = odrbQuiet.reconciliationCheck?.currencies.find((row) => row.label === "COP") ?? null;
+console.log(
+  `  período quieto: best=${String(odrbQuiet.reconciliationCheck?.best)} bloqueo=${String(odrbQuiet.reconciliationCheck?.blocker?.code)} · COP cargado ${String(odrbQuietCop?.loadedTotal)} dispensado ${String(odrbQuietCop?.periodTotal)}`,
+);
+expect(
+  "con 0 transacciones y el cargue íntegro no hay veredicto ni acusación: «sin transacciones»",
+  odrbQuiet.reconciliationCheck?.best === null && odrbQuiet.reconciliationCheck?.blocker?.code === "sin-transacciones",
+  JSON.stringify(odrbQuiet.reconciliationCheck?.blocker),
+);
+expect(
+  "la fila COP dice qué pasó con el cargue (íntegro) en vez de «sistema: sin medición»",
+  odrbQuietCop?.periodTotal === "0" && odrbQuietCop?.loadedTotal === "9204800" && odrbQuietCop?.systemTotal === null,
+  JSON.stringify(odrbQuietCop),
+);
+// Baúl de rechazo que se VACÍA después del arqueo: esas unidades salieron por mantenimiento o
+// extracción, no por el dispensador. Antes el Δ −2/−1 sumaba «dispensado» y rompía la identidad.
+const odrbQuietDrained = odrbQuietCase([
+  storageRow("50000", 1, "130", { dispensingTotal: "6500000", min: "5" }),
+  storageRow("20000", 2, "130", { dispensingTotal: "2600000", min: "5" }),
+  storageRow("10000", 3, "0", { dispensing: false }),
+  storageRow("1000", 5, "93", { dispensingTotal: "93000", min: "5" }),
+  storageRow("100", 6, "118", { dispensingTotal: "11800", min: "5" }),
+  storageRow("100", 11, "0", { accepted: "13", acceptedTotal: "1300", dispensing: false }),
+  storageRow("50", 12, "0", { accepted: "13", acceptedTotal: "650", dispensing: false }),
+]);
+expect(
+  "baúl de rechazo vaciado tras el arqueo: no suma al dispensado y el período sigue quieto",
+  odrbQuietDrained.identityByCurrency.find((entry) => entry.idCurrency === odrbCop.id)?.dispensed === "0" &&
+    odrbQuietDrained.reconciliationCheck?.best === null &&
+    odrbQuietDrained.reconciliationCheck?.blocker?.code === "sin-transacciones",
+  JSON.stringify({ identity: odrbQuietDrained.identityByCurrency, blocker: odrbQuietDrained.reconciliationCheck?.blocker }),
+);
+
+// Contraprueba: mismo período sin transacciones PERO con salida física ⇒ sí es descuadre real.
+const odrbQuietLeak = odrbQuietCase([
+  storageRow("50000", 1, "100", { dispensingTotal: "5000000", min: "5" }),
+  storageRow("20000", 2, "130", { dispensingTotal: "2600000", min: "5" }),
+  storageRow("10000", 3, "0", { dispensing: false }),
+  storageRow("1000", 5, "93", { min: "5", rejected: "2", rejectedTotal: "2000" }),
+  storageRow("100", 6, "118", { min: "5", rejected: "1", rejectedTotal: "100" }),
+  storageRow("100", 11, "0", { accepted: "13", acceptedTotal: "1300", dispensing: false }),
+  storageRow("50", 12, "0", { accepted: "13", acceptedTotal: "650", dispensing: false }),
+]);
+expect(
+  "pero si salió dinero físico sin ninguna transacción, SÍ se acusa (dinero sin registro)",
+  odrbQuietLeak.reconciliationCheck?.best === "ninguno" && odrbQuietLeak.reconciliationCheck?.blocker === null,
+  JSON.stringify({ best: odrbQuietLeak.reconciliationCheck?.best, blocker: odrbQuietLeak.reconciliationCheck?.blocker }),
+);
+
 // ── Máquina de UNA moneda con detalle: el comportamiento validado no cambia ────────────
 const inderEvidence = buildSystemDispensedEvidence({
   denominations: [catalogDenomination(5, COP, "2000", "Peso colombiano")],
