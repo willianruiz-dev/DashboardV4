@@ -523,7 +523,7 @@ function createAggregate(): DenominationAggregate {
   };
 }
 
-interface JamDetailReading {
+export interface JamDetailReading {
   denominationId: number | null;
   kind: JamOperationKind;
   rawOperation: string | null;
@@ -532,8 +532,11 @@ interface JamDetailReading {
 /**
  * Clasificación de un detalle: el nombre manda cuando es legible; si no, se usa el rol
  * deducido de los importes para ese `idTypeOperation` (o del nombre literal).
+ *
+ * Exportada: la evidencia del lado DP (`system-dispensed.ts`) debe clasificar exactamente
+ * igual que el motor, o los dos paneles se contradicen sobre qué salió del dispensador.
  */
-function readJamDetail(
+export function readJamDetail(
   detail: JamScanDetail,
   inferredRoles: { roles: ReadonlyMap<string, JamOperationKind> },
 ): JamDetailReading {

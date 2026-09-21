@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import type { CurrencyDenomination } from "@/features/denominations/schemas";
 import type {
   DispensingBaseSelfCheck,
+  DispensingCurrencyIdentity,
   DispensingCurrencyTotal,
   DispensingDenominationRow,
 } from "@/features/dispensing-control/dispensing-metrics";
@@ -52,6 +53,11 @@ interface DenominationTableProps {
   /** Filas del storage que no son inventario en uso: se explican, no se ocultan. */
   excludedRows?: readonly DispensingDenominationRow[];
   hasBase?: boolean;
+  /**
+   * Identidad del cuadre POR MONEDA. En una máquina multimoneda la suma de las cuatro
+   * columnas mezcla pesos y dólares: cada moneda cierra por separado (y sólo si tuvo cargue).
+   */
+  identityByCurrency?: readonly DispensingCurrencyIdentity[];
   /** Fecha del último cargue (`null` = sin cargues: sin cuadre desde el cargue). */
   lastLoadAt?: string | null;
   loading?: boolean;
@@ -130,6 +136,7 @@ export function DenominationTable({
   denominations,
   excludedRows = [],
   hasBase = true,
+  identityByCurrency = [],
   lastLoadAt = null,
   loading = false,
   rangeLabel,
@@ -233,11 +240,36 @@ export function DenominationTable({
                 <p className="text-xs text-muted-foreground">En dispensadores (virtual hoy)</p>
                 <p className="font-numeric font-semibold">{formatDashboardMoney(storageTotal)}</p>
               </div>
-              <p className="text-xs text-muted-foreground sm:col-span-4">
-                Cierra: {formatDashboardMoney(dispensedTotal)} + {formatDashboardMoney(rejectedTotal)} + {formatDashboardMoney(storageTotal)} ={" "}
-                {formatDashboardMoney(loadedTotal)} cargados
-                {multiCurrency ? " · cada moneda por separado (los importes de monedas distintas no se suman)" : ""}.
-              </p>
+              {multiCurrency && identityByCurrency.length > 0 ? (
+                /* Una máquina multimoneda no cierra en agregado: cierra POR MONEDA. */
+                <div className="grid gap-1 sm:col-span-4">
+                  {identityByCurrency.map((entry) => (
+                    <p className="text-xs text-muted-foreground" key={entry.currencyId === null ? "none" : String(entry.currencyId)}>
+                      <strong className="text-foreground">{entry.label ?? "Moneda no declarada"}</strong>
+                      {entry.hasLoad ? (
+                        <>
+                          : {formatDashboardMoney(entry.dispensed)} dispensados + {formatDashboardMoney(entry.rejected)} rechazados +{" "}
+                          {formatDashboardMoney(entry.storage)} en dispensadores = {formatDashboardMoney(entry.loaded)} cargados.
+                        </>
+                      ) : (
+                        <>
+                          : sin cargues de esta moneda en el período, así que no hay dispensado que despejar (en dispensadores hoy{" "}
+                          {formatDashboardMoney(entry.storage)}).
+                        </>
+                      )}
+                    </p>
+                  ))}
+                  <p className="text-xs text-muted-foreground">
+                    Los totales de arriba ({formatDashboardMoney(loadedTotal)} cargados, {formatDashboardMoney(dispensedTotal)} dispensados)
+                    suman monedas distintas: son referencia, no una cifra comparable.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground sm:col-span-4">
+                  Cierra: {formatDashboardMoney(dispensedTotal)} + {formatDashboardMoney(rejectedTotal)} + {formatDashboardMoney(storageTotal)} ={" "}
+                  {formatDashboardMoney(loadedTotal)} cargados.
+                </p>
+              )}
               <p className="text-xs text-muted-foreground sm:col-span-4">
                 Origen de los datos: cargues <span className="font-mono">api/Load/GetByPaypad</span> · baúles de dispensadores y rechazo{" "}
                 <span className="font-mono">api/PayPad/GetStorage</span> · arqueo de referencia <span className="font-mono">api/Tonnage/GetByPaypad</span> ·

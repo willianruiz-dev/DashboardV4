@@ -1,7 +1,6 @@
 "use client";
 
 import { Menu, PanelLeftClose } from "lucide-react";
-import Image from "next/image";
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
 

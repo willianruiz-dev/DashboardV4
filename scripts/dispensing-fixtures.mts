@@ -24,6 +24,7 @@ import { summarizeMachineCurrencies } from "../src/features/dispensing-control/d
 import { computeJamEarlyWarnings } from "../src/features/dispensing-control/jam-early-warning.ts";
 import { computeJamDiagnostics, type JamDiagnostics } from "../src/features/dispensing-control/dispensing-jams.ts";
 import { computeDispensingMetrics } from "../src/features/dispensing-control/dispensing-metrics.ts";
+import { buildSystemDispensedEvidence, isSystemEvidenceUsable } from "../src/features/dispensing-control/system-dispensed.ts";
 import { summarizeTransactionsByCurrency } from "../src/features/transactions/transaction-search.ts";
 
 /* ------------------------------------------------------------------ utilidades */
@@ -116,7 +117,10 @@ function transaction(
   };
 }
 
-function scan(transactions: ReturnType<typeof transaction>[], overrides: Partial<{ detailsFailures: number; detailsRequests: number; failureReasons: string[] }> = {}) {
+function scan(
+  transactions: ReturnType<typeof transaction>[],
+  overrides: Partial<{ detailsFailures: number; detailsRequests: number; failureReasons: string[]; truncated: boolean }> = {},
+) {
   return {
     detailsFailures: overrides.detailsFailures ?? 0,
     detailsMalformed: 0,
@@ -127,7 +131,7 @@ function scan(transactions: ReturnType<typeof transaction>[], overrides: Partial
     scannedFrom: transactions[0]?.dateCreated ?? null,
     scannedTo: transactions.at(-1)?.dateCreated ?? null,
     transactions,
-    truncated: false,
+    truncated: overrides.truncated ?? false,
   };
 }
 
@@ -1143,6 +1147,267 @@ const inderNoArqueo = computeJamEarlyWarnings({
   transactions: earlyPayouts,
 });
 expect("sin dos arqueos comparables no hay aviso", inderNoArqueo.warnings.length === 0 && (inderNoArqueo.note ?? "").includes("arqueos"), String(inderNoArqueo.note));
+
+/* ------------------------------------------- 12) ODRB Rionegro (id 1288): AP ≠ DP y monedas mezcladas */
+
+console.log("\n[odrb-divisa] máquina multimoneda que recibe USD y entrega COP: la verificación es por moneda y por lado (AP/DP)");
+
+// Caso real reportado: Pay+ ODRB Rionegro, ID 1288, 13 aprobadas, Σ devuelto $1.166.900 contra
+// un dispensado del período de $9.207.900 ⇒ el panel acusaba «hay dinero sin registro» por
+// $8.041.000. La máquina recibe DÓLARES (entran al aceptador, AP) y entrega PESOS (salen del
+// dispensador, DP): `Σ returnAmount` no mide el dispensador y además mezcla monedas.
+const odrbDenominations = [
+  catalogDenomination(1, COP, "50000", "Peso colombiano"),
+  catalogDenomination(2, COP, "20000", "Peso colombiano"),
+  catalogDenomination(3, COP, "10000", "Peso colombiano"),
+  catalogDenomination(5, COP, "1000", "Peso colombiano"),
+  catalogDenomination(6, COP, "100", "Peso colombiano"),
+  catalogDenomination(11, USD, "100", "Dólar estadounidense"),
+  catalogDenomination(12, USD, "50", "Dólar estadounidense"),
+];
+const odrbStorage = [
+  storageRow("50000", 1, "0", { dispensingTotal: "0", min: "5" }),
+  storageRow("20000", 2, "0", { dispensingTotal: "0", min: "5" }),
+  storageRow("10000", 3, "0", { dispensing: false, dispensingTotal: "0" }),
+  storageRow("1000", 5, "0", { dispensingTotal: "0", min: "5", rejected: "2", rejectedTotal: "2000" }),
+  storageRow("100", 6, "0", { dispensingTotal: "0", min: "5", rejected: "1", rejectedTotal: "100" }),
+  // Aceptador: los dólares que entraron en el período (la máquina NO dispensa dólares).
+  storageRow("100", 11, "0", { accepted: "13", acceptedTotal: "1300", dispensing: false }),
+  storageRow("50", 12, "0", { accepted: "13", acceptedTotal: "650", dispensing: false }),
+];
+// Arqueo base anterior al período, con inventario previo de 4 billetes de 50.000 (auditoría).
+const odrbBase = tonnage(51, "2026-09-19T10:00:00.000Z", [
+  tonnageDetail("50000", 1, "4"),
+  tonnageDetail("20000", 2, "0"),
+  tonnageDetail("10000", 3, "0"),
+  tonnageDetail("1000", 5, "0", "0"),
+  tonnageDetail("100", 6, "0", "0"),
+]);
+// Cargue del período: sólo PESOS (9.204.800). Los dólares nunca se cargan al dispensador.
+const odrbLoads = [
+  load(61, "2026-09-20T12:00:00.000Z", [
+    loadDetail(1, "50000", "130"),
+    loadDetail(2, "20000", "130"),
+    loadDetail(5, "1000", "93"),
+    loadDetail(6, "100", "118"),
+  ], "9204800"),
+];
+// 13 operaciones de cambio: entra USD (100 + 50) y salen COP (707.900 por operación).
+const odrbTransactions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((index) =>
+  transaction(
+    900 + index,
+    `2026-09-20T1${index % 10}:0${index % 6}:00.000Z`,
+    [
+      { denominationId: 11, operation: "Aceptado", operationId: 1, quantity: "1" },
+      { denominationId: 12, operation: "Aceptado", operationId: 1, quantity: "1" },
+      { denominationId: 1, operation: "Entregado", operationId: 2, quantity: "10" },
+      { denominationId: 2, operation: "Entregado", operationId: 2, quantity: "10" },
+      { denominationId: 5, operation: "Entregado", operationId: 2, quantity: "7" },
+      { denominationId: 6, operation: "Entregado", operationId: 2, quantity: "9" },
+    ],
+    // Σ returnAmount = 1.166.900 (el número que antes se comparaba con el dispensado físico).
+    { income: "750000", real: "750000", ret: index === 12 ? "90500" : "89700" },
+  ),
+);
+const odrbScan = scan(odrbTransactions);
+const odrbByState = { Aprobada: { count: 13, total: "9746100" } };
+const odrbEvidence = buildSystemDispensedEvidence({
+  denominations: odrbDenominations,
+  machineCurrency: { id: COP, label: "COP" },
+  scan: odrbScan,
+  storage: odrbStorage,
+});
+
+function odrbMetrics(systemEvidence: ReturnType<typeof buildSystemDispensedEvidence>) {
+  return computeDispensingMetrics({
+    byState: odrbByState,
+    cashDispensedTotal: "1166900",
+    denominations: odrbDenominations,
+    lastTonnage: odrbBase,
+    loads: odrbLoads,
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-21T02:00:00.000Z"),
+    rangeFrom: new Date("2026-09-20T05:00:00.000Z"),
+    rangeTo: new Date("2026-09-21T04:59:59.000Z"),
+    storage: odrbStorage,
+    systemEvidence,
+    tonnages: [odrbBase],
+  });
+}
+
+const odrbSinDetalle = odrbMetrics(null);
+const odrbConDetalle = odrbMetrics(odrbEvidence);
+const odrbCheck = odrbConDetalle.reconciliationCheck;
+const odrbCop = odrbCheck?.currencies.find((row) => row.label === "COP") ?? null;
+const odrbUsd = odrbCheck?.currencies.find((row) => row.label === "USD") ?? null;
+
+console.log(
+  `  detalle: COP dispensado ${String(odrbEvidence?.byCurrency.find((row) => row.label === "COP")?.dispensedValue)} · USD aceptado ${String(odrbEvidence?.byCurrency.find((row) => row.label === "USD")?.acceptedValue)} · Σ devuelto ${String(odrbCheck?.returnAmountTotal)}`,
+);
+console.log(
+  `  veredicto: best=${String(odrbCheck?.best)} · origen=${String(odrbCheck?.systemSource)} · bloqueo=${String(odrbSinDetalle.reconciliationCheck?.blocker?.code)}`,
+);
+
+// ── La evidencia del detalle separa AP de DP por moneda ────────────────────────────────
+expect("el barrido cubre las 13 transacciones y es utilizable", isSystemEvidenceUsable(odrbEvidence) === true);
+expect(
+  "el detalle dice que salieron COP 9.202.700 del dispensador (lado DP)",
+  odrbEvidence?.byCurrency.find((row) => row.label === "COP")?.dispensedValue === "9202700",
+  String(odrbEvidence?.byCurrency.find((row) => row.label === "COP")?.dispensedValue),
+);
+expect(
+  "y que entraron USD 1.950 al aceptador (lado AP), sin ninguna salida en dólares",
+  odrbEvidence?.byCurrency.find((row) => row.label === "USD")?.acceptedValue === "1950" &&
+    odrbEvidence?.byCurrency.find((row) => row.label === "USD")?.dispensedValue === "0",
+  JSON.stringify(odrbEvidence?.byCurrency),
+);
+expect("la evidencia declara la máquina como multimoneda", odrbEvidence?.multiCurrency === true);
+expect(
+  "Σ returnAmount (1.166.900) NO es el dispensado: la diferencia con el detalle se declara",
+  odrbEvidence !== null && odrbEvidence.returnAmountTotal === "1166900",
+  String(odrbEvidence?.returnAmountTotal),
+);
+
+// ── EL BUG: sin detalle, una máquina multimoneda ya no acusa un descuadre imposible ─────
+expect(
+  "sin detalle atribuible la verificación NO aplica (antes: best=«ninguno» = dinero sin registro)",
+  odrbSinDetalle.reconciliationCheck?.best === null && odrbSinDetalle.reconciliationCheck?.blocker?.code === "multimoneda",
+  JSON.stringify({ best: odrbSinDetalle.reconciliationCheck?.best, blocker: odrbSinDetalle.reconciliationCheck?.blocker }),
+);
+expect(
+  "y no publica una diferencia agregada que sumaba pesos con dólares",
+  odrbSinDetalle.reconciliationCheck?.systemTotal === null && odrbSinDetalle.reconciliationCheck?.differences.periodo === null,
+  JSON.stringify(odrbSinDetalle.reconciliationCheck?.differences),
+);
+expect(
+  "el motivo explica que Σ devuelto sigue al aceptador en una máquina de cambio divisa",
+  (odrbSinDetalle.reconciliationCheck?.blocker?.detail ?? "").includes("aceptador"),
+  String(odrbSinDetalle.reconciliationCheck?.blocker?.detail),
+);
+
+// ── Con el detalle, la verificación es por moneda y CIERRA ─────────────────────────────
+expect("con el detalle la cifra del sistema sale de los detalles (lado DP)", odrbCheck?.systemSource === "detalles");
+expect(
+  "COP: lo dispensado por el sistema (9.202.700) coincide con el cuadre del período",
+  odrbCop?.best === "periodo" && odrbCop?.systemTotal === "9202700" && odrbCop?.periodTotal === "9202700" && odrbCop?.differencePeriodo === "0",
+  JSON.stringify(odrbCop),
+);
+expect("el veredicto global ya no es «hay dinero sin registro»", odrbCheck?.best === "periodo" && odrbCheck?.blocker === null);
+expect(
+  "USD: no se compara contra un dispensado inexistente (no hay cargue de dólares)",
+  odrbUsd?.periodTotal === null && odrbUsd?.best === null && odrbUsd?.acceptedTotal === "1950",
+  JSON.stringify(odrbUsd),
+);
+expect(
+  "la discrepancia entre el detalle y Σ devuelto se publica, no se esconde",
+  odrbCheck?.systemSourceConflict === true && odrbCheck?.returnAmountTotal === "1166900",
+  JSON.stringify({ conflicto: odrbCheck?.systemSourceConflict, devuelto: odrbCheck?.returnAmountTotal }),
+);
+expect("y se explica el origen de cada cifra", (odrbCheck?.note ?? "").includes("detalle"), String(odrbCheck?.note));
+expect(
+  "la auditoría del arqueo sigue disponible por moneda (4 × 50.000 previos)",
+  odrbCop?.arqueoTotal === "9402700",
+  String(odrbCop?.arqueoTotal),
+);
+
+// ── Cobertura parcial: no se concluye nada ─────────────────────────────────────────────
+const odrbTruncado = odrbMetrics(
+  buildSystemDispensedEvidence({
+    denominations: odrbDenominations,
+    machineCurrency: { id: COP, label: "COP" },
+    scan: scan(odrbTransactions.slice(0, 5), { truncated: true }),
+    storage: odrbStorage,
+  }),
+);
+expect(
+  "con el detalle truncado no hay veredicto: se declara cobertura parcial (no descuadre)",
+  odrbTruncado.reconciliationCheck?.best === null && odrbTruncado.reconciliationCheck?.blocker?.code === "cobertura",
+  JSON.stringify(odrbTruncado.reconciliationCheck?.blocker),
+);
+
+// ── Los agregados AP/RJ/arqueo se publican por moneda ──────────────────────────────────
+const odrbTotals = (entries: readonly { label: string | null; total: string }[], label: string) =>
+  entries.find((entry) => entry.label === label)?.total ?? null;
+expect(
+  "aceptador hoy por moneda: USD 1.950 y COP 0 (antes se sumaban)",
+  odrbTotals(odrbConDetalle.acceptorTotalsByCurrency, "USD") === "1950",
+  JSON.stringify(odrbConDetalle.acceptorTotalsByCurrency),
+);
+expect(
+  "baúl de rechazo hoy por moneda: COP 2.100",
+  odrbTotals(odrbConDetalle.rejectionTotalsByCurrency, "COP") === "2100",
+  JSON.stringify(odrbConDetalle.rejectionTotalsByCurrency),
+);
+expect(
+  "arqueo base por moneda: COP 200.000 en dispensadores (4 × 50.000) y nada mezclado",
+  odrbConDetalle.arqueoTotalsByCurrency.find((entry) => entry.label === "COP")?.dp === "200000" &&
+    odrbConDetalle.arqueoTotalsByCurrency.every((entry) => entry.label !== "USD"),
+  JSON.stringify(odrbConDetalle.arqueoTotalsByCurrency),
+);
+expect(
+  "cargado/dispensado del período por moneda: COP 9.204.800 → 9.202.700",
+  odrbTotals(odrbConDetalle.loadedTotalsByCurrency, "COP") === "9204800" &&
+    odrbTotals(odrbConDetalle.dispensedTotalsByCurrency, "COP") === "9202700",
+  JSON.stringify({ cargado: odrbConDetalle.loadedTotalsByCurrency, dispensado: odrbConDetalle.dispensedTotalsByCurrency }),
+);
+expect("el cuadre del período cierra en COP: 9.202.700 + 2.100 + 0 = 9.204.800", Number("9202700") + Number("2100") === Number("9204800"));
+const odrbIdentidadCop = odrbConDetalle.identityByCurrency.find((entry) => entry.label === "COP") ?? null;
+const odrbIdentidadUsd = odrbConDetalle.identityByCurrency.find((entry) => entry.label === "USD") ?? null;
+expect(
+  "la identidad se publica POR MONEDA: COP cargado 9.204.800 = 9.202.700 + 2.100 + 0",
+  odrbIdentidadCop?.hasLoad === true &&
+    odrbIdentidadCop?.loaded === "9204800" &&
+    odrbIdentidadCop?.dispensed === "9202700" &&
+    odrbIdentidadCop?.rejected === "2100" &&
+    odrbIdentidadCop?.storage === "0",
+  JSON.stringify(odrbIdentidadCop),
+);
+expect(
+  "y USD declara que no tuvo cargue (no se le despeja un dispensado negativo)",
+  odrbIdentidadUsd?.hasLoad === false,
+  JSON.stringify(odrbIdentidadUsd),
+);
+
+// ── Máquina de UNA moneda con detalle: el comportamiento validado no cambia ────────────
+const inderEvidence = buildSystemDispensedEvidence({
+  denominations: [catalogDenomination(5, COP, "2000", "Peso colombiano")],
+  machineCurrency: { id: COP, label: "COP" },
+  scan: scan([
+    transaction(700, "2026-09-20T15:00:00.000Z", [{ denominationId: 5, operation: "Entregado", operationId: 2, quantity: "64" }], {
+      income: "200000",
+      real: "200000",
+      ret: "128000",
+    }),
+    transaction(701, "2026-09-20T16:00:00.000Z", [{ denominationId: 5, operation: "Entregado", operationId: 2, quantity: "60" }], {
+      income: "200000",
+      real: "200000",
+      ret: "120000",
+    }),
+  ]),
+  storage: inderStorage,
+});
+const inderConDetalle = computeDispensingMetrics({
+  byState: { Aprobada: { count: 2, total: "248000" } },
+  cashDispensedTotal: "248000",
+  denominations: [catalogDenomination(5, COP, "2000", "Peso colombiano")],
+  lastTonnage: inderBase,
+  loads: [load(42, "2026-09-19T18:20:00.000Z", [loadDetail(5, "2000", "140")], "280000")],
+  machineCurrency: { id: COP, label: "COP" },
+  now: new Date("2026-09-21T21:00:00.000Z"),
+  rangeFrom: new Date("2026-09-19T18:20:00.000Z"),
+  rangeTo: new Date("2026-09-21T21:00:00.000Z"),
+  storage: inderStorage,
+  systemEvidence: inderEvidence,
+  tonnages: [inderBase],
+});
+expect(
+  "con una moneda el detalle confirma Σ devuelto (248.000) y el veredicto sigue siendo «periodo»",
+  inderConDetalle.reconciliationCheck?.best === "periodo" &&
+    inderConDetalle.reconciliationCheck?.systemSource === "detalles" &&
+    inderConDetalle.reconciliationCheck?.systemSourceConflict === false &&
+    inderConDetalle.reconciliationCheck?.systemTotal === "248000",
+  JSON.stringify(inderConDetalle.reconciliationCheck),
+);
 
 /* ------------------------------------------------------------------ resumen */
 

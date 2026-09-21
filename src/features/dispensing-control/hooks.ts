@@ -11,7 +11,9 @@ import type { Load, PayPadStorage, Tonnage } from "@/features/paypads/schemas";
 import { useTransactionSearch } from "@/features/transactions/hooks";
 import type { TransactionSearchRequest, TransactionStateBucket } from "@/features/transactions/schemas";
 import { localDateTimeToApiIso } from "@/lib/formatters/date";
+import type { JamScanPayload } from "./dispensing-jams";
 import { computeDispensingMetrics, type DispensingMetrics } from "./dispensing-metrics";
+import { buildSystemDispensedEvidence, type SystemDispensedEvidence } from "./system-dispensed";
 import {
   JAM_SCAN_MAX_TRANSACTIONS,
   RETURN_ALERTS_REFRESH_MS,
@@ -118,6 +120,11 @@ export interface DispensingMetricsQuery {
   refetchAll: () => void;
   /** Datos crudos de las mismas queries, para el motor de atascos (sin refetch extra). */
   sources: DispensingMetricsSources;
+  /**
+   * Lado del sistema medido por los detalles de las transacciones (AP/DP por moneda), o `null`
+   * sin barrido. Es la cifra que verifica el cuadre en máquinas multimoneda o de cambio divisa.
+   */
+  systemEvidence: SystemDispensedEvidence | null;
 }
 
 const emptySources: DispensingMetricsSources = { byState: {}, loads: [], storage: [], tonnages: [] };
@@ -129,7 +136,10 @@ const emptySources: DispensingMetricsSources = { byState: {}, loads: [], storage
  * completo, no sobre la página visible). Todo se resuelve con queries
  * existentes, en paralelo, y se deriva en un cálculo puro memoizado.
  */
-export function useDispensingMetrics(args: DispensingMetricsArgs | null): DispensingMetricsQuery {
+export function useDispensingMetrics(
+  args: DispensingMetricsArgs | null,
+  options: { scan?: JamScanPayload | null } = {},
+): DispensingMetricsQuery {
   const paypadId = args?.paypadId ?? null;
   const storageQuery = usePaypadStorage(paypadId);
   const tonnagesQuery = usePaypadTonnages(paypadId);
@@ -185,6 +195,22 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
       denominationsQuery.isPending ||
       (searchRequest !== null && searchQuery.isPending));
 
+  // Evidencia del lado del sistema (AP/DP por moneda) construida con el barrido de detalles que
+  // ya hace la detección de atascos: misma ventana, mismos detalles, ninguna petición extra.
+  const scan = options.scan ?? null;
+  const systemEvidence = useMemo<SystemDispensedEvidence | null>(
+    () =>
+      paypadId === null
+        ? null
+        : buildSystemDispensedEvidence({
+            denominations: denominationsQuery.data ?? [],
+            machineCurrency: args?.machineCurrency ?? null,
+            scan,
+            storage: storageQuery.data ?? [],
+          }),
+    [args?.machineCurrency, denominationsQuery.data, paypadId, scan, storageQuery.data],
+  );
+
   const metrics = useMemo<DispensingMetrics | null>(() => {
     if (args === null || paypadId === null) {
       return null;
@@ -221,9 +247,10 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
       now,
       rangeFrom,
       rangeTo,
+      systemEvidence,
       storage: storageQuery.data ?? [],
     });
-  }, [args, paypadId, searchQuery.data, storageQuery.data, tonnagesQuery.data, loadsQuery.data, denominationsQuery.data, now]);
+  }, [args, paypadId, searchQuery.data, storageQuery.data, tonnagesQuery.data, loadsQuery.data, denominationsQuery.data, now, systemEvidence]);
 
   const sources = useMemo<DispensingMetricsSources>(
     () =>
@@ -245,6 +272,7 @@ export function useDispensingMetrics(args: DispensingMetricsArgs | null): Dispen
     isLoading,
     metrics,
     now,
+    systemEvidence,
     refetchAll: () => {
       storageQuery.refetch();
       tonnagesQuery.refetch();

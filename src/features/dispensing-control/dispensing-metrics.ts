@@ -3,6 +3,7 @@ import type { Load, PayPadStorage, Tonnage } from "@/features/paypads/schemas";
 import type { TransactionStateBucket } from "@/features/transactions/schemas";
 import { buildDenominationCurrencyIndex, denominationCurrencyText } from "./denomination-currency";
 import { DENOMINATION_NOT_IN_USE_REASON, describeDenominationUsage, isDenominationInUse } from "./denomination-usage";
+import { isSystemEvidenceUsable, type SystemDispensedEvidence } from "./system-dispensed";
 
 /**
  * Cálculo puro de métricas de dispensado (AP/DP/RJ) para un Pay+ y un período.
@@ -55,6 +56,14 @@ export interface DispensingMetricsInput {
   now: Date;
   rangeFrom: Date;
   rangeTo: Date;
+  /**
+   * Lado del sistema medido por los DETALLES de las transacciones (ver `system-dispensed.ts`):
+   * dispensado/aceptado POR MONEDA y por dirección del dinero. Es la medición válida en
+   * máquinas multimoneda y en máquinas cuya operación aprobada es de aceptación (cambio
+   * divisa: entra USD al aceptador, sale COP del dispensador), donde `Σ returnAmount` no
+   * mide el dispensador. Sin él, la verificación cae a `cashDispensedTotal` (una moneda).
+   */
+  systemEvidence?: SystemDispensedEvidence | null;
   storage: readonly PayPadStorage[];
 }
 
@@ -156,6 +165,35 @@ export interface DispensingCurrencyTotal {
   total: string;
 }
 
+/**
+ * Identidad del cuadre POR MONEDA: `cargado = dispensado + rechazado + en dispensadores`.
+ * En una máquina multimoneda la suma agregada de las cuatro columnas mezcla pesos y dólares;
+ * cada moneda cierra por separado (y sólo si tuvo cargue en el período).
+ */
+export interface DispensingCurrencyIdentity {
+  currencyId: number | null;
+  dispensed: string;
+  /** La moneda tuvo cargues en el período: sólo así se puede despejar el dispensado. */
+  hasLoad: boolean;
+  label: string | null;
+  loaded: string;
+  rejected: string;
+  storage: string;
+}
+
+/**
+ * Totales del ARQUEO BASE por moneda (AP/DP/RJ), valorizados desde sus detalles.
+ * El arqueo declara `totalAp/totalDp/totalRj` agregados: en una máquina multimoneda esos
+ * tres números suman pesos y dólares, así que no se pueden leer ni comparar entre sí.
+ */
+export interface DispensingArqueoCurrencyTotal {
+  ap: string;
+  currencyId: number | null;
+  dp: string;
+  label: string | null;
+  rj: string;
+}
+
 /** Un cargue que aportó unidades a la columna «Cargada (desde base)». */
 export interface DispensingLoadTraceEntry {
   /** Fecha del cargue (ISO del API); `null` si el histórico no la trae. */
@@ -164,18 +202,63 @@ export interface DispensingLoadTraceEntry {
 }
 
 /**
- * Verificación del cuadre contra lo que el SISTEMA registró: los modelos físicos posibles
- * (el arqueo base como saldo de apertura, o el baúl llenado desde vacío) contra
- * `Σ returnAmount` de las transacciones aprobadas (el cambio efectivamente devuelto).
- * Es la única medición independiente del inventario que reporta la máquina.
+ * Verificación del cuadre contra lo que el SISTEMA registró, POR MONEDA.
+ *
+ * El lado del sistema tiene dos orígenes posibles y no son intercambiables:
+ *
+ *  - `"detalles"`: `Transaction/{id}/Details` → cada billete con su operación (aceptar /
+ *    dispensar / fallar) y su moneda. Es el lado DP real y el único atribuible por moneda.
+ *  - `"returnAmount"`: `Σ returnAmount` de las aprobadas. Sólo es admisible con UNA moneda:
+ *    el DTO de transacción no declara la moneda de cada importe y en una máquina de cambio
+ *    divisa ese campo describe el lado del aceptador (entra USD), no el dispensador (sale COP).
+ *
+ * Cuando ninguno de los dos origenes sostiene la comparación, `best` es `null` y `blocker`
+ * dice por qué: el panel explica en vez de acusar un descuadre inexistente.
  */
+export type DispensingReconciliationBlockerCode =
+  | "cobertura"
+  | "multimoneda"
+  | "sin-cargues"
+  | "sin-medicion";
+
+/** Comparación por moneda: el registro del sistema contra cada modelo físico. */
+export interface DispensingReconciliationCurrencyRow {
+  /** Lo que el detalle registra como ACEPTADO (AP) en esta moneda; `null` sin detalle. */
+  acceptedTotal: string | null;
+  /** Auditoría: dispensado contando el inventario previo del arqueo. */
+  arqueoTotal: string | null;
+  /** Modelo que explica el registro del sistema en ESTA moneda (`null` = no comparable). */
+  best: "arqueo" | "periodo" | "ninguno" | null;
+  currencyId: number | null;
+  differenceArqueo: string | null;
+  differencePeriodo: string | null;
+  label: string | null;
+  /** Dispensado del período (cifra principal del cuadre físico). */
+  periodTotal: string | null;
+  /** Lo que el sistema registró como DISPENSADO (DP) en esta moneda. */
+  systemTotal: string | null;
+  /** Transacciones con salidas del dispensador en esta moneda (0 sin detalle). */
+  transactions: number;
+}
+
 export interface DispensingReconciliationCheck {
   /**
-   * Modelo que mejor explica el registro del sistema (tolerancia 1 %). `null` = la comparación
-   * NO aplica: o no hay ningún modelo, o el período elegido no tiene cargues y la auditoría del
-   * arqueo abarca días anteriores (dos ventanas distintas no se pueden comparar).
+   * Modelo que mejor explica el registro del sistema (tolerancia 1 %), agregado sobre las
+   * monedas comparables. `null` = la comparación NO aplica (ver `blocker`).
    */
   best: "arqueo" | "periodo" | "ninguno" | null;
+  /** Por qué la verificación no aplica; `null` = sí aplica. */
+  blocker: { code: DispensingReconciliationBlockerCode; detail: string } | null;
+  /** Cobertura del barrido de detalles (`null` = no hay barrido). */
+  coverage: { analyzed: number; complete: boolean; detailsFailures: number; truncated: boolean } | null;
+  /** Comparación por moneda: la única válida cuando la máquina trabaja varias. */
+  currencies: DispensingReconciliationCurrencyRow[];
+  /** Diferencia `modelo − sistema` agregada (con signo; `null` si no es calculable por moneda). */
+  differences: { arqueo: string | null; periodo: string | null };
+  /** Auditoría: lo que saldría contando el inventario previo del arqueo (una sola moneda). */
+  fromArqueoTotal: string | null;
+  /** DISPENSADO del período (cifra principal), valorizado (una sola moneda). */
+  fromPeriodTotal: string | null;
   /**
    * El período elegido incluye algún cargue, así que «cargado − en dispensadores − rechazado»
    * es calculable y la comparación es entre ventanas comparables. Con `false` (máquina sin
@@ -183,16 +266,24 @@ export interface DispensingReconciliationCheck {
    * días) la diferencia contra la auditoría NO es un descuadre y se declara como tal.
    */
   periodComparable: boolean;
-  /** Diferencia `modelo − sistema` (con signo; `null` si no es calculable). */
-  differences: { arqueo: string | null; periodo: string | null };
-  /** DISPENSADO del período (cifra principal), valorizado. */
-  fromPeriodTotal: string | null;
-  /** Auditoría: lo que saldría contando el inventario previo del arqueo. */
-  fromArqueoTotal: string | null;
-  /** Σ `returnAmount` de las transacciones aprobadas del período. */
+  /** De dónde sale la cifra del sistema (`null` = no hay medición admisible). */
+  systemSource: "detalles" | "returnAmount" | null;
+  /**
+   * El detalle y `Σ returnAmount` discrepan (más allá de la tolerancia). Se publican las dos
+   * cifras con su origen: en una máquina de cambio divisa `Σ returnAmount` no mide el dispensador.
+   */
+  systemSourceConflict: boolean;
+  /** Cifra del sistema usada en la verificación (una sola moneda; `null` si hay varias). */
   systemTotal: string | null;
-  /** Cuántas transacciones aprobadas respaldan `systemTotal`. */
+  /** `Σ returnAmount` del período (referencia; mezcla monedas en máquinas multimoneda). */
+  returnAmountTotal: string | null;
+  /** Cuántas transacciones respaldan la cifra del sistema. */
   transactionCount: number;
+  /**
+   * Salvedad sobre el origen de la cifra (p. ej. que el detalle indique una lectura invertida
+   * y la verificación caiga a `Σ returnAmount`). `null` = sin salvedad.
+   */
+  note: string | null;
 }
 
 /**
@@ -267,6 +358,20 @@ export interface DispensingMetrics {
   excludedRows: DispensingDenominationRow[];
   /** Inventario del baúl dispensador separado por moneda (una entrada por moneda en uso). */
   storageTotalsByCurrency: DispensingCurrencyTotal[];
+  /** CARGADO del período por moneda (`Σ unidades × valor`); nunca suma monedas distintas. */
+  loadedTotalsByCurrency: DispensingCurrencyTotal[];
+  /** DISPENSADO del período por moneda (misma base que `loadOutflowTotalsByCurrency`). */
+  dispensedTotalsByCurrency: DispensingCurrencyTotal[];
+  /** RECHAZADO del período por moneda. */
+  rejectedTotalsByCurrency: DispensingCurrencyTotal[];
+  /** Aceptador HOY (`apTotal` del baúl) por moneda: el lado AP, separado. */
+  acceptorTotalsByCurrency: DispensingCurrencyTotal[];
+  /** Baúl de rechazo HOY (`rjTotal`) por moneda: el lado RJ, separado. */
+  rejectionTotalsByCurrency: DispensingCurrencyTotal[];
+  /** Totales del arqueo base (AP/DP/RJ) por moneda, valorizados desde sus detalles. */
+  arqueoTotalsByCurrency: DispensingArqueoCurrencyTotal[];
+  /** Identidad del cuadre por moneda (una entrada por moneda en uso). */
+  identityByCurrency: DispensingCurrencyIdentity[];
   /** Salida del período del cargue por moneda (`Σ (cargada − saldo) × valor`); vacío sin cargues. */
   loadOutflowTotalsByCurrency: DispensingCurrencyTotal[];
   /** Salida física desde el arqueo base, por moneda (vacío sin arqueo base). */
@@ -671,51 +776,310 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
   const clientsFromBaseTotal = hasBase ? valueByCurrency((row) => row.dispensedFromArqueo).total : null;
   const clientsFromLoadTotal = hasLoadInRange ? valuedDispensed.total : null;
 
-  // Verificación contra el sistema: `Σ returnAmount` de las transacciones aprobadas (el
-  // cambio que el sistema registró haber devuelto) contra cada modelo físico. Tolerancia
-  // 1 % (billetes sueltos, redondeos del API). Es la única medición independiente del
-  // inventario que reporta la máquina, y decide cuál apertura explica el cuadre.
-  const systemCents = input.cashDispensedTotal == null ? null : decimalToCents(input.cashDispensedTotal);
-  const reconciliationCheck: DispensingReconciliationCheck | null =
-    systemCents === null
-      ? null
-      : (() => {
-          const tolerance = (value: bigint) => {
-            const magnitude = value < 0n ? -value : value;
-            return magnitude / 100n > 1n ? magnitude / 100n : 1n;
-          };
-          const difference = (modelTotal: string | null): bigint | null => {
-            if (modelTotal === null) {
-              return null;
-            }
-            const modelCents = decimalToCents(modelTotal);
-            return modelCents === null ? null : modelCents - systemCents;
-          };
-          const baseDiff = difference(clientsFromBaseTotal);
-          const loadDiff = difference(clientsFromLoadTotal);
-          const baseMatches = baseDiff !== null && (baseDiff < 0n ? -baseDiff : baseDiff) <= tolerance(systemCents);
-          const loadMatches = loadDiff !== null && (loadDiff < 0n ? -loadDiff : loadDiff) <= tolerance(systemCents);
-          // Sin cargues en el período no hay «dispensado del período» contra el que comparar
-          // (la auditoría del arqueo cubre desde la base, que puede ser de días antes). Solo
-          // se conserva el resultado cuando un modelo explica el registro del sistema.
-          const periodComparable = hasLoadInRange;
-          return {
-            best: loadMatches ? "periodo" : baseMatches ? "arqueo" : periodComparable ? "ninguno" : null,
-            periodComparable,
-            differences: {
-              arqueo: baseDiff === null ? null : centsToDecimal(baseDiff),
-              periodo: loadDiff === null ? null : centsToDecimal(loadDiff),
-            },
-            fromArqueoTotal: clientsFromBaseTotal,
-            fromPeriodTotal: clientsFromLoadTotal,
-            systemTotal: centsToDecimal(systemCents),
-            transactionCount: byState[APPROVED_STATE]?.count ?? 0,
-          };
-        })();
-
   const inUseStorage = storage.filter((entry) => inUseIds.has(entry.idCurrencyDenomination));
   const rejectCurrentTotal = sumDecimalStrings(inUseStorage.map((entry) => entry.rjTotal));
   const acceptorCurrentTotal = sumDecimalStrings(inUseStorage.map((entry) => entry.apTotal));
+
+  /** Totales del baúl por moneda (AP o RJ): los importes de monedas distintas no se suman. */
+  function storageTotalsByCurrencyOf(pick: (entry: PayPadStorage) => string): DispensingCurrencyTotal[] {
+    const totals = new Map<string, DispensingCurrencyTotal>();
+    for (const entry of inUseStorage) {
+      const currency = currencyIndex.get(entry.idCurrencyDenomination);
+      const currencyId = currency?.currencyId ?? null;
+      const key = currencyId === null ? "none" : String(currencyId);
+      const current = totals.get(key) ?? { currencyId, label: denominationCurrencyText(currency), total: "0" };
+      current.total = sumDecimalStrings([current.total, pick(entry)]);
+      totals.set(key, current);
+    }
+    return [...totals.values()].sort((left, right) => (left.label ?? "").localeCompare(right.label ?? ""));
+  }
+
+  const acceptorTotalsByCurrency = storageTotalsByCurrencyOf((entry) => entry.apTotal);
+  const rejectionTotalsByCurrency = storageTotalsByCurrencyOf((entry) => entry.rjTotal);
+
+  // Totales del ARQUEO BASE por moneda, valorizados desde sus detalles: los `totalAp/totalDp/
+  // totalRj` que declara el arqueo agregan monedas distintas y no se pueden leer entre sí.
+  const arqueoTotalsByCurrency: DispensingArqueoCurrencyTotal[] = (() => {
+    if (!hasBase || lastTonnage === null) {
+      return [];
+    }
+
+    const totals = new Map<string, { ap: bigint; currencyId: number | null; dp: bigint; label: string | null; rj: bigint }>();
+    for (const detail of lastTonnage.details) {
+      // Un detalle legacy puede venir sin id de denominación: se resuelve por el valor visible
+      // contra el inventario en uso (mismo respaldo determinista que usa el resto del módulo).
+      const byId = detail.idCurrencyDenomination === null ? undefined : currencyIndex.get(detail.idCurrencyDenomination);
+      const byValue = rows.find((row) => toInt(row.denominationValue) === toInt(detail.denominationValue));
+      const currencyId = byId ? byId.currencyId : (byValue?.currencyId ?? null);
+      const label = byId ? denominationCurrencyText(byId) : (byValue?.currencyLabel ?? null);
+      const key = currencyId === null ? "none" : String(currencyId);
+      const current = totals.get(key) ?? { ap: 0n, currencyId, dp: 0n, label, rj: 0n };
+      current.ap += unitsValueCents(detail.denominationValue, Math.max(0, toInt(detail.quantityAp)));
+      current.dp += unitsValueCents(detail.denominationValue, Math.max(0, toInt(detail.quantityDp)));
+      current.rj += unitsValueCents(detail.denominationValue, Math.max(0, toInt(detail.quantityRj)));
+      totals.set(key, current);
+    }
+
+    return [...totals.values()]
+      .map((entry) => ({
+        ap: centsToDecimal(entry.ap),
+        currencyId: entry.currencyId,
+        dp: centsToDecimal(entry.dp),
+        label: entry.label,
+        rj: centsToDecimal(entry.rj),
+      }))
+      .sort((left, right) => (left.label ?? "").localeCompare(right.label ?? ""));
+  })();
+
+  /* ── VERIFICACIÓN CONTRA LO QUE REGISTRÓ EL SISTEMA ─────────────────────────────────
+   * Dos orígenes posibles, y NO son intercambiables (caso real Pay+ ODRB Rionegro, ID 1288,
+   * máquina de cambio divisa COP ⇄ USD, que acusaba «hay dinero sin registro» por $8.041.000):
+   *
+   *  1. DETALLE por transacción (`systemEvidence`): cada billete con su operación y su moneda,
+   *     o sea el lado DP real y el único atribuible por moneda.
+   *  2. `Σ returnAmount` de las aprobadas: sólo admisible con UNA moneda, porque el DTO de
+   *     transacción no declara la moneda de cada importe y, en una máquina que recibe dólares
+   *     y entrega pesos, ese campo describe lo que ENTRÓ al aceptador (AP), no lo que salió
+   *     del dispensador (DP).
+   *
+   * La comparación se hace POR MONEDA y sólo cuando el período tiene cargues en esa moneda:
+   * sin cargue no existe «cargado − en dispensadores − rechazado» que despejar. Cuando ningún
+   * origen es admisible, el resultado es «verificación no aplicable» con el motivo, nunca una
+   * acusación de descuadre.
+   * ─────────────────────────────────────────────────────────────────────────────────── */
+  const evidence = input.systemEvidence ?? null;
+  const evidenceUsable = isSystemEvidenceUsable(evidence);
+  // La máquina puede ser multimoneda por su inventario o por lo que muestran los detalles
+  // (entra USD, sale COP): en ambos casos `Σ returnAmount` deja de ser atribuible.
+  const machineMultiCurrency = new Set(rows.map((row) => row.currencyId)).size > 1 || (evidence?.multiCurrency ?? false);
+  const returnAmountCents = input.cashDispensedTotal == null ? null : decimalToCents(input.cashDispensedTotal);
+  const approvedCount = byState[APPROVED_STATE]?.count ?? 0;
+  const periodComparable = hasLoadInRange;
+  // Monedas con cargue en el período: sólo ahí se puede despejar el dispensado.
+  const currenciesWithLoad = new Set<string>();
+  for (const row of rows) {
+    if (row.loadedInPeriod !== 0) {
+      currenciesWithLoad.add(row.currencyId === null ? "none" : String(row.currencyId));
+    }
+  }
+
+  // Identidad por moneda: cada columna valorizada en su propia moneda (nunca se suman).
+  const identityByCurrency: DispensingCurrencyIdentity[] = [...valuedDispensed.byCurrency.entries()]
+    .map(([key, dispensed]) => ({
+      currencyId: dispensed.currencyId,
+      dispensed: dispensed.total,
+      hasLoad: currenciesWithLoad.has(key),
+      label: dispensed.label,
+      loaded: valuedLoaded.byCurrency.get(key)?.total ?? "0",
+      rejected: valuedRejected.byCurrency.get(key)?.total ?? "0",
+      storage: valuedStorage.byCurrency.get(key)?.total ?? "0",
+    }))
+    .sort((left, right) => (left.label ?? "").localeCompare(right.label ?? ""));
+
+  const reconciliationCheck: DispensingReconciliationCheck | null = (() => {
+    if (evidence === null && returnAmountCents === null) {
+      return null;
+    }
+
+    const abs = (value: bigint): bigint => (value < 0n ? -value : value);
+    /** Tolerancia 1 % (billetes sueltos, redondeos del API), mínimo un centavo. */
+    const tolerance = (value: bigint): bigint => (abs(value) / 100n > 1n ? abs(value) / 100n : 1n);
+
+    const systemSource: DispensingReconciliationCheck["systemSource"] = evidenceUsable
+      ? "detalles"
+      : !machineMultiCurrency && returnAmountCents !== null
+        ? "returnAmount"
+        : null;
+
+    const coverage =
+      evidence === null
+        ? null
+        : {
+            analyzed: evidence.analyzedTransactions,
+            complete: evidenceUsable,
+            detailsFailures: evidence.detailsFailures,
+            truncated: evidence.truncated,
+          };
+
+    const evidenceByCurrency = new Map<string, SystemDispensedEvidence["byCurrency"][number]>();
+    for (const entry of evidence?.byCurrency ?? []) {
+      evidenceByCurrency.set(entry.currencyId === null ? "none" : String(entry.currencyId), entry);
+    }
+
+    // Monedas en juego: las del cuadre físico y las que aparecen en el detalle.
+    const currencyKeys = new Map<string, { currencyId: number | null; label: string | null }>();
+    for (const entry of [...valuedDispensed.byCurrency.values(), ...outflowByCurrency.values()]) {
+      const key = entry.currencyId === null ? "none" : String(entry.currencyId);
+      if (!currencyKeys.has(key)) {
+        currencyKeys.set(key, { currencyId: entry.currencyId, label: entry.label });
+      }
+    }
+    for (const [key, entry] of evidenceByCurrency) {
+      if (!currencyKeys.has(key)) {
+        currencyKeys.set(key, { currencyId: entry.currencyId, label: entry.label });
+      }
+    }
+    if (systemSource === "returnAmount" && currencyKeys.size === 0) {
+      // Sin filas físicas (máquina sin baúles en uso): la comparación cae a los totales escalares.
+      currencyKeys.set("maquina", { currencyId: machineCurrencyId, label: input.machineCurrency?.label ?? null });
+    }
+
+    const currencies: DispensingReconciliationCurrencyRow[] = [...currencyKeys.entries()]
+      .map(([key, currency]) => {
+        const detailEntry = evidenceByCurrency.get(key) ?? null;
+        const fallbackRow = key === "maquina";
+        const periodEntry = fallbackRow ? null : (valuedDispensed.byCurrency.get(key) ?? null);
+        const arqueoEntry = fallbackRow ? null : (outflowByCurrency.get(key) ?? null);
+        const currencyHasLoad = fallbackRow ? periodComparable : currenciesWithLoad.has(key);
+        const periodTotal = fallbackRow
+          ? clientsFromLoadTotal
+          : currencyHasLoad && periodEntry
+            ? periodEntry.total
+            : null;
+        const arqueoTotal = fallbackRow ? clientsFromBaseTotal : (arqueoEntry?.total ?? null);
+        const systemTotal =
+          systemSource === "detalles"
+            ? (detailEntry?.dispensedValue ?? "0")
+            : systemSource === "returnAmount"
+              ? centsToDecimal(returnAmountCents ?? 0n)
+              : null;
+        const periodCents = periodTotal === null ? null : decimalToCents(periodTotal);
+        const arqueoCents = arqueoTotal === null ? null : decimalToCents(arqueoTotal);
+        const systemCents = systemTotal === null ? null : decimalToCents(systemTotal);
+        const matches = (modelCents: bigint | null): boolean =>
+          modelCents !== null && systemCents !== null && abs(modelCents - systemCents) <= tolerance(systemCents);
+        const periodMatches = matches(periodCents);
+        const arqueoMatches = matches(arqueoCents);
+        // 0 contra 0 no es una verificación, es ausencia de movimiento: una moneda que la
+        // máquina no dispensó (p. ej. los dólares que sólo entran al aceptador en una máquina
+        // de cambio divisa) no puede decidir el veredicto global con un «cuadra» vacío.
+        const nothingToVerify =
+          systemCents === 0n && (periodCents ?? 0n) === 0n && (arqueoCents ?? 0n) === 0n;
+
+        return {
+          acceptedTotal: systemSource === "detalles" ? (detailEntry?.acceptedValue ?? "0") : null,
+          arqueoTotal,
+          best:
+            systemCents === null || nothingToVerify
+              ? null
+              : periodMatches
+                ? "periodo"
+                : arqueoMatches
+                  ? "arqueo"
+                  : currencyHasLoad
+                    ? "ninguno"
+                    : null,
+          currencyId: currency.currencyId,
+          differenceArqueo: arqueoCents === null || systemCents === null ? null : centsToDecimal(arqueoCents - systemCents),
+          differencePeriodo: periodCents === null || systemCents === null ? null : centsToDecimal(periodCents - systemCents),
+          label: currency.label,
+          periodTotal,
+          systemTotal,
+          transactions: detailEntry?.payoutTransactions ?? 0,
+        } satisfies DispensingReconciliationCurrencyRow;
+      })
+      .sort((left, right) => (left.label ?? "").localeCompare(right.label ?? ""));
+
+    // Escalares de compatibilidad: sólo se publican cuando todas las filas son de la MISMA
+    // moneda. Con varias monedas la suma agregada no es comparable y queda en `null`: la UI
+    // muestra el desglose por moneda en su lugar.
+    const singleCurrency = new Set(currencies.map((row) => row.currencyId)).size <= 1;
+    const scalarOf = (pick: (row: DispensingReconciliationCurrencyRow) => string | null): string | null => {
+      const values = currencies.map(pick).filter((value): value is string => value !== null);
+      if (!singleCurrency || values.length === 0) {
+        return null;
+      }
+      return sumDecimalStrings(values);
+    };
+
+    const comparableRows = currencies.filter((row) => row.best !== null);
+    const best: DispensingReconciliationCheck["best"] =
+      comparableRows.length === 0
+        ? null
+        : comparableRows.some((row) => row.best === "ninguno")
+          ? "ninguno"
+          : comparableRows.every((row) => row.best === "periodo")
+            ? "periodo"
+            : "arqueo";
+
+    // El detalle y `Σ returnAmount` miden cosas distintas en esta máquina: se publican las dos
+    // cifras con su origen para que el operador vea de dónde sale cada una (en cambio divisa,
+    // `Σ returnAmount` sigue al aceptador y no al dispensador).
+    const detailDispensedCents = evidence === null ? null : decimalToCents(evidence.dispensedTotal);
+    const systemSourceConflict =
+      evidenceUsable &&
+      detailDispensedCents !== null &&
+      returnAmountCents !== null &&
+      abs(detailDispensedCents - returnAmountCents) > tolerance(detailDispensedCents > 0n ? detailDispensedCents : returnAmountCents);
+
+    const blocker: DispensingReconciliationCheck["blocker"] = (() => {
+      if (systemSource !== null && best !== null) {
+        return null;
+      }
+      if (!periodComparable) {
+        return {
+          code: "sin-cargues",
+          detail:
+            "El período consultado no tiene cargues, así que «cargado − en dispensadores − rechazado» no es calculable y la auditoría del arqueo cubre otra ventana.",
+        };
+      }
+      if (evidence !== null && !evidenceUsable) {
+        return {
+          code: "cobertura",
+          detail: evidence.blind || evidence.withoutDetails
+            ? "El barrido de detalles no devolvió ninguna composición legible: no hay medición del lado DP."
+            : `El barrido de detalles es parcial (${evidence.analyzedTransactions} transacción(es) analizadas${
+                evidence.detailsFailures > 0 ? `, ${evidence.detailsFailures} sin detalle` : ""
+              }${evidence.truncated ? ", período truncado por el tope del motor" : ""}): la cifra del sistema no cubre el período.`,
+        };
+      }
+      if (machineMultiCurrency) {
+        return {
+          code: "multimoneda",
+          detail:
+            "La máquina trabaja varias monedas y el DTO de transacción no declara la moneda de cada importe: «Σ devuelto» (returnAmount) suma monedas distintas y, en una máquina de cambio divisa, describe lo que entró al aceptador (AP) y no lo que salió del dispensador (DP).",
+        };
+      }
+      return {
+        code: "sin-medicion",
+        detail: "No hay una medición del lado del sistema que se pueda comparar con el cuadre físico.",
+      };
+    })();
+
+    // Salvedad del origen: se publica siempre que la cifra usada necesite explicación.
+    const note = (() => {
+      if (evidence?.amountsInverted === true) {
+        return "Los importes indican que las operaciones «de salida» del detalle describen dinero ACEPTADO (AP), no dispensado (DP): la verificación usa «Σ devuelto» y no el detalle.";
+      }
+      if (systemSource === "detalles" && machineMultiCurrency) {
+        return "La verificación usa el detalle por denominación (cada billete con su moneda y su dirección): «Σ devuelto» de las transacciones mezcla monedas y, en una máquina que recibe una moneda y entrega otra, sigue al aceptador (AP) y no al dispensador (DP).";
+      }
+      if (systemSource === "detalles" && systemSourceConflict) {
+        return "El detalle y «Σ devuelto» no coinciden: se verifica contra el detalle, que es el que registra los billetes que salieron del dispensador.";
+      }
+      return null;
+    })();
+
+    return {
+      best,
+      blocker,
+      coverage,
+      note,
+      currencies,
+      differences: {
+        arqueo: scalarOf((row) => row.differenceArqueo),
+        periodo: scalarOf((row) => row.differencePeriodo),
+      },
+      fromArqueoTotal: scalarOf((row) => row.arqueoTotal),
+      fromPeriodTotal: scalarOf((row) => row.periodTotal),
+      periodComparable,
+      returnAmountTotal: input.cashDispensedTotal ?? null,
+      systemSource,
+      systemSourceConflict,
+      systemTotal: scalarOf((row) => row.systemTotal),
+      transactionCount: approvedCount,
+    };
+  })();
 
   // ¿El arqueo base cuadra consigo mismo? El operador ve sus totales en «Cargues y
   // arqueos»; si sus detalles no los explican, el punto de partida del cuadre físico no
@@ -808,10 +1172,24 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       total: byState[RETURNED_ERROR_STATE]?.total ?? "0",
     },
     excludedRows,
-    currencyLabels: [...new Set(rows.map((row) => row.currencyLabel ?? "moneda no declarada"))],
+    currencyLabels: [
+      ...new Set([
+        ...rows.map((row) => row.currencyLabel ?? "moneda no declarada"),
+        // El detalle puede revelar una moneda que el inventario en uso no muestra (p. ej. el
+        // dólar que entra al aceptador de una máquina declarada en pesos).
+        ...(evidence?.byCurrency ?? []).map((entry) => entry.label ?? "moneda no declarada"),
+      ]),
+    ].filter((label, index, all) => all.indexOf(label) === index),
+    acceptorTotalsByCurrency,
+    arqueoTotalsByCurrency,
+    dispensedTotalsByCurrency: loadOutflowTotalsByCurrency,
+    identityByCurrency,
+    loadedTotalsByCurrency: [...valuedLoaded.byCurrency.values()],
     loadOutflowTotalsByCurrency,
-    multiCurrency: new Set(rows.map((row) => row.currencyId)).size > 1,
+    multiCurrency: machineMultiCurrency,
     outflowTotalsByCurrency: [...outflowByCurrency.values()],
+    rejectedTotalsByCurrency: [...valuedRejected.byCurrency.values()],
+    rejectionTotalsByCurrency,
     rows,
     storageTotalsByCurrency: [...totalsByCurrency.values()],
   };

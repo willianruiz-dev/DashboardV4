@@ -67,13 +67,50 @@ dispensador y hay que registrar el arqueo en el momento correcto.
 
 ## 3. Cómo se verifica (evidencia dura, no interpretación)
 
-Existe una segunda medición independiente: **lo que el sistema registró que entregó**, o sea
-`Σ returnAmount` de las transacciones aprobadas de la misma ventana (es el «Devuelto» de la
-transacción; el BFF ya trae las transacciones, sólo hay que publicar esa suma).
+Existe una segunda medición independiente: **lo que el sistema registró que entregó**. Tiene DOS
+orígenes posibles y no son intercambiables (corrección 2026-09-21, caso Pay+ ODRB Rionegro id 1288):
+
+| Origen | Qué mide | Cuándo es admisible |
+| --- | --- | --- |
+| **Detalle por transacción** (`Transaction/{id}/Details` → operación + denominación + cantidad) | Cada billete con su **moneda** y su **dirección**: `accept` = entra al aceptador (AP), `dispense` = sale del dispensador (DP), `failed` = intento de salida fallido | Siempre que el barrido cubra el período completo (sin truncar, sin detalles fallidos, lectura no invertida). Es el **lado DP real** |
+| **`Σ returnAmount`** de las aprobadas (el «Devuelto» de la transacción) | Un importe por transacción, **sin moneda y sin dirección declarada** | **Sólo con UNA moneda.** En una máquina multimoneda suma pesos y dólares; en una máquina de cambio divisa describe lo que **entró** (AP), no lo que salió (DP) |
 
 ```
-entregado_físico  (identidad §2)   vs   entregado_sistema (Σ returnAmount aprobadas)
+entregado_físico (identidad §2, POR MONEDA)   vs   entregado_sistema (detalle DP, POR MONEDA)
+                                                └─ respaldo: Σ returnAmount (sólo una moneda)
 ```
+
+> **Caso real que motivó la corrección (Pay+ ODRB Rionegro, ID 1288, multimoneda COP/USD):**
+> la tarjeta decía «El dispensado no coincide con lo que el sistema registró · Sistema (Σ devuelto
+> de 13 transacción(es) aprobadas): **$1.166.900** · Dispensado del período: **$9.207.900**
+> (diferencia $8.041.000) · contando el inventario previo del arqueo: $8.013.400 (diferencia
+> $6.846.500) · Hay dinero sin registro…». El operador lo rechazó con razón: *«las operaciones
+> aprobadas son AP, no DP»* y *«esta máquina recibe dólares y los cambia por pesos colombianos»*.
+> Las dos cifras comparadas medían **cosas distintas**: `Σ returnAmount` seguía al aceptador
+> (dólares que entran) y además sumaba monedas; el dispensado físico era la salida de pesos.
+> No faltaban $8.041.000: sobraba una comparación inválida.
+
+Reglas que se aplican desde entonces:
+
+1. **La comparación es por moneda.** Cada fila del desglose tiene `idCurrency` (catálogo) y el
+   detalle de cada transacción también; nada se compara ni se suma entre monedas. Los escalares
+   agregados de la verificación (`systemTotal`, `fromPeriodTotal`, `differences`) sólo se publican
+   cuando todas las filas son de la misma moneda; si no, quedan en `null` y la UI muestra el
+   desglose por moneda.
+2. **El lado del dinero debe coincidir.** AP (aceptado) y DP (dispensado) se miden y se muestran
+   por separado (`acceptedTotal` / `systemTotal` de cada moneda). Una moneda que la máquina no
+   dispensa (los dólares que sólo entran al aceptador) **no decide el veredicto**: 0 contra 0 no es
+   «cuadra», es ausencia de movimiento.
+3. **Sólo se compara una moneda con cargue en el período.** Sin cargue de esa moneda no existe
+   «cargado − en dispensadores − rechazado» que despejar (antes un baúl de USD sin cargue aportaba
+   un negativo a la suma agregada).
+4. **Sin medición admisible no hay acusación.** Si el período no tiene cargues, si el barrido de
+   detalles es parcial (truncado por el tope de 40 transacciones, detalles fallidos o ilegibles) o
+   si la máquina es multimoneda sin detalle utilizable, la tarjeta declara **«verificación no
+   aplicable»** con el motivo (`blocker`) en lugar de «hay dinero sin registro».
+5. **Las dos cifras se publican cuando discrepan.** Con detalle utilizable, `Σ returnAmount` queda
+   como *referencia* rotulada con su origen (`systemSourceConflict` + `note`), para que el operador
+   vea de dónde salía el número que antes se comparaba mal.
 
 | Resultado | Qué significa |
 | --- | --- |
@@ -98,16 +135,21 @@ daba un negativo absurdo) y las dos cifras comparadas miden ventanas distintas: 
 (Σ `returnAmount`) cubre el rango consultado, la auditoría del arqueo arranca días antes, en la
 base del arqueo. La diferencia entre ambas **no es dinero perdido, es diferencia de ventanas.**
 
-| Estado | `best` | Qué muestra la tarjeta |
-| --- | --- | --- |
-| Período con cargues y cuadra con «cargado − en dispensadores − rechazado» | `periodo` | «El dispensado coincide con lo que el sistema registró» |
-| Período con cargues y sólo cuadra contando el inventario previo del arqueo | `arqueo` | «Sólo cuadra contando el inventario previo del arqueo» |
-| Período con cargues y no cuadra con ningún modelo | `ninguno` | «El dispensado no coincide… Hay dinero sin registro» (**warning**) |
-| Período **sin cargues** (o sin ningún modelo calculable) | `null` | «Sin período comparable para verificar»: explica las dos ventanas y sugiere «Desde último cargue» |
+| Estado | `best` | `blocker` | Qué muestra la tarjeta |
+| --- | --- | --- | --- |
+| Período con cargues y cuadra con «cargado − en dispensadores − rechazado» | `periodo` | `null` | «El dispensado coincide con lo que el sistema registró» |
+| Período con cargues y sólo cuadra contando el inventario previo del arqueo | `arqueo` | `null` | «Sólo cuadra contando el inventario previo del arqueo» |
+| Período con cargues y no cuadra con ningún modelo | `ninguno` | `null` | «El dispensado no coincide… Hay dinero sin registro» (**warning**) |
+| Período **sin cargues** (o sin ningún modelo calculable) | `null` | `sin-cargues` | «Sin período comparable para verificar»: explica las dos ventanas y sugiere «Desde último cargue» |
+| Máquina **multimoneda** sin detalle utilizable (caso ODRB Rionegro) | `null` | `multimoneda` | «Σ devuelto no es comparable en esta máquina»: explica AP vs DP y remite al detalle por denominación |
+| Barrido de detalles **parcial** (truncado, fallido o ilegible) en máquina multimoneda | `null` | `cobertura` | «El detalle del período está incompleto: la verificación no concluye» |
+| Sin ninguna medición del sistema | `null` | `sin-medicion` | «Sin medición del sistema para verificar» |
 
-Regla implementada: `periodComparable = hasLoadInRange`; `best` sólo puede ser `"ninguno"`
-cuando el período **sí** tiene cargues. El código distingue «no se puede comparar» (neutro) de
-«no coincide» (advertencia) y nunca los mezcla.
+Reglas implementadas: `periodComparable = hasLoadInRange`; `best` sólo puede ser `"ninguno"`
+cuando el período **sí** tiene cargues **y** existe una medición admisible (`systemSource ≠ null`).
+El código distingue «no se puede comparar» (neutro) de «no coincide» (advertencia) y nunca los
+mezcla. `systemSource` dice qué cifra se usó (`"detalles"` o `"returnAmount"`), `currencies[]` trae
+la comparación por moneda (con lo aceptado aparte) y `note` explica la salvedad del origen.
 
 ## 4. La tabla (IMPLEMENTADA)
 
@@ -116,7 +158,11 @@ cuando el período **sí** tiene cargues. El código distingue «no se puede com
 | COP 2.000 | 140 · $280.000 | **124** (`140 − 11 − 5`) | 5 · $10.000 (+5) | 11 · $22.000 | OK |
 
 - Arriba de la tabla, el cuadre valorizado completo: **Cargado $380.000 = Dispensado $365.000 +
-  Rechazado $10.000 + En dispensadores $155.000** (por moneda cuando la máquina trabaja varias).
+  Rechazado $10.000 + En dispensadores $155.000**. Con varias monedas la identidad se publica **por
+  moneda** (`identityByCurrency`): `COP: 9.202.700 dispensados + 2.100 rechazados + 0 en
+  dispensadores = 9.204.800 cargados` y `USD: sin cargues de esta moneda en el período, así que no
+  hay dispensado que despejar`; el total agregado queda rotulado como referencia (suma monedas
+  distintas).
 - Cada celda lleva su origen y su fecha en el tooltip; «Cargado» lleva la traza de cargues.
 - El dispensado muestra su ecuación debajo del número y su valor en pesos.
 - Filas con inventario previo sin cargue → «inventario previo» (no se esconden, se explican).
@@ -131,7 +177,9 @@ cuando el período **sí** tiene cargues. El código distingue «no se puede com
 | **P2** | Rechazado del período = baúl hoy − rechazo al inicio del período (arqueo anterior al rango) | `dispensing-metrics.ts` | **HECHO** |
 | **P3** | Verificación con `Σ returnAmount` del sistema (BFF `cashDispensedTotal`) contra el dispensado del período y contra la auditoría del arqueo | `api/transactions/search/route.ts` + `dispensing-control-page.tsx` | **HECHO** |
 | **P4** | Fila «inventario previo» cuando el baúl tiene más unidades que las cargadas en el período | `dispensing-metrics.ts` + tabla | **HECHO** |
-| **P5** | Regresión con los números reales (140 / 124 / 5 / 11 y el cierre valorizado) | `scripts/dispensing-fixtures.mts` | **HECHO** (99/99) |
+| **P5** | Regresión con los números reales (140 / 124 / 5 / 11 y el cierre valorizado) | `scripts/dispensing-fixtures.mts` | **HECHO** |
+| **P6** | Verificación POR MONEDA y por lado (AP/DP): el lado del sistema sale del detalle de las transacciones; `Σ returnAmount` sólo con una moneda; sin medición admisible se declara «no aplicable» en vez de acusar | `system-dispensed.ts` + `dispensing-metrics.ts` + `components/reconciliation-check.tsx` | **HECHO** (121/121) |
+| **P7** | Agregados AP / RJ / arqueo base por moneda (antes sumaban pesos y dólares en un solo número) | `dispensing-metrics.ts` + tarjetas de la página | **HECHO** |
 
 Nada de esto toca el backend .NET ni las tablas de arqueo (que ya se verificaron correctas contra el
 dashboard viejo).
@@ -142,6 +190,15 @@ dashboard viejo).
   máquina (Pay+ → Almacenamiento → Dispensadores). No existe ningún campo `virtual` en el API.
 - **D2 — Saldo de apertura:** **cerrado: el cargue abre el cuadre del período** (decisión del
   operador, 2026-09-21). El inventario previo del arqueo queda como auditoría, no en la suma.
+- **D4 — Origen de la cifra del sistema (cerrado 2026-09-21, caso ODRB Rionegro id 1288):** la
+  verificación usa el **detalle por denominación** (lado DP, por moneda) cuando el barrido cubre el
+  período; `Σ returnAmount` queda sólo para máquinas de **una** moneda y como referencia rotulada.
+  Motivo: el DTO de transacción no declara la moneda de cada importe y, en una máquina que recibe
+  dólares y entrega pesos, `returnAmount` sigue al aceptador (AP) y no al dispensador (DP). El
+  barrido de detalles es el que ya hace la detección de atascos (misma ventana, misma caché, ninguna
+  petición extra) y se clasifica con la MISMA regla del motor (`readJamDetail`), para que los dos
+  paneles no se contradigan. Límite declarado: el barrido está acotado a 40 transacciones
+  (`JAM_SCAN_MAX_TRANSACTIONS`); fuera de esa cobertura la verificación se declara parcial.
 - **D3 — Origen del rechazo:** se asume que el crecimiento del baúl de rechazo viene del dispensador y
   por eso se resta del dispensado («salió del dispensador pero no llegó al cliente»). Pendiente
   menor: si algún día se comprueba que también recibe billetes rechazados de clientes, separar con los

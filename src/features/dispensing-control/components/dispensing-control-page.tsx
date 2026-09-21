@@ -21,6 +21,7 @@ import {
   DenominationTable,
 } from "@/features/dispensing-control/components/denomination-table";
 import { JamDiagnosticsSection } from "@/features/dispensing-control/components/jam-diagnostics";
+import { ReconciliationCheckAlert } from "@/features/dispensing-control/components/reconciliation-check";
 import { DispensingFilters, type DispensingFilterSelection } from "@/features/dispensing-control/components/dispensing-filters";
 import { MetricCard } from "@/features/dispensing-control/components/metric-card";
 import { computeJamDiagnostics } from "@/features/dispensing-control/dispensing-jams";
@@ -66,15 +67,18 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
           },
     [selection, selectedPaypad],
   );
-  const metricsQuery = useDispensingMetrics(metricsArgs);
-
   // El análisis corre AUTOMÁTICAMENTE al seleccionar la máquina o cambiar el período
   // (el operador debe ver la alerta sin pulsar nada). La clave de la consulta incluye
   // máquina y rango, y el BFF cachea los detalles, así que volver a un período ya
   // analizado no vuelve a golpear el API legado.
+  // Va ANTES de las métricas porque el barrido aporta la medición del lado del sistema por
+  // moneda y por dirección del dinero (AP entra / DP sale): sin él, una máquina de cambio
+  // divisa verificaba el dispensado contra `Σ returnAmount`, que sigue al aceptador.
   const jamScanRequest = useMemo<JamScanRequest | null>(() => buildJamScanRequest(metricsArgs), [metricsArgs]);
   const jamScanQuery = useDispensingJamScan(jamScanRequest);
   const hasAnalysis = jamScanQuery.data !== undefined && jamScanRequest !== null;
+
+  const metricsQuery = useDispensingMetrics(metricsArgs, { scan: jamScanQuery.data ?? null });
 
   const jamDiagnostics = useMemo(
     () =>
@@ -170,15 +174,41 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
   const physicalFromTime = physicalFromIso === null ? Number.NaN : new Date(physicalFromIso).getTime();
   const baseOlderThanPeriod =
     hasArqueoBase && !Number.isNaN(physicalBaseTime) && !Number.isNaN(physicalFromTime) && physicalFromTime > physicalBaseTime;
-  // Cuando el período elegido no tiene cargues, la verificación contra el sistema NO aplica:
-  // el registro del sistema cubre el período y la auditoría del arqueo arranca días antes.
-  // El aviso explica las dos ventanas en vez de acusar un descuadre inexistente.
-  const notComparableNote =
-    baseAtIso === null
-      ? ""
-      : metrics?.lastLoad.at
-        ? `: la auditoría del arqueo arranca el ${formatDashboardDateTime(baseAtIso)} y el último cargue fue el ${formatDashboardDateTime(metrics.lastLoad.at)}`
-        : `: la auditoría del arqueo arranca el ${formatDashboardDateTime(baseAtIso)}, antes del período`;
+  // Desglose por moneda de los lados que el API sí permite atribuir (baúles y arqueo):
+  // sin esto, AP/RJ/arqueo de una máquina de cambio divisa suman pesos y dólares.
+  const byCurrencyText = (entries: readonly { label: string | null; total: string }[]): string =>
+    entries.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ");
+  const acceptorByCurrencyNote =
+    multiCurrency && (metrics?.acceptorTotalsByCurrency.length ?? 0) > 0
+      ? ` · aceptador hoy por moneda: ${byCurrencyText(metrics?.acceptorTotalsByCurrency ?? [])}`
+      : "";
+  const rejectionByCurrencyNote =
+    multiCurrency && (metrics?.rejectionTotalsByCurrency.length ?? 0) > 0
+      ? ` · baúl de rechazo hoy por moneda: ${byCurrencyText(metrics?.rejectionTotalsByCurrency ?? [])}`
+      : "";
+  const arqueoByCurrencyNote =
+    multiCurrency && (metrics?.arqueoTotalsByCurrency.length ?? 0) > 0
+      ? `Arqueo base por moneda: ${byCurrencyText(
+          (metrics?.arqueoTotalsByCurrency ?? []).map((entry) => ({ label: entry.label, total: entry.dp })),
+        )} en dispensadores`
+      : "";
+  const dispensedByCurrencyNote =
+    multiCurrency && (metrics?.dispensedTotalsByCurrency.length ?? 0) > 0
+      ? `Dispensado por moneda: ${byCurrencyText(metrics?.dispensedTotalsByCurrency ?? [])}`
+      : "";
+  const loadedByCurrencyNote =
+    multiCurrency && (metrics?.loadedTotalsByCurrency.length ?? 0) > 0
+      ? `Cargado por moneda: ${byCurrencyText(metrics?.loadedTotalsByCurrency ?? [])}`
+      : "";
+  // La verificación necesita las DOS lecturas (cuadre físico y barrido de detalles): mientras
+  // alguna esté en vuelo no se pinta la tarjeta, para no mostrar un estado transitorio
+  // («sin período comparable» sin baúles cargados, o «no comparable» antes de llegar el detalle).
+  const verificationPending = metricsQuery.isLoading || (jamScanRequest !== null && jamScanQuery.isPending);
+  // En una máquina multimoneda el dispensado del período sólo es una cifra operativa por
+  // moneda: el total agregado se muestra, pero no es el número que se verifica.
+  const dpValue = multiCurrency && (metrics?.dispensedTotalsByCurrency.length ?? 0) > 1
+    ? byCurrencyText(metrics?.dispensedTotalsByCurrency ?? [])
+    : (dispensedTotal === null ? "—" : formatDashboardMoney(dispensedTotal));
 
   return (
     <div className="grid gap-6">
@@ -231,8 +261,17 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 <TriangleAlert aria-hidden="true" className="size-4" />
                 <AlertTitle>Máquina multimoneda ({currencyLabels})</AlertTitle>
                 <AlertDescription>
-                  Los importes de AP, RJ y el total del arqueo agregan monedas distintas y no son comparables entre sí. El inventario del
-                  dispensador se muestra por moneda en el desglose, y la detección de atascos evalúa cada moneda por separado.
+                  <span className="block">
+                    Los importes de AP, RJ y el total del arqueo agregan monedas distintas y no son comparables entre sí. El inventario del
+                    dispensador, el aceptador, el baúl de rechazo y el arqueo base se muestran por moneda, y la detección de atascos evalúa
+                    cada moneda por separado.
+                  </span>
+                  <span className="mt-1 block">
+                    Si la máquina recibe una moneda y entrega otra (cambio divisa), las transacciones aprobadas registran lo que ENTRA al
+                    aceptador (AP): «Σ devuelto» no mide el dispensador (DP). La verificación del cuadre se hace entonces por moneda con el
+                    detalle por denominación, y cuando ese detalle no está completo el panel lo declara en vez de acusar un descuadre.
+                  </span>
+                  {arqueoByCurrencyNote ? <span className="mt-1 block">{arqueoByCurrencyNote}.</span> : null}
                 </AlertDescription>
               </Alert>
             ) : null}
@@ -246,64 +285,16 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 </AlertDescription>
               </Alert>
             ) : null}
-            {/* VERIFICACIÓN: lo que el sistema registró haber devuelto (Σ returnAmount) contra
-                el dispensado del período. Es la medición independiente que valida el cuadre. */}
-            {check && check.systemTotal !== null ? (
-              check.best === null ? (
-                /* Sin cargues en el período la comparación NO aplica: el registro del sistema
-                   cubre el período y la auditoría del arqueo cubre desde la base (días antes).
-                   Antes se mostraba como «hay dinero sin registro», que era una falsa alarma
-                   (caso real Pay+ Inder 1 mirando «Hoy» con el último cargue de hace días). */
-                <Alert>
-                  <TimerReset aria-hidden="true" className="size-4" />
-                  <AlertTitle>Sin período comparable para verificar</AlertTitle>
-                  <AlertDescription>
-                    <span className="block">
-                      Sistema (Σ devuelto de {check.transactionCount} transacción(es) aprobadas):{" "}
-                      <strong>{formatDashboardMoney(check.systemTotal)}</strong>
-                      {check.fromArqueoTotal === null
-                        ? ""
-                        : ` · entregado desde la base del arqueo: ${formatDashboardMoney(check.fromArqueoTotal)}`}
-                    </span>
-                    <span className="mt-1 block">
-                      {rangeLabel} no tiene cargues, así que «cargado − en dispensadores − rechazado» no es calculable: no hay dispensado
-                      del período que comparar y las dos cifras de arriba miden ventanas distintas{notComparableNote}. Su diferencia
-                      {" "}no es un descuadre. Para cuadrar el tramo completo usa el preset «Desde último cargue».
-                    </span>
-                  </AlertDescription>
-                </Alert>
-              ) : (
-              <Alert variant={check.best === "ninguno" ? "warning" : "default"}>
-                <CircleCheck aria-hidden="true" className="size-4" />
-                <AlertTitle>
-                  {check.best === "periodo"
-                    ? "El dispensado coincide con lo que el sistema registró"
-                    : check.best === "arqueo"
-                      ? "Sólo cuadra contando el inventario previo del arqueo"
-                      : "El dispensado no coincide con lo que el sistema registró"}
-                </AlertTitle>
-                <AlertDescription>
-                  <span className="block">
-                    Sistema (Σ devuelto de {check.transactionCount} transacción(es) aprobadas): <strong>{formatDashboardMoney(check.systemTotal)}</strong>
-                    {" · "}
-                    Dispensado del período: <strong>{check.fromPeriodTotal === null ? "no calculable" : formatDashboardMoney(check.fromPeriodTotal)}</strong>
-                    {check.differences.periodo === null ? "" : ` (diferencia ${formatDashboardMoney(check.differences.periodo)})`}
-                    {check.fromArqueoTotal !== null && check.fromArqueoTotal !== check.fromPeriodTotal
-                      ? ` · contando el inventario previo del arqueo: ${formatDashboardMoney(check.fromArqueoTotal)}${
-                          check.differences.arqueo === null ? "" : ` (diferencia ${formatDashboardMoney(check.differences.arqueo)})`
-                        }`
-                      : ""}
-                  </span>
-                  <span className="mt-1 block">
-                    {check.best === "periodo"
-                      ? "El cuadre cierra: cargado − en dispensadores − rechazado explica lo entregado a clientes."
-                      : check.best === "arqueo"
-                        ? "El inventario previo del arqueo sí pasó por el dispensador: revisa si el baúl se cargó sobre saldo existente o si esas unidades se retiraron en mantenimiento."
-                        : "Hay dinero sin registro en una de las dos partes: revisa cargues no registrados, retiros manuales o el estado de los baúles."}
-                  </span>
-                </AlertDescription>
-              </Alert>
-              )
+            {/* VERIFICACIÓN: lo que el sistema registró contra el cuadre físico, POR MONEDA y
+                declarando el origen de la cifra (detalle por denominación = lado DP real, o
+                `Σ devuelto`, que sólo es admisible con una moneda). */}
+            {check && !verificationPending ? (
+              <ReconciliationCheckAlert
+                baseAtIso={baseAtIso}
+                check={check}
+                lastLoadAt={metrics?.lastLoad.at ?? null}
+                rangeLabel={rangeLabel}
+              />
             ) : null}
             {baseOlderThanPeriod && baseAtIso && physicalFromIso ? (
               <Alert>
@@ -332,7 +323,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 icon={CircleCheck}
                 label="AP · Aprobadas del período"
                 loading={metricsQuery.isLoading && metrics === null}
-                subtitle={`${metrics?.ap.count ?? 0} transacción${(metrics?.ap.count ?? 0) === 1 ? "" : "es"}${metrics?.apPhysical.at ? ` · Base: ${formatDashboardMoney(metrics.apPhysical.total ?? "0")}` : " · Sin arqueo base"} · Aceptadores hoy: ${metrics ? formatDashboardMoney(metrics.apPhysical.currentTotal) : "—"}${mixedCurrencyNote}`}
+                subtitle={`${metrics?.ap.count ?? 0} transacción${(metrics?.ap.count ?? 0) === 1 ? "" : "es"}${metrics?.apPhysical.at ? ` · Base: ${formatDashboardMoney(metrics.apPhysical.total ?? "0")}` : " · Sin arqueo base"} · Aceptadores hoy: ${metrics ? formatDashboardMoney(metrics.apPhysical.currentTotal) : "—"}${mixedCurrencyNote}${acceptorByCurrencyNote}`}
                 tone="approved"
                 value={metrics ? formatDashboardMoney(metrics.ap.total) : "—"}
               />
@@ -348,6 +339,8 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                           ? `el arqueo de referencia tenía ${priorStock} unidad(es) previas: contándolas saldrían ${formatDashboardMoney(arqueoTotal ?? "0")}`
                           : "",
                         mixedCurrencyNote.trim(),
+                        loadedByCurrencyNote,
+                        dispensedByCurrencyNote,
                         storageByCurrencyNote,
                       ]
                         .filter((part) => part.length > 0)
@@ -355,13 +348,13 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                     : null
                 }
                 tone="system"
-                value={dispensedTotal === null ? "—" : formatDashboardMoney(dispensedTotal)}
+                value={dpValue}
               />
               <MetricCard
                 icon={XCircle}
                 label="RJ · Aprobada Error Devuelta"
                 loading={metricsQuery.isLoading && metrics === null}
-                subtitle={`${metrics?.rj.count ?? 0} transacción${(metrics?.rj.count ?? 0) === 1 ? "" : "es"} · Baúl rechazo hoy: ${metrics ? formatDashboardMoney(metrics.rj.currentTotal) : "—"}${metrics?.rj.physicalTotal ? ` (base: ${formatDashboardMoney(metrics.rj.physicalTotal)})` : ""}${mixedCurrencyNote}`}
+                subtitle={`${metrics?.rj.count ?? 0} transacción${(metrics?.rj.count ?? 0) === 1 ? "" : "es"} · Baúl rechazo hoy: ${metrics ? formatDashboardMoney(metrics.rj.currentTotal) : "—"}${metrics?.rj.physicalTotal ? ` (base: ${formatDashboardMoney(metrics.rj.physicalTotal)})` : ""}${mixedCurrencyNote}${rejectionByCurrencyNote}`}
                 tone="cancelled"
                 value={metrics ? formatDashboardMoney(metrics.rj.total) : "—"}
               />
@@ -387,6 +380,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               denominations={metricsQuery.denominations}
               excludedRows={metrics?.excludedRows ?? []}
               hasBase={metrics?.reconciliation.hasBase ?? false}
+              identityByCurrency={metrics?.identityByCurrency ?? []}
               lastLoadAt={metrics?.lastLoad.at ?? null}
               loading={metricsQuery.isLoading && metrics === null}
               rangeLabel={rangeLabel}

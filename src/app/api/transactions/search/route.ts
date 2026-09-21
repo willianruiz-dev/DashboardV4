@@ -87,10 +87,12 @@ function createSummary(transactions: readonly DashboardTransaction[]) {
     approvedCount: approved.length,
     approvedTotal: sumMoneyStrings(approvedExact.map(netAmount)),
     byState: Object.fromEntries(byStateMap),
-    // Σ `returnAmount` de las transacciones aprobadas: lo que el SISTEMA registró haber
-    // DEVUELTO al cliente (el cambio dispensado). Es la única medición independiente del
-    // inventario que reporta la máquina, y la que permite verificar el cuadre físico del
-    // control de dispensado (`returnAmount` es «dinero que sale», ver el motor de atascos).
+    // Σ `returnAmount` de las transacciones aprobadas («Devuelto»). El control de dispensado lo
+    // usa como REFERENCIA: el DTO no declara la moneda de cada importe ni la dirección del dinero,
+    // así que en una máquina multimoneda suma COP y USD y, en una de cambio divisa (entra USD al
+    // aceptador, sale COP del dispensador), sigue al lado AP y no al DP. La medición del lado DP
+    // sale del detalle por denominación (`system-dispensed.ts`); ver
+    // docs/DISPENSING_RECONCILIATION_LOGIC.md §3 (caso real Pay+ ODRB Rionegro, id 1288).
     cashDispensedTotal: sumMoneyStrings(approvedExact.map((transaction) => transaction.returnAmount)),
     cancelledCount: transactions.filter((transaction) => transaction.stateTransaction === "Cancelada").length,
     cardTotal: sumMoneyStrings(approved.filter((transaction) => transaction.typePayment === "Tarjeta").map(netAmount)),
