@@ -240,11 +240,12 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
             {baseOlderThanPeriod && baseAtIso && physicalFromIso ? (
               <Alert>
                 <PackageOpen aria-hidden="true" className="size-4" />
-                <AlertTitle>El cuadre físico abarca desde el arqueo base, no desde el período ({rangeLabel})</AlertTitle>
+                <AlertTitle>Referencia del arqueo: el período ({rangeLabel}) empieza después de la base</AlertTitle>
                 <AlertDescription>
-                  Inicial, Cargada y Entregada van del arqueo base del {formatDashboardDateTime(baseAtIso)} hasta el inventario de hoy; AP y RJ
-                  cubren solo desde el {formatDashboardDateTime(physicalFromIso)}. Por eso la «Entregada» puede superar lo cargado en el período:
-                  parte de los billetes ya estaban en el dispensador cuando se hizo el arqueo. Cada columna muestra su ecuación para auditarla.
+                  La «Entregada» de la tabla es la del último cargue ({formatDashboardDateTime(metrics?.lastLoad.at ?? null)}) y no cambia con el
+                  filtro, igual que los saldos de los baúles. La referencia del arqueo base del {formatDashboardDateTime(baseAtIso)} (columna
+                  Inicial y subtítulo) abarca desde ese arqueo, anterior al período; AP y RJ sí cubren solo desde el{" "}
+                  {formatDashboardDateTime(physicalFromIso)}.
                 </AlertDescription>
               </Alert>
             ) : null}
@@ -330,7 +331,8 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
 
             <p className="text-xs text-muted-foreground">
               Fuentes: transacciones del período (AP/RJ, valor neto = ingresado − devuelto) · arqueo base + cargues desde la base + inventario
-              actual (cuadre físico DP: entregada = inicial + cargada − saldo; rechazo = baúl actual con su delta).
+              actual (DP: entregada = cargada desde el último cargue − saldo hoy, nunca mayor que lo cargado; el cuadre desde el arqueo base
+              se muestra como referencia; rechazo = baúl actual con su delta).
               El umbral de alerta por denominación se configura en Pay+ → Configurar denominaciones (mínimo DP); la tolerancia del arqueo legacy añade 10 unidades.
             </p>
           </>
