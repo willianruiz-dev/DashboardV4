@@ -118,6 +118,7 @@ export type JamSignalCode =
   | "rafaga_salida"
   | "rechazo_con_unidades"
   | "sin_caida_fisica"
+  | "sin_participacion"
   | "sustitucion"
   | "sustitucion_no_configurada";
 
@@ -174,6 +175,7 @@ export const jamSignalWeights: Record<JamSignalCode, number> = {
   rafaga_salida: 2,
   rechazo_con_unidades: 1,
   sin_caida_fisica: 3,
+  sin_participacion: 2,
   sustitucion: 3,
   sustitucion_no_configurada: 3,
 };
@@ -191,6 +193,7 @@ export const jamSignalLabels: Record<JamSignalCode, string> = {
   rafaga_salida: "Ráfaga de error devuelta",
   rechazo_con_unidades: "Baúl de rechazo con unidades",
   sin_caida_fisica: "El arqueo no bajó nada",
+  sin_participacion: "No participó teniendo saldo",
   sustitucion: "Se sustituyó por denominación menor",
   sustitucion_no_configurada: "Sustitución con denominación no configurada",
 };
@@ -1000,6 +1003,13 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
   }
 
   const aggregation = new Map<number, DenominationAggregate>();
+  const payoutMixes: { currencyId: number | null; dispensed: Map<number, number>; payoutCents: bigint; planned: boolean }[] = [];
+  // Demanda: cuántos pagos analizados tenían valor suficiente para usar cada denominación.
+  // Es la vara para exigir participación SIN depender del plan canónico (que falla cuando el
+  // detalle no cuadra con el importe devuelto y dejaba el módulo mudo: caso Pay+ Inder 2,
+  // donde el cambio se entrega sólo con monedas de 100 y el arqueo no bajó el 500).
+  const payoutDemand = new Map<number, number>();
+  const currencyPayouts = new Map<number | null, number>();
   let payoutsAnalyzed = 0;
   let mixedCurrencyPayouts = 0;
   const unclassifiedOperations = new Set<string>();
@@ -1093,6 +1103,13 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
     const payoutCurrencyId = [...payoutCurrencies][0] ?? null;
 
     payoutsAnalyzed += 1;
+    currencyPayouts.set(payoutCurrencyId, (currencyPayouts.get(payoutCurrencyId) ?? 0) + 1);
+    let plannedPayout = false;
+    for (const [denominationId, candidate] of planCandidates) {
+      if (candidate.currencyId === payoutCurrencyId && candidate.valueCents <= payoutCents) {
+        payoutDemand.set(denominationId, (payoutDemand.get(denominationId) ?? 0) + 1);
+      }
+    }
     let actualTotal = 0n;
     for (const [denominationId, quantity] of dispensedInTransaction) {
       actualTotal += BigInt(quantity) * (denominationValueById.get(denominationId) ?? 0n);
@@ -1111,6 +1128,7 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
       );
 
       if (plan) {
+        plannedPayout = true;
         // Falta de participación: la denominación estaba en la combinación correcta y
         // no se usó (o se usó de menos). Es el sospechoso del atasco.
         for (const [denominationId, plannedUnits] of plan.units) {
@@ -1147,6 +1165,15 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
       }
     }
 
+    // Mezcla del pago: sirve después para reconocer al compensador cuando NO se pudo
+    // armar la combinación canónica (detalle que no cuadra con el importe devuelto).
+    payoutMixes.push({
+      currencyId: payoutCurrencyId,
+      dispensed: dispensedInTransaction,
+      payoutCents,
+      planned: plannedPayout,
+    });
+
     // Participación: en cuántos pagos participó cada denominación.
     for (const denominationId of dispensedInTransaction.keys()) {
       const aggregate = aggregation.get(denominationId) ?? createAggregate();
@@ -1167,6 +1194,54 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
   const recentPayoutCount = [...payoutTransactionIds].filter((id) => recentTransactionIds.has(id)).length;
   const previousPayoutCount = payoutTransactionIds.size - recentPayoutCount;
   const canMeasureParticipation = recentPayoutCount >= thresholds.minimumRecentPayouts && previousPayoutCount >= thresholds.minimumRecentPayouts;
+
+  // 3b) Compensación sin plan canónico. Cuando el detalle no cuadra con el importe
+  //     devuelto (o no hay combinación exacta) no se puede repartir la «parte canónica»,
+  //     pero sí se sabe quién entregó y quién, teniendo saldo y demanda, no participó
+  //     nunca. Con un módulo así, quien entrega el cambio está cubriendo ese hueco: es
+  //     compensador, no culpable. Caso real Pay+ Inder 2: el cambio sale SÓLO con monedas
+  //     de 100 y el módulo de 500, marcado «No dispensa» y con saldo, no aparece nunca; el
+  //     100 terminaba señalado por el descuadre del arqueo que causaba el 500 ausente.
+  const stockByDenomination = new Map<number, number>(
+    storage.map((entry) => [entry.idCurrencyDenomination, toInt(entry.dpStored)]),
+  );
+  const movedInArqueoOf = (denominationId: number): boolean => {
+    const previous = previousQuantities.get(denominationId) ?? null;
+    const current = currentQuantities.get(denominationId) ?? null;
+    return previous !== null && current !== null && previous - current > 0;
+  };
+  const absentWithDemand = [...planCandidates.entries()].filter(([denominationId]) => {
+    const aggregate = aggregation.get(denominationId);
+    return (
+      (stockByDenomination.get(denominationId) ?? 0) > 0 &&
+      (aggregate?.payoutTransactions.size ?? 0) === 0 &&
+      (aggregate?.dispensedUnits ?? 0) === 0 &&
+      !movedInArqueoOf(denominationId) &&
+      (payoutDemand.get(denominationId) ?? 0) >= thresholds.minimumSubstitutionEvents
+    );
+  });
+  if (absentWithDemand.length > 0) {
+    for (const mix of payoutMixes) {
+      if (mix.planned) {
+        continue;
+      }
+      const missed = absentWithDemand.some(
+        ([, candidate]) => candidate.currencyId === mix.currencyId && candidate.valueCents <= mix.payoutCents,
+      );
+      if (!missed) {
+        continue;
+      }
+      for (const [denominationId, units] of mix.dispensed) {
+        if (units <= 0) {
+          continue;
+        }
+        const aggregate = aggregation.get(denominationId) ?? createAggregate();
+        aggregate.compensationEvents += 1;
+        aggregate.compensationUnits += units;
+        aggregation.set(denominationId, aggregate);
+      }
+    }
+  }
 
   // 4) Filas por denominación del baúl. La configuración (`isDispensing`) informa,
   //    pero no habilita ni bloquea la evidencia: en la máquina real Pay+ Inder 2 el
@@ -1280,6 +1355,34 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
             weight: jamSignalWeights.participacion_perdida,
           });
         }
+      }
+
+      // No participó en NINGÚN pago analizado aunque varios tenían valor para usarla y el
+      // baúl conserva unidades. No depende del plan canónico ni de que el detalle cuadre con
+      // el importe devuelto: es la evidencia mínima que la operación espera («el cambio se
+      // entrega sólo con 100 y el 500 no aparece»). Peso 2: sospecha por sí sola.
+      const payoutsInCurrency = currencyPayouts.get(currencyKeyOf(denominationId)) ?? 0;
+      const demand = payoutDemand.get(denominationId) ?? 0;
+      const movedInArqueo = observedMovement !== null && observedMovement > 0;
+      // No exige que la configuración la habilite: en la máquina real el módulo que no
+      // entrega suele estar marcado «No dispensa», y esa contradicción es justamente lo
+      // que hay que revisar. Sí exige saldo, demanda real y ningún movimiento de arqueo.
+      if (
+        !compensating &&
+        !empty &&
+        !movedInArqueo &&
+        aggregate.payoutTransactions.size === 0 &&
+        aggregate.dispensedUnits === 0 &&
+        demand >= thresholds.minimumSubstitutionEvents &&
+        payoutsInCurrency >= thresholds.minimumRecentPayouts
+      ) {
+        signals.push({
+          code: "sin_participacion",
+          detail:
+            `No participó en ninguno de los ${payoutsInCurrency} pago(s) analizados, aunque ${demand} de ellos tenían valor suficiente para usar la denominación ${entry.denominationValue} y el baúl conserva ${stock} unidad(es).` +
+            (entry.isDispensing ? "" : ` La configuración la marca «No dispensa» y el arqueo no la movió: atasco o configuración desactualizada.`),
+          weight: jamSignalWeights.sin_participacion,
+        });
       }
 
       if (!compensating && coveredByScan && physicalDrop !== null) {

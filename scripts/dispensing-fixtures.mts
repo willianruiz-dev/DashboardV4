@@ -17,8 +17,11 @@
  *   monedas-tx      – el recaudo de Transacciones/Reportes se agrupa por moneda (nunca se suma)
  *   arqueo-cargue   – el cuadre físico va del arqueo base a hoy: entregada = inicial +
  *                     cargada − saldo, y el rechazo mostrado es el baúl actual (C10)
+ *   alerta-atasco   – el semáforo del inicio: la máquina que sólo entrega 100 (caso Pay+
+ *                     Inder 2) se avisa por arqueo; sin evidencia NO se avisa
  */
 import { summarizeMachineCurrencies } from "../src/features/dispensing-control/denomination-usage.ts";
+import { computeJamEarlyWarnings } from "../src/features/dispensing-control/jam-early-warning.ts";
 import { computeJamDiagnostics, type JamDiagnostics } from "../src/features/dispensing-control/dispensing-jams.ts";
 import { computeDispensingMetrics } from "../src/features/dispensing-control/dispensing-metrics.ts";
 import { summarizeTransactionsByCurrency } from "../src/features/transactions/transaction-search.ts";
@@ -979,6 +982,102 @@ expect(
     inderIncoherentBase.rows[0]?.deliveredFromBase === 73,
   `periodo=${String(inderIncoherentBase.rows[0]?.dispensedInPeriod)} auditoria=${String(inderIncoherentBase.rows[0]?.dispensedFromArqueo)}`,
 );
+
+/* ------------------------------------------------------------------ 12) alerta-atasco: semáforo del inicio (sin detalle por transacción) */
+
+console.log("\n[alerta-atasco] la máquina que sólo entrega 100 se avisa desde el inicio (caso Pay+ Inder 2)");
+
+function earlyWarningTonnage(at: string, quantities: Record<string, string>) {
+  return {
+    dateCreated: at,
+    details: Object.entries(quantities).map(([value, quantity]) => ({
+      denominationValue: value,
+      idCurrencyDenomination: Number(value),
+      quantityDp: quantity,
+    })),
+  };
+}
+
+const earlyStorage = [
+  storageRow("500", 1, "34", { dispensing: false }),
+  storageRow("100", 2, "85"),
+  storageRow("2000", 3, "98"),
+];
+
+/** 12 pagos con devolución de 1.500 entregados sólo con monedas de 100. */
+const earlyPayouts = Array.from({ length: 12 }, (_, index) => ({
+  dateCreated: `2026-09-21T${String(10 + index).padStart(2, "0")}:05:00.000Z`,
+  returnAmount: "1500",
+  stateTransaction: "Aprobada",
+}));
+
+const inderEarly = computeJamEarlyWarnings({
+  from: "2026-09-21T05:00:00.000Z",
+  storage: earlyStorage,
+  to: "2026-09-21T23:59:59.999Z",
+  tonnages: [
+    earlyWarningTonnage("2026-09-21T09:00:00.000Z", { "100": "300", "2000": "98", "500": "34" }),
+    earlyWarningTonnage("2026-09-21T21:30:00.000Z", { "100": "120", "2000": "98", "500": "34" }),
+  ],
+  transactions: earlyPayouts,
+});
+console.log(
+  `  avisos: ${inderEarly.warnings.map((warning) => `${warning.denominationValue} (saldo ${warning.stock}, demanda ${warning.demand}, compensado por ${warning.compensators.map((entry) => entry.denominationValue).join(",")})`).join(" | ") || "ninguno"}`,
+);
+expect("avisa el 500 que no bajó en el arqueo", inderEarly.warnings.length === 1 && inderEarly.warnings[0]?.denominationValue === "500", JSON.stringify(inderEarly.warnings));
+expect("el aviso dice cuánto podía usarse (12 pagos)", inderEarly.warnings[0]?.demand === 12, String(inderEarly.warnings[0]?.demand));
+expect("el aviso señala al 100 como quien entrega el cambio", inderEarly.warnings[0]?.compensators[0]?.denominationValue === "100");
+expect("el aviso usa el saldo del baúl (34) y declara «No dispensa»", inderEarly.warnings[0]?.stock === 34 && inderEarly.warnings[0]?.configuredForDispensing === false);
+expect("el 2.000 no se avisa: ningún pago de 1.500 alcanzaba su valor", inderEarly.warnings.every((warning) => warning.denominationValue !== "2000"));
+
+// Contraprueba: los mismos pagos, pero el arqueo muestra que el 500 SÍ bajó → no hay aviso.
+const inderHealthy = computeJamEarlyWarnings({
+  from: "2026-09-21T05:00:00.000Z",
+  storage: earlyStorage,
+  to: "2026-09-21T23:59:59.999Z",
+  tonnages: [
+    earlyWarningTonnage("2026-09-21T09:00:00.000Z", { "100": "300", "2000": "98", "500": "134" }),
+    earlyWarningTonnage("2026-09-21T21:30:00.000Z", { "100": "120", "2000": "98", "500": "34" }),
+  ],
+  transactions: earlyPayouts,
+});
+expect("si el 500 bajó en el arqueo no se avisa (no es un falso positivo)", inderHealthy.warnings.length === 0, JSON.stringify(inderHealthy.warnings));
+
+// Contraprueba: pagos de 400 (el 500 no cabía) → demanda insuficiente, no se avisa.
+const inderSmallPayouts = computeJamEarlyWarnings({
+  from: "2026-09-21T05:00:00.000Z",
+  storage: earlyStorage,
+  to: "2026-09-21T23:59:59.999Z",
+  tonnages: [
+    earlyWarningTonnage("2026-09-21T09:00:00.000Z", { "100": "300", "2000": "98", "500": "34" }),
+    earlyWarningTonnage("2026-09-21T21:30:00.000Z", { "100": "120", "2000": "98", "500": "34" }),
+  ],
+  transactions: earlyPayouts.map((payout) => ({ ...payout, returnAmount: "400" })),
+});
+expect("con pagos de 400 el 500 no tiene demanda y no se avisa", inderSmallPayouts.warnings.length === 0, JSON.stringify(inderSmallPayouts.warnings));
+
+// Contraprueba: sin pagos suficientes el semáforo se declara, no se inventa.
+const inderQuiet = computeJamEarlyWarnings({
+  from: "2026-09-21T05:00:00.000Z",
+  storage: earlyStorage,
+  to: "2026-09-21T23:59:59.999Z",
+  tonnages: [
+    earlyWarningTonnage("2026-09-21T09:00:00.000Z", { "100": "300", "500": "34" }),
+    earlyWarningTonnage("2026-09-21T21:30:00.000Z", { "100": "120", "500": "34" }),
+  ],
+  transactions: earlyPayouts.slice(0, 2),
+});
+expect("con menos de 3 pagos el semáforo no concluye", inderQuiet.warnings.length === 0 && inderQuiet.note !== null, String(inderQuiet.note));
+
+// Contraprueba: sin arqueos comparables no hay aviso (se declara el motivo).
+const inderNoArqueo = computeJamEarlyWarnings({
+  from: "2026-09-21T05:00:00.000Z",
+  storage: earlyStorage,
+  to: "2026-09-21T23:59:59.999Z",
+  tonnages: [earlyWarningTonnage("2026-09-21T21:30:00.000Z", { "100": "120", "500": "34" })],
+  transactions: earlyPayouts,
+});
+expect("sin dos arqueos comparables no hay aviso", inderNoArqueo.warnings.length === 0 && (inderNoArqueo.note ?? "").includes("arqueos"), String(inderNoArqueo.note));
 
 /* ------------------------------------------------------------------ resumen */
 

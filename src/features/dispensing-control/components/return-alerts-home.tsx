@@ -18,10 +18,16 @@ import { formatElapsed } from "@/features/dispensing-control/dispensing-metrics"
 import { formatDashboardMoney } from "@/lib/formatters/money";
 
 /**
- * Alerta del inicio: errores de devuelta (`Aprobada Error Devuelta`) del **día actual**,
- * por máquina, con sondeo periódico (no existe contrato realtime en el backend legado,
- * ver B-01). Se alimenta del BFF `/api/dispensing/return-alerts`, que resuelve todas las
- * máquinas server-side con caché corta y concurrencia limitada.
+ * Alerta del inicio, por máquina y del **día actual**, con sondeo periódico (no existe
+ * contrato realtime en el backend legado, ver B-01). Se alimenta del BFF
+ * `/api/dispensing/return-alerts`, que resuelve todas las máquinas server-side con caché
+ * corta y concurrencia limitada. Trae dos cosas:
+ *
+ *  1. Errores de devuelta (`Aprobada Error Devuelta`) del día.
+ *  2. Semáforo de «posible atasco»: módulos con saldo que no bajaron en el arqueo mientras el
+ *     cambio salió por otras denominaciones (caso real Pay+ Inder 2, que sólo entrega monedas
+ *     de 100 y no genera ningún error). El semáforo no usa el detalle de cada transacción; por
+ *     eso el texto remite al análisis completo del control de dispensado.
  *
  * Cuando el conteo de una máquina sube entre dos vueltas del sondeo se emite un aviso
  * emergente: es la alerta «por encima de todo» sin salir del inicio.
@@ -42,7 +48,11 @@ export function ReturnAlertsHomeSection() {
   const machines = useMemo(() => alertsQuery.data?.machines ?? [], [alertsQuery.data]);
   const withErrors = machines.filter((machine) => machine.errorCount > 0);
   const totalErrors = withErrors.reduce((total, machine) => total + machine.errorCount, 0);
+  const withJams = machines.filter((machine) => (machine.jamScreen?.warnings.length ?? 0) > 0);
+  const totalJams = withJams.reduce((total, machine) => total + (machine.jamScreen?.warnings.length ?? 0), 0);
   const previousCounts = useRef<Map<number, number> | null>(null);
+  // Valor: las denominaciones ya avisadas por máquina («|» = separador), para no repetir el aviso.
+  const previousJams = useRef<Map<number, string> | null>(null);
 
   // Aviso emergente cuando aparece un error NUEVO mientras la página está abierta.
   useEffect(() => {
@@ -72,6 +82,35 @@ export function ReturnAlertsHomeSection() {
     }
   }, [alertsQuery.data, machines]);
 
+  // Aviso emergente cuando aparece un «posible atasco» NUEVO (denominación sospechosa nueva).
+  useEffect(() => {
+    if (alertsQuery.data === undefined) {
+      return;
+    }
+
+    const current = new Map(
+      machines.map((machine) => [machine.paypadId, (machine.jamScreen?.warnings ?? []).map((warning) => warning.denominationValue).join("|")]),
+    );
+    const previous = previousJams.current;
+    previousJams.current = current;
+    if (previous === null) {
+      return;
+    }
+
+    for (const machine of machines) {
+      const warnings = machine.jamScreen?.warnings ?? [];
+      const known = new Set((previous.get(machine.paypadId) ?? "").split("|").filter((value) => value.length > 0));
+      const fresh = warnings.filter((warning) => !known.has(warning.denominationValue));
+      if (fresh.length === 0) {
+        continue;
+      }
+      toast.warning(`${machine.paypadName}: posible atasco en ${fresh.map((warning) => warning.denominationValue).join(", ")}`, {
+        description: "El cambio del día está saliendo por otras denominaciones. Confírmalo con el análisis del control de dispensado.",
+        duration: 10_000,
+      });
+    }
+  }, [alertsQuery.data, machines]);
+
   if (!enabled) {
     return null;
   }
@@ -86,7 +125,7 @@ export function ReturnAlertsHomeSection() {
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight">
               <BellRing aria-hidden="true" className="size-4 text-amber-600 dark:text-amber-400" />
-              Errores de devuelta de hoy · {RETURNED_ERROR_STATE}
+              Alertas de hoy · errores de devuelta ({RETURNED_ERROR_STATE}) y posible atasco
             </h2>
             <p className="text-sm text-muted-foreground">
               Se actualiza solo cada {Math.round(RETURN_ALERTS_REFRESH_MS / 1000)} s (solo con esta pestaña visible) y muestra
@@ -94,6 +133,13 @@ export function ReturnAlertsHomeSection() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {totalJams > 0 ? (
+              <Badge className="gap-1.5" variant="destructive">
+                <TriangleAlert aria-hidden="true" className="size-3.5" />
+                {totalJams} posible{totalJams === 1 ? "" : "s"} atasco{totalJams === 1 ? "" : "s"} en {withJams.length} máquina
+                {withJams.length === 1 ? "" : "s"}
+              </Badge>
+            ) : null}
             {totalErrors > 0 ? (
               <Badge className="gap-1.5" variant="warning">
                 <TriangleAlert aria-hidden="true" className="size-3.5" />
@@ -131,34 +177,108 @@ export function ReturnAlertsHomeSection() {
               </div>
             </AlertDescription>
           </Alert>
-        ) : withErrors.length === 0 ? (
-          <Alert>
-            <CircleCheck aria-hidden="true" className="size-4" />
-            <AlertTitle>Ninguna máquina registra errores de devuelta hoy</AlertTitle>
-            <AlertDescription>
-              Se consultaron {machines.length} máquina{machines.length === 1 ? "" : "s"} del día en curso.
-              {alertsQuery.data && alertsQuery.data.partialFailures > 0
-                ? ` ${alertsQuery.data.partialFailures} máquina(s) no respondieron en esta vuelta.`
-                : ""}
-            </AlertDescription>
-          </Alert>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {withErrors.map((machine) => (
-              <MachineAlertCard key={machine.paypadId} machine={machine} nowMs={now.getTime()} />
-            ))}
-          </div>
+          <>
+            {withJams.length > 0 ? (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {withJams.map((machine) => (
+                  <MachineJamCard key={machine.paypadId} machine={machine} />
+                ))}
+              </div>
+            ) : null}
+
+            {withErrors.length === 0 ? (
+              <Alert>
+                <CircleCheck aria-hidden="true" className="size-4" />
+                <AlertTitle>Ninguna máquina registra errores de devuelta hoy</AlertTitle>
+                <AlertDescription>
+                  Se consultaron {machines.length} máquina{machines.length === 1 ? "" : "s"} del día en curso.
+                  {withJams.length > 0
+                    ? " El semáforo de atascos sí encontró evidencia: revisa las tarjetas de arriba."
+                    : ""}
+                  {alertsQuery.data && alertsQuery.data.partialFailures > 0
+                    ? ` ${alertsQuery.data.partialFailures} máquina(s) no respondieron en esta vuelta.`
+                    : ""}
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {withErrors.map((machine) => (
+                  <MachineAlertCard key={machine.paypadId} machine={machine} nowMs={now.getTime()} />
+                ))}
+              </div>
+            )}
+          </>
         )}
 
         <p className="text-xs text-muted-foreground">
           {alertsQuery.isSuccess && elapsed !== null
             ? `Última consulta: hace ${formatElapsed(elapsed)}${generatedAt ? ` (${new Date(generatedAt).toLocaleTimeString("es-CO")})` : ""}. `
             : ""}
-          Fuente: transacciones del día en curso por máquina, filtradas por estado «{RETURNED_ERROR_STATE}». Al abrir una tarjeta se
-          consulta esa máquina en el control de dispensado.
+          Fuente: transacciones del día en curso por máquina, filtradas por estado «{RETURNED_ERROR_STATE}». El semáforo de
+          posible atasco compara los arqueos del día («Tonnage/GetByPaypad») con los pagos con devolución y consulta el baúl
+          («PayPad/GetStorage») solo en las máquinas sospechosas; se confirma con el análisis por denominación del control de
+          dispensado. Al abrir una tarjeta se consulta esa máquina allí.
         </p>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Semáforo de atasco: por denominación, el módulo que conserva saldo, no bajó en el arqueo y
+ * podía usarse en los pagos del día, mientras el cambio salió por otras denominaciones.
+ */
+function MachineJamCard({ machine }: { machine: ReturnAlertMachine }) {
+  const screen = machine.jamScreen;
+  if (screen === null || screen.warnings.length === 0) {
+    return null;
+  }
+
+  const href = `/dashboard/transactions/dispensing-control?paypad=${machine.paypadId}`;
+  const arqueo =
+    screen.arqueoFrom === null || screen.arqueoTo === null
+      ? null
+      : `Arqueos ${new Date(screen.arqueoFrom).toLocaleTimeString("es-CO")} → ${new Date(screen.arqueoTo).toLocaleTimeString("es-CO")} · ${screen.payouts} pago(s) con devolución`;
+
+  return (
+    <Link
+      className="grid gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-4 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lift dark:border-destructive/30 dark:bg-destructive/10"
+      href={href}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold" title={machine.paypadName}>{machine.paypadName}</p>
+          <p className="text-xs text-muted-foreground">ID {machine.paypadId}</p>
+        </div>
+        <Badge className="gap-1.5" variant="destructive">
+          <TriangleAlert aria-hidden="true" className="size-3.5" />
+          {screen.warnings.length} posible{screen.warnings.length === 1 ? "" : "s"} atasco{screen.warnings.length === 1 ? "" : "s"}
+        </Badge>
+      </div>
+
+      <div className="grid gap-2">
+        {screen.warnings.map((warning) => (
+          <div className="grid gap-0.5" key={warning.denominationValue}>
+            <p className="text-sm font-semibold text-destructive dark:text-red-300">
+              Denominación {warning.denominationValue}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              No bajó en el arqueo ({warning.movement} entre arqueos) y conserva {warning.stock} unidad(es); {warning.demand}{" "}
+              pago(s) de hoy podían usarla.
+              {warning.configuredForDispensing === false ? " Configuración: «No dispensa»." : ""}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              El cambio está saliendo con{" "}
+              {warning.compensators.map((compensator) => `${compensator.denominationValue} (${compensator.movement} u.)`).join(", ")}.
+            </p>
+          </div>
+        ))}
+      </div>
+
+      {arqueo === null ? null : <p className="text-xs text-muted-foreground">{arqueo}</p>}
+      <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Analizar en el control de dispensado →</span>
+    </Link>
   );
 }
 

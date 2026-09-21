@@ -94,6 +94,35 @@ export const returnAlertsRequestSchema = z.object({
 });
 export type ReturnAlertsRequest = z.infer<typeof returnAlertsRequestSchema>;
 
+/**
+ * Semáforo de «posible atasco» del inicio (ver `jam-early-warning.ts`): módulos con saldo que
+ * no bajaron en el arqueo mientras el cambio salió por otras denominaciones. Es alerta
+ * temprana — la confirmación por denominación la da el análisis completo con detalle.
+ */
+export const jamEarlyWarningSchema = z.object({
+  /** Módulos que sí bajaron en el arqueo: por ahí está saliendo el cambio. */
+  compensators: z
+    .array(z.object({ denominationValue: z.string(), movement: z.number().int() }))
+    .default([]),
+  /** `null` = no se consultó el baúl (sólo se consulta cuando ya hay sospecha). */
+  configuredForDispensing: z.boolean().nullable().default(null),
+  demand: z.number().int().nonnegative(),
+  denominationValue: z.string(),
+  movement: z.number().int(),
+  stock: z.number().int().nonnegative(),
+});
+export type JamEarlyWarningPayload = z.infer<typeof jamEarlyWarningSchema>;
+
+export const jamEarlyWarningScreenSchema = z.object({
+  arqueoFrom: z.string().nullable().default(null),
+  arqueoTo: z.string().nullable().default(null),
+  /** Motivo por el que el semáforo no aplica (sin arqueos, pocos pagos, multimoneda…). */
+  note: z.string().nullable().default(null),
+  payouts: z.number().int().nonnegative().default(0),
+  warnings: z.array(jamEarlyWarningSchema).default([]),
+});
+export type JamEarlyWarningScreenPayload = z.infer<typeof jamEarlyWarningScreenSchema>;
+
 export const returnAlertMachineSchema = z.object({
   approvedCount: z.number().int().nonnegative(),
   /** Monedas que la máquina trabaja hoy, según su baúl (p. ej. `["COP","USD"]`). */
@@ -107,6 +136,11 @@ export const returnAlertMachineSchema = z.object({
    * es comparable, así que la interfaz muestra «varias monedas» en lugar de un número.
    */
   errorTotalMixedCurrency: z.boolean().default(false),
+  /**
+   * Semáforo de posible atasco del día (una petición de arqueo por máquina con pagos, cacheada
+   * 60 s). `null` = no se pudo evaluar en esta vuelta; `warnings` vacío = sin sospecha.
+   */
+  jamScreen: jamEarlyWarningScreenSchema.nullable().default(null),
   lastErrorAt: z.string().nullable(),
   paypadId: z.number().int().positive(),
   paypadName: z.string(),

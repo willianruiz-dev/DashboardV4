@@ -13,6 +13,11 @@ import { sumMoneyStringsLenient } from "@/lib/formatters/money";
 import { mapWithConcurrency } from "@/lib/server/concurrency";
 import { getPaypadCurrencyProfiles } from "@/lib/server/paypad-currencies";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
+import {
+  createJamScreenBudget,
+  screenMachineJams,
+  type JamScreenBudget,
+} from "@/lib/server/jam-early-warning";
 import { requireDashboardToken } from "@/lib/server/require-dashboard-token";
 import { createApiRouteError } from "@/lib/server/route-error";
 import { httpEnvelopeSchema } from "@/schemas/http";
@@ -22,7 +27,10 @@ export const runtime = "nodejs";
 
 /**
  * Alimenta la alerta del inicio: transacciones `Aprobada Error Devuelta` del día
- * actual, por máquina.
+ * actual, por máquina, más el semáforo de «posible atasco» (una máquina que sólo está
+ * entregando la denominación menor no genera errores de devuelta y sin este semáforo
+ * quedaba invisible en el inicio). El semáforo usa arqueos + importes del día —no el
+ * detalle por transacción— para no multiplicar las peticiones al API legado.
  *
  * No hay contrato realtime (ni WebSocket ni SignalR) en el backend legado, así que
  * el «tiempo real» se resuelve con sondeo del navegador. Para que el sondeo no
@@ -137,6 +145,8 @@ function summarizeMachine(paypad: PayPad, transactions: readonly DashboardTransa
     errorTotal: totals.total,
     errorTotalIncomplete: totals.skipped > 0,
     errorTotalMixedCurrency: false,
+    // Lo completa `getMachineAlert` con el semáforo de atascos del día.
+    jamScreen: null,
     lastErrorAt,
     paypadId: paypad.id,
     paypadName: getPaypadMachineName(paypad) ?? `Pay+ ${paypad.id}`,
@@ -144,7 +154,13 @@ function summarizeMachine(paypad: PayPad, transactions: readonly DashboardTransa
   };
 }
 
-async function getMachineAlert(paypad: PayPad, from: string, to: string, token: string): Promise<ReturnAlertMachine> {
+async function getMachineAlert(
+  paypad: PayPad,
+  from: string,
+  to: string,
+  token: string,
+  budget: JamScreenBudget,
+): Promise<ReturnAlertMachine> {
   const cacheKey = `${paypad.id}|${from}|${to}`;
   const cached = readCache(machineCache, cacheKey, MACHINE_CACHE_TTL_MS);
   if (cached) {
@@ -153,8 +169,19 @@ async function getMachineAlert(paypad: PayPad, from: string, to: string, token: 
 
   const transactions = await getTransactions(paypad.id, from, to, token);
   const summary = summarizeMachine(paypad, transactions);
-  writeCache(machineCache, cacheKey, summary);
-  return summary;
+  // El semáforo nunca lanza: si la máquina no responde, la alerta de errores sigue viva.
+  const jamScreen = await screenMachineJams({
+    budget,
+    from,
+    paypadCurrencyId: paypad.idCurrency,
+    paypadId: paypad.id,
+    to,
+    token,
+    transactions,
+  });
+  const machine: ReturnAlertMachine = { ...summary, jamScreen };
+  writeCache(machineCache, cacheKey, machine);
+  return machine;
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -166,9 +193,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const selected = query.paypadId === null ? paypads : paypads.filter((paypad) => paypad.id === query.paypadId);
 
     let partialFailures = 0;
+    // Presupuesto por vuelta: el semáforo de atascos consulta arqueos (y algún baúl) con un
+    // tope, para que el sondeo de 30 s no castigue al API legado.
+    const jamBudget = createJamScreenBudget();
     const machines = await mapWithConcurrency(selected, CONCURRENCY, async (paypad) => {
       try {
-        return await getMachineAlert(paypad, query.from, query.to, token);
+        return await getMachineAlert(paypad, query.from, query.to, token, jamBudget);
       } catch {
         // Una máquina ilegible no debe ocultar las alertas de las demás.
         partialFailures += 1;

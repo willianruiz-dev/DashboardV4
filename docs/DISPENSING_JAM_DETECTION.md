@@ -1,9 +1,9 @@
 # Detección temprana de atascos (monederos/billeteros) — estudio e implementación
 
-> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C9)** dentro de *Control de dispensado*.
+> **Actualizado:** 2026-09-21 — **IMPLEMENTADO (F1–F3) + CORRECCIONES POR CASO REAL (C1–C10)** dentro de *Control de dispensado*, **y semáforo de posible atasco en el inicio** (§10).
 > **Veredicto:** **VIABLE con la API y el dashboard actuales**, sin cambios en el backend .NET ni en la base de datos.
 > **Archivos nuevos:** `src/features/dispensing-control/dispensing-jams.ts` (motor puro), `src/app/api/dispensing/jams/route.ts` (BFF acotado + caché), `src/features/dispensing-control/components/jam-diagnostics.tsx` (panel), `src/features/dispensing-control/api.ts` (cliente) y extensiones en `schemas.ts`, `hooks.ts` y la página.
-> **Estado de validación:** `npm run check` (TypeScript, ESLint **y la suite**) y `npm run build` **PASA** (2026-09-17). La suite `npm run fixtures:dispensing` (`scripts/dispensing-fixtures.mts`, 44 comprobaciones, sin red) reproduce los nueve escenarios citados en este documento (C2, C3, C4, C6, C8, C9) y corre **dentro de `npm run check`**, así que una regresión del motor rompe la verificación estándar.
+> **Estado de validación:** `npm run check` (TypeScript, ESLint **y la suite**) y `npm run build` **PASA** (2026-09-17). La suite `npm run fixtures:dispensing` (`scripts/dispensing-fixtures.mts`, **93 comprobaciones**, sin red) reproduce los escenarios citados en este documento (C2, C3, C4, C6, C8, C9, C10 y el semáforo del inicio) y corre **dentro de `npm run check`**, así que una regresión del motor rompe la verificación estándar.
 
 ---
 
@@ -498,3 +498,85 @@ sondeo no castigue al API:
   importe no se puede interpretar se marca `errorTotalIncomplete` y, si la máquina opera varias
   monedas, no se presenta como importe comparable.
 - La alerta no sustituye la notificación por correo (F5), que sigue requiriendo backend.
+
+---
+
+## 10. Corrección C10 y semáforo de posible atasco en el inicio (2026-09-21)
+
+### 10.1 El defecto (caso real Pay+ Inder 2 otra vez, con arqueo plano)
+
+Reporte del operador: **«no tira posible atasco en Inder 2, ya que solo está dispensando
+monedas de 100… están mal las alertas»**. Reproducido con el caso `E` del guion de pruebas
+(`/tmp/proof/inder2-repro.mts`): módulo de **500 marcado «No dispensa» y con 34 unidades**, los
+12 pagos del día con devolución de 1.500 entregados **sólo con monedas de 100**, arqueo del 500
+**sin movimiento** y detalles cuyo total (1.400) **no cuadra** con el importe devuelto (1.500).
+
+Antes de esta corrección el motor devolvía `d=500 | nivel=sin_evidencia score=0 | señales=[]`
+y, encima, **culpaba al 100** (`sospecha` por `caida_insuficiente` + `descuadre_inventario`):
+el único módulo que estaba entregando el cambio. Dos causas:
+
+1. La señal de no participación (`sin_participacion`) exigía que la **configuración** habilitara
+   el módulo (`usable = dispensa && !vacío`). En la máquina real el módulo atascado está marcado
+   «No dispensa», justo la contradicción que hay que revisar.
+2. La **compensación** se medía sólo contra la combinación canónica. Cuando el detalle no cuadra
+   con el importe devuelto no hay plan canónico y el compensador quedaba sin reconocer, así que
+   se le atribuían los descuadres del arqueo que causaba el módulo ausente.
+
+### 10.2 Corrección aplicada
+
+| # | Cambio | Archivo |
+| --- | --- | --- |
+| **C10a** | `sin_participacion` (peso 2) ya **no depende de la configuración**: exige saldo (> 0), demanda real (≥ 2 pagos cuyo importe devuelto alcance el valor de la denominación), participación **cero** en los pagos analizados, movimiento de arqueo **≤ 0** y al menos 3 pagos del período. Si la configuración dice «No dispensa», el texto de la señal lo declara: *«atasco o configuración desactualizada»*. | `dispensing-jams.ts` |
+| **C10b** | **Compensación sin plan canónico (paso 3b)**: se registra la mezcla real de cada pago (`payoutMixes`). Si existe un módulo ausente-con-demanda (con saldo, sin movimiento de arqueo, participación 0) y un pago sin plan canónico cuyo importe alcanzaba para ese módulo, **todas las denominaciones que entregaron ese pago se marcan como compensadoras** y dejan de ser culpables. | `dispensing-jams.ts` |
+
+Verificación (guion de 9 escenarios, antes → después):
+
+```
+E) 500 «No dispensa» + arqueo plano + detalle descuadrado
+   ANTES: 500 sin_evidencia score=0 señales=[]  · 100 sospecha (culpado) · titular «…denominación 100»
+   AHORA: 500 sospecha score=2 [sin_participacion] · 100 sin_evidencia compensando
+          titular «Posible atasco · Posible atasco en la denominación 500 — el cambio se entrega con 100»
+I) pagos de 400 (el 500 no cabía): el 500 NO se avisa (demanda insuficiente) — sin falso positivo
+H) el 500 participó en media jornada: sigue el diagnóstico normal (participó, aunque menos de su parte)
+```
+
+### 10.3 Semáforo del inicio (por qué hacía falta y cómo funciona)
+
+Hasta §9 el inicio sólo mostraba `Aprobada Error Devuelta`. Una máquina que **sólo entrega la
+denominación menor no genera errores**: eso la hacía invisible justo donde el operador mira
+primero. El motor completo no puede correr sobre todas las máquinas cada 30 s porque exige el
+detalle de cada transacción (`Transaction/{id}/Details`), así que se añade un **semáforo** que
+usa datos baratos y remite al análisis completo para confirmar:
+
+```
+Navegador (/dashboard)                    BFF (/api/dispensing/return-alerts)
+useDispensingReturnAlerts ── 30 s ──▶ 1. Transaction/GetByDate por máquina (ya existía)
+                                      2. Tonnage/GetByPaypad  ← 1 petición por máquina CON PAGOS,
+                                                                 caché 60 s, tope 12 por vuelta
+                                      3. PayPad/GetStorage    ← sólo máquinas ya sospechosas,
+                                                                 caché 60 s, tope 4 por vuelta
+```
+
+Regla (`jam-early-warning.ts`, pura y sin red):
+
+1. **Base** = último arqueo anterior al inicio del día; si no existe, el primero del día. Sólo
+   cuentan los pagos con devolución posteriores a la base (y los detalles se ignoran).
+2. Se exigen ≥ 3 pagos con devolución y que **algún** módulo haya bajado en el arqueo.
+3. Un módulo es sospechoso si: no bajó (movimiento ≤ 0), tenía **≥ 5 unidades** en el arqueo
+   base (saldo real del baúl cuando se consultó), y **≥ 3 pagos** del intervalo alcanzaban su
+   valor (demanda). Los módulos que sí bajaron se listan como **quienes entregan el cambio**.
+4. Máquinas multimoneda (catálogo de denominaciones) se declaran como no evaluables: un importe
+   de USD no se compara con una denominación COP.
+
+El resultado viaja en `jamScreen` dentro de cada máquina del contrato de §9.1
+(`arqueoFrom`, `arqueoTo`, `payouts`, `warnings[{ denominationValue, movement, stock, demand,
+configuredForDispensing, compensators[] }]`, `note`) y el inicio lo pinta como tarjeta roja
+«N posible(s) atasco» con el detalle por denominación, más un aviso emergente cuando aparece
+una denominación nueva. Límites declarados: el semáforo **no** atribuye por detalle ni confirma
+un atasco — dice *qué módulo con saldo no participó y por dónde salió el cambio* — y por eso el
+texto remite al control de dispensado, que es donde se confirma (`C5`, análisis automático al
+abrir la máquina del enlace).
+
+Regresiones: la suite agrega el bloque `[alerta-atasco]` (avisa el 500 del caso Inder 2; **no**
+avisa si el 500 bajó en el arqueo; **no** avisa con pagos de 400; no concluye con < 3 pagos ni
+sin dos arqueos comparables).

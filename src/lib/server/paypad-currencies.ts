@@ -54,7 +54,11 @@ interface CacheEntry<TValue> {
 let cachedCatalog: CacheEntry<z.infer<typeof denominationSchema>[]> | null = null;
 const storageProfiles = new Map<number, CacheEntry<{ labels: string[]; mixed: boolean }>>();
 
-async function getCatalog(token: string): Promise<z.infer<typeof denominationSchema>[]> {
+/**
+ * Catálogo de denominaciones cacheado (10 min). Lo comparte el semáforo de atascos del inicio
+ * para resolver la moneda de cada denominación sin volver a pedirlo.
+ */
+export async function getDenominationCatalog(token: string): Promise<z.infer<typeof denominationSchema>[]> {
   if (cachedCatalog && Date.now() - cachedCatalog.at <= CATALOG_CACHE_TTL_MS) {
     return cachedCatalog.value;
   }
@@ -89,7 +93,7 @@ async function probeStorage(paypad: PaypadCurrencySource, token: string): Promis
       httpEnvelopeSchema(z.array(paypadStorageSchema).nullish()),
       { token },
     );
-    const catalog = await getCatalog(token);
+    const catalog = await getDenominationCatalog(token);
     const summary = summarizeMachineCurrencies({
       catalog: catalog.map((entry) => ({ currency: entry.currency, id: entry.id, idCurrency: entry.idCurrency })),
       fallbackCurrencyId: paypad.idCurrency,
