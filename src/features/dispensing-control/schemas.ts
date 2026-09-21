@@ -123,6 +123,37 @@ export const jamEarlyWarningScreenSchema = z.object({
 });
 export type JamEarlyWarningScreenPayload = z.infer<typeof jamEarlyWarningScreenSchema>;
 
+/** Niveles del motor de atascos (ver `dispensing-jams.ts`). */
+export const jamLevelSchema = z.enum(["sin_evidencia", "sospecha", "probable", "confirmado"]);
+export type JamLevelPayload = z.infer<typeof jamLevelSchema>;
+
+/**
+ * Veredicto del MOTOR completo calculado server-side para el inicio (mismo diagnóstico que el
+ * panel de control de dispensado). El inicio no espera este análisis: aparece cuando el barrido
+ * en segundo plano lo termina y se reutiliza 10 minutos.
+ */
+export const jamVerdictIncidentSchema = z.object({
+  denominationValue: z.string().nullable().default(null),
+  detail: z.string(),
+  evidence: z.array(z.string()).default([]),
+  level: jamLevelSchema,
+  title: z.string(),
+});
+export type JamVerdictIncidentPayload = z.infer<typeof jamVerdictIncidentSchema>;
+
+export const jamVerdictSchema = z.object({
+  analyzedAt: z.string(),
+  analyzedTransactions: z.number().int().nonnegative().default(0),
+  blind: z.boolean().default(false),
+  headline: z.string(),
+  incidents: z.array(jamVerdictIncidentSchema).default([]),
+  /** Nivel del incidente principal (el módulo a revisar); `null` = sin incidentes. */
+  level: jamLevelSchema.nullable().default(null),
+  payouts: z.number().int().nonnegative().default(0),
+  truncated: z.boolean().default(false),
+});
+export type JamVerdictPayload = z.infer<typeof jamVerdictSchema>;
+
 export const returnAlertMachineSchema = z.object({
   approvedCount: z.number().int().nonnegative(),
   /** Monedas que la máquina trabaja hoy, según su baúl (p. ej. `["COP","USD"]`). */
@@ -141,6 +172,11 @@ export const returnAlertMachineSchema = z.object({
    * 60 s). `null` = no se pudo evaluar en esta vuelta; `warnings` vacío = sin sospecha.
    */
   jamScreen: jamEarlyWarningScreenSchema.nullable().default(null),
+  /**
+   * Diagnóstico del motor (mismo texto que el panel de control de dispensado) calculado en el
+   * servidor. `null` = todavía no se analizó o el veredicto expiró.
+   */
+  jamVerdict: jamVerdictSchema.nullable().default(null),
   lastErrorAt: z.string().nullable(),
   paypadId: z.number().int().positive(),
   paypadName: z.string(),

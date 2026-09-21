@@ -580,3 +580,42 @@ abrir la máquina del enlace).
 Regresiones: la suite agrega el bloque `[alerta-atasco]` (avisa el 500 del caso Inder 2; **no**
 avisa si el 500 bajó en el arqueo; **no** avisa con pagos de 400; no concluye con < 3 pagos ni
 sin dos arqueos comparables).
+
+### 10.4 El inicio muestra el MISMO veredicto del motor (2026-09-21)
+
+Segundo reporte del operador: *«mira lo que dice [el panel] pero no lo muestra en el inicio»* —
+el panel concluía **«Posible atasco en la denominación 500 — probable»** (31 unidades dispensadas
+por el sistema, 2 pagos completados con denominaciones menores, caída física 76) y el inicio
+seguía en silencio. La alerta temprana de §10.3 no podía verlo: su regla exige que el módulo **no
+haya bajado** en el arqueo y en esa máquina el 500 sí se movió; la evidencia real es la
+**sustitución del detalle** (2 pagos), que sólo el motor completo tiene.
+
+En lugar de duplicar la regla (y arriesgar dos verdades distintas), el inicio **ejecuta el motor
+real server-side** (`jam-verdicts.ts`) y muestra su titular, título, detalle, evidencia y acción
+sugerida tal cual los produce `dispensing-jams.ts`:
+
+```
+Navegador (/dashboard)                     BFF del inicio
+useDispensingReturnAlerts ── 30 s ──▶ por máquina: resumen + semáforo (§10.3)
+                                      + veredicto cacheado (10 min) del MOTOR
+                                      + barrido: 1 máquina por vuelta, en segundo plano
+```
+
+- **Paridad por construcción:** los insumos son los mismos que usa el panel (transacciones del
+  día por `Transaction/GetByDate`, `Transaction/{id}/Details`, `PayPad/GetStorage`,
+  `Tonnage/GetByPaypad`, `Load/GetByPaypad`, catálogo de denominaciones) y el mismo
+  `computeJamDiagnostics` con los mismos umbrales y el mismo tope de detalles
+  (`JAM_SCAN_MAX_TRANSACTIONS`).
+- **Sin bloquear el inicio:** el barrido analiza **una** máquina por vuelta (mínimo 20 s entre
+  análisis, sin solaparse) y el veredicto se reutiliza 10 min; el inicio responde con lo que ya
+  esté calculado y el análisis aparece en vueltas siguientes.
+- **Caché compartida:** los detalles por transacción viven en `jam-scan.ts` (30 min) y el
+  listado del día en el BFF del inicio (20 s), de modo que el barrido y el panel no duplican
+  peticiones al API legado.
+- La tarjeta muestra el nivel («Atasco confirmado / probable / posible atasco»), el titular del
+  motor, hasta 2 incidentes con su evidencia, y cuántas transacciones/pagos se analizaron, con
+  avisos si el análisis quedó truncado o ciego. El pie declara que el veredicto se reutiliza
+  10 min y que puede tardar unas vueltas en aparecer.
+
+Así, cuando el panel dice «posible atasco en la denominación 500», el inicio lo dice con el mismo
+texto y remite al control de dispensado para confirmarlo en sitio.

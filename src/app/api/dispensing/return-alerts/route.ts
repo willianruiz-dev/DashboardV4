@@ -18,6 +18,7 @@ import {
   screenMachineJams,
   type JamScreenBudget,
 } from "@/lib/server/jam-early-warning";
+import { advanceJamSweep, readJamVerdict, type JamVerdictTarget } from "@/lib/server/jam-verdicts";
 import { requireDashboardToken } from "@/lib/server/require-dashboard-token";
 import { createApiRouteError } from "@/lib/server/route-error";
 import { httpEnvelopeSchema } from "@/schemas/http";
@@ -62,6 +63,12 @@ interface CacheEntry<TValue> {
 
 let cachedPaypads: CacheEntry<PayPad[]> | null = null;
 const machineCache = new Map<string, CacheEntry<ReturnAlertMachine>>();
+/**
+ * Transacciones del rango por máquina. Se comparten entre el resumen de la alerta y el barrido
+ * del veredicto (que reutiliza el listado en lugar de repetir `GetByDate`); la vigencia es la
+ * misma de la caché por máquina.
+ */
+const transactionCache = new Map<string, CacheEntry<DashboardTransaction[]>>();
 
 function readCache<TValue>(
   cache: Map<string, CacheEntry<TValue>>,
@@ -107,6 +114,12 @@ async function getPaypads(token: string): Promise<PayPad[]> {
 }
 
 async function getTransactions(paypadId: number, from: string, to: string, token: string): Promise<DashboardTransaction[]> {
+  const cacheKey = `${paypadId}|${from}|${to}`;
+  const cached = readCache(transactionCache, cacheKey, MACHINE_CACHE_TTL_MS);
+  if (cached) {
+    return cached;
+  }
+
   try {
     const envelope = await requestBackend(["api", "Transaction", "GetByDate"], httpEnvelopeSchema(z.array(transactionSchema)), {
       body: JSON.stringify({ from, id: paypadId, to }),
@@ -114,9 +127,11 @@ async function getTransactions(paypadId: number, from: string, to: string, token
       method: "POST",
       token,
     });
+    writeCache(transactionCache, cacheKey, envelope.response);
     return envelope.response;
   } catch (error) {
     if (error instanceof BackendApiError && error.status === 404) {
+      writeCache(transactionCache, cacheKey, []);
       return [];
     }
     throw error;
@@ -145,13 +160,19 @@ function summarizeMachine(paypad: PayPad, transactions: readonly DashboardTransa
     errorTotal: totals.total,
     errorTotalIncomplete: totals.skipped > 0,
     errorTotalMixedCurrency: false,
-    // Lo completa `getMachineAlert` con el semáforo de atascos del día.
+    // El semáforo lo completa `getMachineAlert`; el veredicto del motor, la ruta.
     jamScreen: null,
+    jamVerdict: null,
     lastErrorAt,
     paypadId: paypad.id,
     paypadName: getPaypadMachineName(paypad) ?? `Pay+ ${paypad.id}`,
     transactions: transactions.length,
   };
+}
+
+interface MachineAlertResult {
+  machine: ReturnAlertMachine;
+  transactions: readonly DashboardTransaction[];
 }
 
 async function getMachineAlert(
@@ -160,11 +181,13 @@ async function getMachineAlert(
   to: string,
   token: string,
   budget: JamScreenBudget,
-): Promise<ReturnAlertMachine> {
+): Promise<MachineAlertResult> {
   const cacheKey = `${paypad.id}|${from}|${to}`;
   const cached = readCache(machineCache, cacheKey, MACHINE_CACHE_TTL_MS);
   if (cached) {
-    return cached;
+    // Las transacciones salen de su propia caché (misma vigencia) porque el barrido del
+    // veredicto las necesita y el resumen no las guarda.
+    return { machine: cached, transactions: await getTransactions(paypad.id, from, to, token) };
   }
 
   const transactions = await getTransactions(paypad.id, from, to, token);
@@ -181,7 +204,7 @@ async function getMachineAlert(
   });
   const machine: ReturnAlertMachine = { ...summary, jamScreen };
   writeCache(machineCache, cacheKey, machine);
-  return machine;
+  return { machine, transactions };
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -206,14 +229,41 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
     });
 
-    const alerts = machines
-      .filter((machine): machine is ReturnAlertMachine => machine !== null)
+    const results = machines.filter((entry): entry is MachineAlertResult => entry !== null);
+    const alerts = results
+      .map((entry) => entry.machine)
       .sort((left, right) => {
         if (right.errorCount !== left.errorCount) {
           return right.errorCount - left.errorCount;
         }
         return new Date(right.lastErrorAt ?? 0).getTime() - new Date(left.lastErrorAt ?? 0).getTime();
       });
+
+    // Veredicto del motor (mismo diagnóstico del panel) y barrido en segundo plano: se analiza
+    // una máquina por vuelta, sin bloquear esta respuesta. Solo máquinas con algo que analizar
+    // (pagos con devolución o errores del día).
+    const verdicts = new Map<number, ReturnAlertMachine["jamVerdict"]>();
+    const targets: JamVerdictTarget[] = [];
+    for (const entry of results) {
+      verdicts.set(entry.machine.paypadId, readJamVerdict(entry.machine.paypadId, query.from, query.to));
+      const analyzable = entry.transactions.some(
+        (transaction) => Number.parseFloat(transaction.returnAmount) > 0 || /error/i.test(transaction.stateTransaction ?? ""),
+      );
+      if (analyzable) {
+        const paypad = selected.find((candidate) => candidate.id === entry.machine.paypadId);
+        targets.push({
+          machineCurrencyLabel: paypad ? (paypad.currency ?? null) : null,
+          paypadCurrencyId: paypad?.idCurrency ?? 0,
+          paypadId: entry.machine.paypadId,
+          transactions: entry.transactions,
+        });
+      }
+    }
+    advanceJamSweep({ from: query.from, targets, to: query.to, token });
+    const withVerdicts = alerts.map((alert) => {
+      const verdict = verdicts.get(alert.paypadId) ?? null;
+      return verdict === null ? alert : { ...alert, jamVerdict: verdict };
+    });
 
     // Moneda de cada máquina: sólo se consulta el baúl de las que acumularon errores, con
     // caché (el sondeo del inicio es cada 30 s). Sin esto, `errorTotal` podía sumar pesos y
@@ -223,7 +273,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .map((alert) => paypads.find((entry) => entry.id === alert.paypadId))
       .filter((paypad): paypad is PayPad => paypad !== undefined);
     const currencyProfiles = await getPaypadCurrencyProfiles(errorPaypads, token, { maxLookups: MAX_STORAGE_LOOKUPS });
-    const enriched = alerts.map((alert) => {
+    const enriched = withVerdicts.map((alert) => {
       const profile = currencyProfiles.get(alert.paypadId);
       return profile
         ? { ...alert, currencyLabels: profile.labels, errorTotalMixedCurrency: profile.mixed }

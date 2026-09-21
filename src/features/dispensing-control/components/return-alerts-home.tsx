@@ -48,7 +48,13 @@ export function ReturnAlertsHomeSection() {
   const machines = useMemo(() => alertsQuery.data?.machines ?? [], [alertsQuery.data]);
   const withErrors = machines.filter((machine) => machine.errorCount > 0);
   const totalErrors = withErrors.reduce((total, machine) => total + machine.errorCount, 0);
-  const withJams = machines.filter((machine) => (machine.jamScreen?.warnings.length ?? 0) > 0);
+  // Tarjetas del MOTOR (mismo texto que el panel de control de dispensado) y alerta temprana
+  // (semáforo por arqueo) para las máquinas que aún no tienen veredicto del motor.
+  const withVerdicts = machines.filter((machine) => (machine.jamVerdict?.incidents.length ?? 0) > 0);
+  const verdictCount = withVerdicts.reduce((total, machine) => total + (machine.jamVerdict?.incidents.length ?? 0), 0);
+  const withJams = machines.filter(
+    (machine) => (machine.jamVerdict?.incidents.length ?? 0) === 0 && (machine.jamScreen?.warnings.length ?? 0) > 0,
+  );
   const totalJams = withJams.reduce((total, machine) => total + (machine.jamScreen?.warnings.length ?? 0), 0);
   const previousCounts = useRef<Map<number, number> | null>(null);
   // Valor: las denominaciones ya avisadas por máquina («|» = separador), para no repetir el aviso.
@@ -82,14 +88,23 @@ export function ReturnAlertsHomeSection() {
     }
   }, [alertsQuery.data, machines]);
 
-  // Aviso emergente cuando aparece un «posible atasco» NUEVO (denominación sospechosa nueva).
+  // Aviso emergente cuando aparece un «posible atasco» NUEVO. El texto es el del motor cuando
+  // ya hay veredicto (mismo diagnóstico del panel) y el del semáforo cuando es alerta temprana.
   useEffect(() => {
     if (alertsQuery.data === undefined) {
       return;
     }
 
     const current = new Map(
-      machines.map((machine) => [machine.paypadId, (machine.jamScreen?.warnings ?? []).map((warning) => warning.denominationValue).join("|")]),
+      machines.map((machine) => {
+        const keys = (machine.jamVerdict?.incidents ?? []).map(
+          (incident) => `${incident.level}:${incident.denominationValue ?? incident.title}`,
+        );
+        if (keys.length === 0) {
+          keys.push(...(machine.jamScreen?.warnings ?? []).map((warning) => `temprana:${warning.denominationValue}`));
+        }
+        return [machine.paypadId, keys.join("|")];
+      }),
     );
     const previous = previousJams.current;
     previousJams.current = current;
@@ -98,14 +113,22 @@ export function ReturnAlertsHomeSection() {
     }
 
     for (const machine of machines) {
-      const warnings = machine.jamScreen?.warnings ?? [];
       const known = new Set((previous.get(machine.paypadId) ?? "").split("|").filter((value) => value.length > 0));
-      const fresh = warnings.filter((warning) => !known.has(warning.denominationValue));
+      const freshVerdicts = (machine.jamVerdict?.incidents ?? []).filter(
+        (incident) => !known.has(`${incident.level}:${incident.denominationValue ?? incident.title}`),
+      );
+      const freshWarnings = machine.jamVerdict
+        ? []
+        : (machine.jamScreen?.warnings ?? []).filter((warning) => !known.has(`temprana:${warning.denominationValue}`));
+      const fresh = [
+        ...freshVerdicts.map((incident) => incident.title),
+        ...freshWarnings.map((warning) => `Posible atasco en la denominación ${warning.denominationValue}`),
+      ];
       if (fresh.length === 0) {
         continue;
       }
-      toast.warning(`${machine.paypadName}: posible atasco en ${fresh.map((warning) => warning.denominationValue).join(", ")}`, {
-        description: "El cambio del día está saliendo por otras denominaciones. Confírmalo con el análisis del control de dispensado.",
+      toast.warning(`${machine.paypadName}: ${fresh.join(" · ")}`, {
+        description: machine.jamVerdict?.headline ?? "Alerta temprana por arqueo: el cambio está saliendo por otras denominaciones.",
         duration: 10_000,
       });
     }
@@ -133,10 +156,17 @@ export function ReturnAlertsHomeSection() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {totalJams > 0 ? (
+            {verdictCount > 0 ? (
               <Badge className="gap-1.5" variant="destructive">
                 <TriangleAlert aria-hidden="true" className="size-3.5" />
-                {totalJams} posible{totalJams === 1 ? "" : "s"} atasco{totalJams === 1 ? "" : "s"} en {withJams.length} máquina
+                {verdictCount} atasco{verdictCount === 1 ? "" : "s"} en {withVerdicts.length} máquina
+                {withVerdicts.length === 1 ? "" : "s"}
+              </Badge>
+            ) : null}
+            {totalJams > 0 ? (
+              <Badge className="gap-1.5" variant="warning">
+                <TriangleAlert aria-hidden="true" className="size-3.5" />
+                {totalJams} alerta{totalJams === 1 ? "" : "s"} temprana{totalJams === 1 ? "" : "s"} en {withJams.length} máquina
                 {withJams.length === 1 ? "" : "s"}
               </Badge>
             ) : null}
@@ -179,6 +209,14 @@ export function ReturnAlertsHomeSection() {
           </Alert>
         ) : (
           <>
+            {withVerdicts.length > 0 ? (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {withVerdicts.map((machine) => (
+                  <MachineVerdictCard key={machine.paypadId} machine={machine} nowMs={now.getTime()} />
+                ))}
+              </div>
+            ) : null}
+
             {withJams.length > 0 ? (
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {withJams.map((machine) => (
@@ -215,13 +253,78 @@ export function ReturnAlertsHomeSection() {
           {alertsQuery.isSuccess && elapsed !== null
             ? `Última consulta: hace ${formatElapsed(elapsed)}${generatedAt ? ` (${new Date(generatedAt).toLocaleTimeString("es-CO")})` : ""}. `
             : ""}
-          Fuente: transacciones del día en curso por máquina, filtradas por estado «{RETURNED_ERROR_STATE}». El semáforo de
-          posible atasco compara los arqueos del día («Tonnage/GetByPaypad») con los pagos con devolución y consulta el baúl
-          («PayPad/GetStorage») solo en las máquinas sospechosas; se confirma con el análisis por denominación del control de
-          dispensado. Al abrir una tarjeta se consulta esa máquina allí.
+          Fuente: transacciones del día en curso por máquina, filtradas por estado «{RETURNED_ERROR_STATE}». El veredicto de
+          atasco es el MISMO motor del control de dispensado («Transaction/{"{id}"}/Details», «PayPad/GetStorage»,
+          «Tonnage/GetByPaypad», «Load/GetByPaypad»), calculado en el servidor y reutilizado 10 min; se analiza una máquina
+          por vuelta en segundo plano, así que puede tardar unas vueltas en aparecer. Mientras no haya veredicto, la alerta
+          temprana compara los arqueos del día con los pagos. Al abrir una tarjeta se consulta esa máquina en el panel.
         </p>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Veredicto del motor: el mismo diagnóstico del panel de control de dispensado (título, detalle,
+ * evidencia y acción sugerida), con su momento de cálculo. Aparece cuando el barrido del inicio
+ * ya analizó la máquina.
+ */
+function MachineVerdictCard({ machine, nowMs }: { machine: ReturnAlertMachine; nowMs: number }) {
+  const verdict = machine.jamVerdict;
+  if (verdict === null || verdict.incidents.length === 0) {
+    return null;
+  }
+
+  const href = `/dashboard/transactions/dispensing-control?paypad=${machine.paypadId}`;
+  const levelLabel: Record<string, string> = {
+    confirmado: "Atasco confirmado",
+    probable: "Atasco probable",
+    sospecha: "Posible atasco",
+    sin_evidencia: "Sin evidencia",
+  };
+  const primaryLevel = verdict.level ?? verdict.incidents[0]?.level ?? "sospecha";
+  const analyzedElapsed = Math.max(0, nowMs - new Date(verdict.analyzedAt).getTime());
+
+  return (
+    <Link
+      className="grid gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-4 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lift dark:border-destructive/40 dark:bg-destructive/10"
+      href={href}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold" title={machine.paypadName}>{machine.paypadName}</p>
+          <p className="text-xs text-muted-foreground">ID {machine.paypadId}</p>
+        </div>
+        <Badge className="gap-1.5" variant={primaryLevel === "sospecha" ? "warning" : "destructive"}>
+          <TriangleAlert aria-hidden="true" className="size-3.5" />
+          {levelLabel[primaryLevel] ?? primaryLevel}
+        </Badge>
+      </div>
+
+      <p className="text-sm font-semibold text-destructive dark:text-red-300">{verdict.headline}</p>
+
+      {verdict.incidents.slice(0, 2).map((incident) => (
+        <div className="grid gap-0.5" key={`${incident.denominationValue ?? incident.title}-${incident.level}`}>
+          <p className="text-xs font-medium">{incident.title}</p>
+          <p className="text-xs text-muted-foreground">{incident.detail}</p>
+          {incident.evidence.length === 0 ? null : (
+            <ul className="ml-4 list-disc text-xs text-muted-foreground">
+              {incident.evidence.slice(0, 2).map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+
+      <p className="text-xs text-muted-foreground">
+        Motor: {verdict.analyzedTransactions} transacción(es) y {verdict.payouts} pago(s) analizados hace{" "}
+        {formatElapsed(analyzedElapsed)}
+        {verdict.truncated ? " · análisis truncado (hay movimientos fuera de la ventana)" : ""}
+        {verdict.blind ? " · el detalle no respondió: diagnóstico incompleto" : ""}.
+      </p>
+      <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Confirmar en el control de dispensado →</span>
+    </Link>
   );
 }
 
