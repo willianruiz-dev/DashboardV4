@@ -56,10 +56,11 @@
   distintas (no comparable)» en máquinas de cambio divisa, y la alerta del inicio muestra
   «Importe en varias monedas» en lugar de un número que sumaba pesos y dólares.
 - **Suite de regresiones en el repositorio:** `npm run fixtures:dispensing`
-  (`scripts/dispensing-fixtures.mts`, tsx, sin red ni sesión) ejecuta siete escenarios con 27
-  comprobaciones y sale con código 1 si algo falla. Cubre C2–C9: tendencia que no debe alertar,
+  (`scripts/dispensing-fixtures.mts`, tsx, sin red ni sesión) ejecuta diez escenarios con 62
+  comprobaciones y sale con código 1 si algo falla. Cubre C2–C10: tendencia que no debe alertar,
   atribución culpable/compensador, monedero «No dispensa» que sí entregaba, dos módulos
-  atascados con ráfaga, diagnóstico ciego, fila heredada de USD 1 y máquina de divisa.
+  atascados con ráfaga, diagnóstico ciego, fila heredada de USD 1, máquina de divisa, monedas
+  por máquina/recaudo por moneda y cuadre físico del arqueo base a hoy (C10).
 - **Monedas separadas en el control de dispensado (C8):** las máquinas de cambio divisa
   (COP ⇄ USD) se calculan **por moneda**: la combinación canónica, la sustitución, la
   compensación y la participación solo comparan denominaciones de la misma moneda, los pagos
@@ -84,6 +85,17 @@
   el sondeo es la única vía; el rango se recalcula al cambiar el día local. Ver §9 de
   `docs/DISPENSING_JAM_DETECTION.md`.
 - **Detección temprana de atascos (monederos/billeteros):** el sistema infiere el atasco cruzando saldo del baúl (`dpStored`), operaciones por denominación de `Transaction/{id}/Details`, dos arqueos consecutivos y cargues. Señales con peso explícito (`devuelto_con_saldo`, `sustitucion`, `sin_caida_fisica`, `participacion_perdida`, `caida_corroborada`, `caida_insuficiente`, `caida_sin_registro`, `rafaga_salida`, `descuadre_inventario`), niveles sospecha/probable/confirmado y distinción explícita entre **atasco** (había saldo y no salió) y **agotamiento** (no había saldo). El motor reconcilia los nombres de `typeOperation` con `returnAmount`/`incomeAmount` y, si no puede, lo declara en el panel en lugar de inventar evidencia. El costo de `Transaction/{id}/Details` se acota con análisis manual, tope configurable (30 por defecto), concurrencia 5 y caché en memoria por transacción.
+- **Cuadre físico del control de dispensado (C10, caso Inder Uno id 70):** el desglose
+  mostraba el `quantityDp`/`quantityRj` del último arqueo como «entregada/rechazada del
+  período», pero el arqueo es un inventario (snapshot del storage, igual que en el dashboard
+  viejo `PayPadTonnageForm.js`/`PayPadBalanceView.js`), no un movimiento: con un arqueo viejo
+  nada cuadraba, el 2.000 retirado seguía apareciendo y el reject mostraba valores viejos. Ahora
+  la tabla cuadra por denominación (`Entregada = Inicial base + Cargada desde la base − Saldo
+  hoy`), el rechazo es el baúl actual con su delta, la tarjeta DP es la salida física valorizada
+  (por moneda), AP/RJ agregan aceptadores/rechazo de hoy, hay preset «Desde último cargue» para
+  el arqueo operativo con pista cuando el cargue queda fuera del período, y sin arqueo base la
+  salida queda indeterminada en lugar de inventarse. La tabla de arqueos (Cargues y arqueos) se
+  verificó correcta contra el viejo y no se tocó.
 
 ## Validación actual
 

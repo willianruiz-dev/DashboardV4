@@ -13,9 +13,9 @@ import { currencyShortLabel } from "./denomination-currency";
  *
  * Criterio: la denominación pertenece al inventario en uso si hay CUALQUIER señal positiva
  * de que la máquina la trabaja — configuración de dispensado, umbral configurado, saldo
- * (DP/RJ/AP), cargues del período, entregas/rechazos positivos del último arqueo, o entregas
- * o intentos registrados en los detalles del período. Los valores negativos del arqueo
- * (artefactos legacy de cantidades firmadas) **no** cuentan como uso.
+ * (DP/RJ/AP), cargues desde el último arqueo, existencias positivas en el último arqueo,
+ * o entregas o intentos registrados en los detalles del período. Los valores negativos del
+ * arqueo (artefactos legacy de cantidades firmadas) **no** cuentan como uso.
  */
 export interface DenominationUsageSignals {
   /** Unidades del aceptador que menciona el último arqueo (firmadas). */
@@ -85,16 +85,16 @@ export function describeDenominationUsage(signals: DenominationUsageSignals): st
     reasons.push(`${signals.acceptedStock} unidad(es) en el aceptador`);
   }
   if (signals.loadedInPeriod > 0) {
-    reasons.push(`${signals.loadedInPeriod} unidad(es) cargadas en el período`);
+    reasons.push(`${signals.loadedInPeriod} unidad(es) cargadas desde el último arqueo`);
   }
   if ((signals.deliveredLastArqueo ?? 0) > 0) {
-    reasons.push(`${signals.deliveredLastArqueo} entregada(s) en el último arqueo`);
+    reasons.push(`${signals.deliveredLastArqueo} unidad(es) en el dispensador en el último arqueo`);
   }
   if ((signals.rejectedLastArqueo ?? 0) > 0) {
-    reasons.push(`${signals.rejectedLastArqueo} rechazada(s) en el último arqueo`);
+    reasons.push(`${signals.rejectedLastArqueo} unidad(es) en el baúl de rechazo en el último arqueo`);
   }
   if ((signals.acceptedLastArqueo ?? 0) > 0) {
-    reasons.push(`${signals.acceptedLastArqueo} aceptada(s) en el último arqueo`);
+    reasons.push(`${signals.acceptedLastArqueo} unidad(es) en el aceptador en el último arqueo`);
   }
   if (signals.deliveredInPeriod) {
     reasons.push("entregas registradas en el período");

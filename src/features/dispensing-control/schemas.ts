@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const dispensingTimePresetSchema = z.enum(["hoy", "24h", "7d", "rango"]);
+export const dispensingTimePresetSchema = z.enum(["hoy", "24h", "7d", "desde-cargue", "rango"]);
 export type DispensingTimePreset = z.infer<typeof dispensingTimePresetSchema>;
 
 export const dispensingPresetLabels: Record<DispensingTimePreset, string> = {
@@ -8,6 +8,7 @@ export const dispensingPresetLabels: Record<DispensingTimePreset, string> = {
   rango: "Rango",
   "24h": "Últimas 24 h",
   "7d": "Últimos 7 días",
+  "desde-cargue": "Desde último cargue",
 };
 
 /** Rango como valores de `datetime-local` (precisión de minuto, zona local). */

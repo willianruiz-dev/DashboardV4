@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { SearchablePaypadSelect } from "@/features/paypads/components/searchable-paypad-select";
 import type { PayPad } from "@/features/paypads/schemas";
-import { createPresetRange } from "@/features/dispensing-control/hooks";
+import { createPresetRange, toLocalInputValue } from "@/features/dispensing-control/hooks";
 import {
   dispensingPresetLabels,
   MAX_CUSTOM_RANGE_DAYS,
@@ -16,7 +16,7 @@ import {
   type DispensingTimePreset,
 } from "@/features/dispensing-control/schemas";
 
-const quickPresets: Exclude<DispensingTimePreset, "rango">[] = ["hoy", "24h", "7d"];
+const quickPresets: Exclude<DispensingTimePreset, "rango">[] = ["hoy", "24h", "7d", "desde-cargue"];
 
 export interface DispensingFilterSelection {
   paypadId: number | null;
@@ -26,6 +26,8 @@ export interface DispensingFilterSelection {
 
 interface DispensingFiltersProps {
   disabled?: boolean;
+  /** Último cargue de la máquina seleccionada (valor `datetime-local`); `null` = sin cargues o aún cargando. */
+  lastLoadAt?: string | null;
   onApply: (selection: DispensingFilterSelection) => void;
   paypadId: number | null;
   paypads: readonly PayPad[];
@@ -33,29 +35,41 @@ interface DispensingFiltersProps {
 
 /**
  * Barra de filtros del control de dispensado: máquina (Pay+) + presets de
- * tiempo rápidos (Hoy / 24 h / 7 días) + rango personalizado (tope 31 días).
+ * tiempo rápidos (Hoy / 24 h / 7 días / Desde último cargue) + rango personalizado
+ * (tope 31 días). El período gobierna AP/RJ (transacciones); el cuadre físico por
+ * denominación siempre va del arqueo base hasta hoy.
  */
-export function DispensingFilters({ disabled = false, onApply, paypadId, paypads }: DispensingFiltersProps) {
+export function DispensingFilters({ disabled = false, lastLoadAt = null, onApply, paypadId, paypads }: DispensingFiltersProps) {
   const [preset, setPreset] = useState<DispensingTimePreset>("hoy");
   const [customRange, setCustomRange] = useState<DispensingRange>(() => createPresetRange("hoy"));
   const [rangeError, setRangeError] = useState<string | null>(null);
 
-  function activeRange(): DispensingRange {
-    return preset === "rango" ? customRange : createPresetRange(preset);
+  function presetRange(next: Exclude<DispensingTimePreset, "rango">): DispensingRange {
+    // «Desde último cargue» es [último cargue → ahora]: el período del arqueo operativo.
+    if (next === "desde-cargue" && lastLoadAt) {
+      return { from: lastLoadAt, to: toLocalInputValue(new Date()) };
+    }
+    return createPresetRange(next);
   }
 
   function handleMachineChange(value: string): void {
+    // Al cambiar de máquina, «Desde último cargue» pertenece a la máquina anterior:
+    // se vuelve a Hoy hasta que carguen los cargues de la nueva selección.
+    const nextPreset = preset === "desde-cargue" ? "hoy" : preset;
+    if (nextPreset !== preset) {
+      setPreset(nextPreset);
+    }
     onApply({
       paypadId: /^\d+$/.test(value) ? Number(value) : null,
-      preset,
-      range: activeRange(),
+      preset: nextPreset,
+      range: nextPreset === "rango" ? customRange : createPresetRange(nextPreset),
     });
   }
 
   function handleQuickPreset(next: Exclude<DispensingTimePreset, "rango">): void {
     setPreset(next);
     setRangeError(null);
-    onApply({ paypadId, preset: next, range: createPresetRange(next) });
+    onApply({ paypadId, preset: next, range: presetRange(next) });
   }
 
   function handleOpenCustomRange(): void {
@@ -96,7 +110,8 @@ export function DispensingFilters({ disabled = false, onApply, paypadId, paypads
       <CardHeader className="gap-2 pb-4">
         <CardTitle className="text-base">Parámetros del control</CardTitle>
         <CardDescription>
-          AP y RJ se calculan sobre las transacciones del período; DP y los saldos de baúl sobre el último arqueo y el inventario del sistema.
+          AP y RJ se calculan sobre las transacciones del período; el cuadre físico por denominación va del arqueo base hasta el inventario actual.
+          Para el arqueo operativo usa «Desde último cargue».
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
@@ -115,18 +130,22 @@ export function DispensingFilters({ disabled = false, onApply, paypadId, paypads
           <div className="grid gap-2">
             <span className="text-sm font-medium">Período</span>
             <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200/80 bg-slate-50/70 p-1 dark:border-slate-700 dark:bg-slate-900/40">
-              {quickPresets.map((option) => (
-                <Button
-                  disabled={disabled}
-                  key={option}
-                  onClick={() => handleQuickPreset(option)}
-                  size="sm"
-                  type="button"
-                  variant={preset === option ? "default" : "ghost"}
-                >
-                  {dispensingPresetLabels[option]}
-                </Button>
-              ))}
+              {quickPresets.map((option) => {
+                const needsLoad = option === "desde-cargue";
+                return (
+                  <Button
+                    disabled={disabled || (needsLoad && (paypadId === null || lastLoadAt === null))}
+                    key={option}
+                    onClick={() => handleQuickPreset(option)}
+                    size="sm"
+                    title={needsLoad && lastLoadAt === null ? "Selecciona una máquina con cargues registrados." : undefined}
+                    type="button"
+                    variant={preset === option ? "default" : "ghost"}
+                  >
+                    {dispensingPresetLabels[option]}
+                  </Button>
+                );
+              })}
               <Button
                 disabled={disabled}
                 onClick={handleOpenCustomRange}

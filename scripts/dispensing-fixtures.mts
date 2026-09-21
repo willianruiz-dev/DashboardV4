@@ -15,6 +15,8 @@
  *   divisa          – máquina COP ⇄ USD: nada se mezcla entre monedas (C8)
  *   alerta-inicio   – la alerta del inicio declara las máquinas multimoneda en vez de sumar
  *   monedas-tx      – el recaudo de Transacciones/Reportes se agrupa por moneda (nunca se suma)
+ *   arqueo-cargue   – el cuadre físico va del arqueo base a hoy: entregada = inicial +
+ *                     cargada − saldo, y el rechazo mostrado es el baúl actual (C10)
  */
 import { summarizeMachineCurrencies } from "../src/features/dispensing-control/denomination-usage.ts";
 import { computeJamDiagnostics, type JamDiagnostics } from "../src/features/dispensing-control/dispensing-jams.ts";
@@ -39,21 +41,24 @@ function expect(label: string, condition: boolean, detail = ""): void {
 
 interface StorageOptions {
   accepted?: string;
+  acceptedTotal?: string;
   creating?: boolean;
   dispensing?: boolean;
+  dispensingTotal?: string;
   min?: string;
   rejected?: string;
+  rejectedTotal?: string;
 }
 
 function storageRow(value: string, id: number, stock: string, options: StorageOptions = {}) {
   const dispensing = options.dispensing ?? true;
   return {
     apStored: options.accepted ?? "0",
-    apTotal: "0",
+    apTotal: options.acceptedTotal ?? "0",
     dateCreated: null,
     denominationValue: value,
     dpStored: stock,
-    dpTotal: "0",
+    dpTotal: options.dispensingTotal ?? "0",
     id,
     idCurrencyDenomination: id,
     idPayPad: 10,
@@ -62,7 +67,7 @@ function storageRow(value: string, id: number, stock: string, options: StorageOp
     minDpQuantity: options.min ?? "0",
     quantityStored: stock,
     rjStored: options.rejected ?? "0",
-    rjTotal: "0",
+    rjTotal: options.rejectedTotal ?? "0",
     total: "0",
   };
 }
@@ -446,7 +451,7 @@ expect("no hay incidentes", ccCentroDiagnostics.incidents.length === 0, incident
 expect("los totales por moneda no incluyen USD", ccCentroMetrics.storageTotalsByCurrency.every((entry) => entry.label === "COP"));
 expect(
   "la entrega negativa del arqueo se acota a 0",
-  ccCentroMetrics.excludedRows.every((row) => row.delivered >= 0 && (row.negativeReport === null || row.delivered === 0)),
+  ccCentroMetrics.excludedRows.every((row) => (row.delivered ?? 0) >= 0 && (row.negativeReport === null || row.delivered === 0)),
 );
 expect(
   "cada fila en uso explica por qué (tooltip del panel)",
@@ -638,6 +643,150 @@ expect(
   "una sola moneda no se fragmenta",
   summarizeTransactionsByCurrency([tx(9, 10, "Aprobada", "1000", "0", "Efectivo")], txCurrencyMap).length === 1,
 );
+
+/* ------------------------------------------------------------------ 10) arqueo desde el cargue (C10) */
+
+console.log("\n[arqueo-cargue] cuadre físico del arqueo base a hoy (Inder Uno, estilo id 70)");
+
+function loadDetail(denominationId: number, denominationValue: string, quantity: string) {
+  return { denominationValue, idCurrencyDenomination: denominationId, quantity };
+}
+
+function load(id: number, dateCreated: string, details: ReturnType<typeof loadDetail>[], totalLoaded: string) {
+  return { dateCreated, details, id, totalLoaded };
+}
+
+const arqueoCase = (() => {
+  // Inventario HOY: la máquina ya no dispensa 2.000 (módulo retirado) pero el baúl de
+  // rechazo todavía guarda 2 billetes de 2.000 y 3 de 5.000. El 1.000 está muerto del
+  // todo (sin configuración, sin saldo, sin cargues, sin existencias en la base).
+  const storage = [
+    storageRow("50000", 1, "10", { dispensingTotal: "500000", min: "2" }),
+    storageRow("20000", 2, "5", { dispensingTotal: "100000", min: "2" }),
+    storageRow("10000", 3, "0", { min: "2" }),
+    storageRow("5000", 4, "20", { accepted: "7", acceptedTotal: "35000", dispensingTotal: "100000", min: "2", rejected: "3", rejectedTotal: "15000" }),
+    storageRow("2000", 5, "0", { dispensing: false, rejected: "2", rejectedTotal: "4000" }),
+    storageRow("1000", 6, "0", { dispensing: false }),
+  ];
+  // Arqueo BASE (15/09): todavía había 30 billetes de 2.000 en el dispensador.
+  const base = tonnage(11, "2026-09-15T09:00:00.000Z", [
+    tonnageDetail("50000", 1, "12"),
+    tonnageDetail("20000", 2, "8"),
+    tonnageDetail("10000", 3, "4"),
+    tonnageDetail("5000", 4, "25", "1", "5"),
+    tonnageDetail("2000", 5, "30"),
+  ]);
+  // Cargue posterior a la base (16/09): el período «Desde último cargue» lo cubre.
+  const loads = [
+    load(21, "2026-09-16T10:00:00.000Z", [
+      loadDetail(1, "50000", "5"),
+      loadDetail(2, "20000", "2"),
+      loadDetail(4, "5000", "10"),
+    ], "300000"),
+  ];
+
+  return computeDispensingMetrics({
+    byState: { Aprobada: { count: 40, total: "900000" }, "Aprobada Error Devuelta": { count: 2, total: "15000" } },
+    denominations: [
+      catalogDenomination(1, COP, "50000", "Peso colombiano"),
+      catalogDenomination(2, COP, "20000", "Peso colombiano"),
+      catalogDenomination(3, COP, "10000", "Peso colombiano"),
+      catalogDenomination(4, COP, "5000", "Peso colombiano"),
+      catalogDenomination(5, COP, "2000", "Peso colombiano"),
+      catalogDenomination(6, COP, "1000", "Peso colombiano"),
+    ],
+    lastTonnage: base,
+    loads,
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-17T22:00:00.000Z"),
+    rangeFrom: new Date("2026-09-16T10:00:00.000Z"),
+    rangeTo: new Date("2026-09-17T22:00:00.000Z"),
+    storage,
+  });
+})();
+
+function arqueoRow(value: string) {
+  return arqueoCase.rows.find((row) => row.denominationValue === value) ?? null;
+}
+
+console.log(`  entregadas: ${arqueoCase.rows.map((row) => `${row.denominationValue}=${String(row.delivered)}`).join(" · ")}`);
+console.log(`  excluidas: ${arqueoCase.excludedRows.map((row) => row.denominationValue).join(", ") || "ninguna"}`);
+
+expect("el 50.000 cuadra: 12 + 5 − 10 = 7", arqueoRow("50000")?.delivered === 7, String(arqueoRow("50000")?.delivered));
+expect("el 20.000 cuadra: 8 + 2 − 5 = 5", arqueoRow("20000")?.delivered === 5, String(arqueoRow("20000")?.delivered));
+expect("el 10.000 agotado sigue visible: 4 + 0 − 0 = 4", arqueoRow("10000")?.delivered === 4, String(arqueoRow("10000")?.delivered));
+expect("el 5.000 cuadra: 25 + 10 − 20 = 15", arqueoRow("5000")?.delivered === 15, String(arqueoRow("5000")?.delivered));
+expect(
+  "el 2.000 retirado explica sus 30 salidos (30 + 0 − 0)",
+  arqueoRow("2000")?.delivered === 30 && arqueoRow("2000")?.initialDp === 30,
+  `delivered=${String(arqueoRow("2000")?.delivered)} inicial=${String(arqueoRow("2000")?.initialDp)}`,
+);
+expect("el 1.000 muerto queda excluido con motivo", arqueoCase.excludedRows.some((row) => row.denominationValue === "1000"));
+expect(
+  "el rechazo muestra el baúl ACTUAL (3 de 5.000 con Δ +2)",
+  arqueoRow("5000")?.rejected === 3 && arqueoRow("5000")?.rejectedDelta === 2,
+  `rejected=${String(arqueoRow("5000")?.rejected)} delta=${String(arqueoRow("5000")?.rejectedDelta)}`,
+);
+expect(
+  "los 2.000 del reject se ven (no dispensa pero tiene reject)",
+  arqueoRow("2000")?.rejected === 2,
+  `rejected=${String(arqueoRow("2000")?.rejected)}`,
+);
+expect(
+  "la salida valorizada suma 625.000 (7×50.000 + 5×20.000 + 4×10.000 + 15×5.000 + 30×2.000)",
+  arqueoCase.dp.outflowTotal === "625000",
+  String(arqueoCase.dp.outflowTotal),
+);
+expect("el baúl de rechazo actual vale 19.000", arqueoCase.rj.currentTotal === "19000", arqueoCase.rj.currentTotal);
+expect("los aceptadores de hoy valen 35.000", arqueoCase.apPhysical.currentTotal === "35000", arqueoCase.apPhysical.currentTotal);
+expect(
+  "la cargada desde la base del 50.000 es 5",
+  arqueoRow("50000")?.loadedSinceBase === 5,
+  String(arqueoRow("50000")?.loadedSinceBase),
+);
+expect("hay base y un cargue desde la base por 300.000", arqueoCase.reconciliation.hasBase === true && arqueoCase.reconciliation.loadsSinceBaseTotal === "300000");
+
+// Con una base FRESCA (arqueo posterior al retiro del módulo de 2.000, sin detalle de
+// 2.000 ni de 1.000) y el reject vacío, el 2.000 desaparece del desglose: la máquina
+// ya no lo trabaja y no hay dinero que explicar.
+const arqueoFreshBase = computeDispensingMetrics({
+  byState: { Aprobada: { count: 5, total: "100000" } },
+  denominations: [catalogDenomination(1, COP, "50000", "Peso colombiano"), catalogDenomination(5, COP, "2000", "Peso colombiano")],
+  lastTonnage: tonnage(12, "2026-09-17T09:00:00.000Z", [tonnageDetail("50000", 1, "10")]),
+  loads: [],
+  machineCurrency: { id: COP, label: "COP" },
+  now: new Date("2026-09-17T22:00:00.000Z"),
+  rangeFrom: new Date(RANGE.rangeFrom),
+  rangeTo: new Date(RANGE.rangeTo),
+  storage: [
+    storageRow("50000", 1, "8", { dispensingTotal: "400000", min: "2" }),
+    storageRow("2000", 5, "0", { dispensing: false }),
+  ],
+});
+
+expect(
+  "con base fresca el 2.000 sin saldo ni reject queda excluido",
+  arqueoFreshBase.excludedRows.some((row) => row.denominationValue === "2000"),
+  arqueoFreshBase.excludedRows.map((row) => row.denominationValue).join(", "),
+);
+expect("con base fresca el 50.000 cuadra: 10 + 0 − 8 = 2", arqueoFreshBase.rows.find((row) => row.denominationValue === "50000")?.delivered === 2);
+
+// Sin arqueo base la salida física NO se inventa: queda indeterminada.
+const arqueoNoBase = computeDispensingMetrics({
+  byState: {},
+  denominations: [],
+  lastTonnage: null,
+  loads: [],
+  machineCurrency: null,
+  now: new Date("2026-09-17T22:00:00.000Z"),
+  rangeFrom: new Date(RANGE.rangeFrom),
+  rangeTo: new Date(RANGE.rangeTo),
+  storage: [storageRow("50000", 1, "8", { dispensingTotal: "400000", min: "2" })],
+});
+
+expect("sin base la entregada es indeterminada (null)", arqueoNoBase.rows[0]?.delivered === null, String(arqueoNoBase.rows[0]?.delivered));
+expect("sin base no hay total de salida", arqueoNoBase.dp.outflowTotal === null, String(arqueoNoBase.dp.outflowTotal));
+expect("sin base el delta de rechazo es indeterminado", arqueoNoBase.rows[0]?.rejectedDelta === null);
 
 /* ------------------------------------------------------------------ resumen */
 

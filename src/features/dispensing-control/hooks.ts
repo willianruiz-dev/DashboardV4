@@ -25,18 +25,44 @@ function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-function toLocalInputValue(date: Date): string {
+export function toLocalInputValue(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/** Rango local (datetime-local) para los presets rápidos. */
-export function createPresetRange(preset: Exclude<DispensingTimePreset, "rango">, now = new Date()): DispensingRange {
+/** ISO del API (UTC) → valor `datetime-local` (zona local del navegador). */
+export function apiIsoToLocalInputValue(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : toLocalInputValue(date);
+}
+
+/**
+ * Rango local (datetime-local) para los presets rápidos.
+ * `desde-cargue` cubre [último cargue → ahora]: es el período del arqueo operativo
+ * (AP/RJ de transacciones). Requiere `lastLoadAt`; sin cargues registrados cae a Hoy.
+ */
+export function createPresetRange(
+  preset: Exclude<DispensingTimePreset, "rango">,
+  now = new Date(),
+  lastLoadAt: Date | null = null,
+): DispensingRange {
   if (preset === "hoy") {
     const from = new Date(now);
     from.setHours(0, 0, 0, 0);
     const to = new Date(now);
     to.setHours(23, 59, 0, 0);
     return { from: toLocalInputValue(from), to: toLocalInputValue(to) };
+  }
+
+  if (preset === "desde-cargue" && lastLoadAt !== null && !Number.isNaN(lastLoadAt.getTime())) {
+    return { from: toLocalInputValue(lastLoadAt), to: toLocalInputValue(now) };
+  }
+
+  if (preset === "desde-cargue") {
+    return createPresetRange("hoy", now);
   }
 
   const to = new Date(now);

@@ -1,8 +1,18 @@
 # Viabilidad y diseño — Módulo "Dispensing Control"
 
-> **Actualizado:** 2026-09-17 — **IMPLEMENTADO (fases A–D)**
+> **Actualizado:** 2026-09-21 — **IMPLEMENTADO (fases A–D) + corrección del cuadre físico (C10)**
 > **Veredicto:** **VIABLE**. El ~90% de los datos se resuelve con endpoints ya existentes (frontend + BFF). **Cero cambios en el backend .NET** para el núcleo; 1 extensión BFF de ~15 líneas (resumen por estado, ya aplicada) y 1 registro de ruta en datos (vía UI, sin código).
 > **Estado del código:** implementado en `src/features/dispensing-control/` + ruta `/dashboard/transactions/dispensing-control`. **Sin operaciones de datos**: el acceso SuperAdmin se resuelve en el frontend por nombre de rol (ítem inyectado en el sidebar + guard de página). Pendiente: validación E2E autenticada con Pay+ real.
+>
+> **Corrección 2026-09-21 — el cuadre físico va del arqueo base a hoy (C10):** el
+> desglose mostraba el `quantityDp`/`quantityRj` del último arqueo como «entregada/
+> rechazada del período», pero el arqueo es un **inventario** (snapshot del storage al
+> momento de arquear, igual que en el dashboard viejo), no un movimiento. La tabla ahora
+> cuadra por denominación: `Entregada (física) = Inicial (arqueo base) + Cargada (desde la
+> base) − Saldo (hoy)`, el rechazo mostrado es el baúl **actual** con su delta, la tarjeta
+> DP es la salida física valorizada, y hay preset «Desde último cargue» para el arqueo
+> operativo. Sin arqueo base la salida queda indeterminada (no se inventa). D3/D5 y §5.1
+> actualizados; regresión `arqueo-cargue` en `scripts/dispensing-fixtures.mts`.
 
 > **Extensión 2026-09-17 — detección de atascos:** el módulo incorpora el diagnóstico de
 > atascos por denominación (motor `dispensing-jams.ts`, BFF `POST /api/dispensing/jams` y
@@ -22,9 +32,9 @@
 
 - **D1 — Acceso SuperAdmin:** **resuelto en el frontend por nombre de rol** (`isSuperAdminRole` en `src/lib/roles/super-admin.ts`, normaliza `SuperAdmin`/`super admin`/`super-admin`, e incluye `root` como super-rol legacy, igual que la página de Usuarios). El sidebar inyecta el ítem para ese rol (`withDispensingControl` en `dashboard-navigation.ts`) y la página aplica el mismo guard. **Cero operaciones de datos, cero cambios al API.** Si en el futuro se crea la ruta en datos para el rol, el ítem no se duplica.
 - **D2 — Umbral de alerta:** `minDpQuantity` existente (con la tolerancia legacy de +10 unidades). Opción B (porcentaje sobre capacidad en `extraDataJson`) queda como evolución.
-- **D3 — Tarjeta DP:** último arqueo (físico) con subtítulo de fecha; sin arqueo, referencia del inventario actual (storage).
+- **D3 — Tarjeta DP (corregida C10):** salida física valorizada desde el arqueo base (`Σ entregada × denominación`), con subtítulo de base/cargado/inventario; sin arqueo base, «—» + inventario actual como referencia (antes mostraba el stock del arqueo viejo como si fuera entrega del período).
 - **D4 — byState:** extensión BFF aplicada (`summary.byState` en `src/app/api/transactions/search/route.ts`).
-- **D5 — "Cantidad Entregada":** `quantityDp` del último arqueo; sin arqueo, inventario actual (DP).
+- **D5 — "Cantidad Entregada" (corregida C10):** salida física `inicial (base) + cargada (desde la base) − saldo (hoy)`; la «Rechazada» es el baúl actual (`rjStored`) con su delta. Sin base, indeterminada (antes: `quantityDp`/`quantityRj` del arqueo, que son inventario, no movimiento).
 
 ---
 
@@ -36,11 +46,13 @@ Toda la evidencia proviene de código actual (frontend V4 + backend legado consu
 | --- | --- | --- | --- |
 | **AP (valor que el sistema dice que se debió entregar, período)** | `POST /api/transactions/search` (BFF) → internally `Transaction/GetByDate` | Transacciones con `stateTransaction === "Aprobada"`: `incomeAmount − returnAmount` (misma fórmula del `summary` actual del BFF) | **Exacta** |
 | **RJ (período, por estado)** | Ídem | Transacciones con `stateTransaction === "Aprobada Error Devuelta"` | **Exacta** (requiere extensión `byState` del BFF, §4-D4) |
-| **DP (valor real entregado)** | `GET /api/PayPad/Tonnage/GetByPaypad/{id}` (arqueos) | Último arqueo: `totalDp` + `details[].quantityDp` por denominación | **Exacta** (física, al momento del último arqueo) |
+| **DP (valor real entregado)** | Arqueo base + cargues desde la base + storage actual | Por denominación: `quantityDp(base) + Σ cargues(base→hoy) − dpStored(hoy)`, valorizado × denominación | **Exacta** (física, del arqueo base a hoy; sin base: indeterminada) |
 | **Saldo actual por denominación (baúles)** | `GET /api/PayPad/GetStorage/{id}` | `dpStored`/`dpTotal` (dispensador), `apStored`/`apTotal` (aceptadores), `rjStored`/`rjTotal` (rechazo) | **Exacta** (inventario del sistema) |
 | **Umbral de alerta** | Ídem (storage) | `minDpQuantity` por denominación (editable hoy en "Configurar denominaciones"). El backend legado ya alerta con `DpStored <= MinDpQuantity + 10` | **Exacta** (alternativa al "20% de capacidad", §4-D2) |
 | **Tiempo desde último cargue** | `GET /api/Load/GetByPaypad/{id}` | `max(loads[].dateCreated)` | **Exacta** |
-| **Cargada por denominación (período)** | Ídem (loads) | `Σ loads[].details[].quantity` con `dateCreated ∈ [from, to]` | **Exacta** |
+| **Cargada por denominación (desde la base)** | Ídem (loads) | `Σ loads[].details[].quantity` con `dateCreated > arqueoBase` (sin base: cae al período UI como referencia) | **Exacta** |
+| **Inicial por denominación** | Último arqueo = base física | `details[].quantityDp/Rj/Ap` (inventario de ese día, no movimiento) | **Exacta** (snapshot) |
+| **Rechazo por denominación** | Storage actual + base | `rjStored` (hoy) + delta `hoy − base` | **Exacta** |
 | **Lista de máquinas** | `GET /api/PayPad` (BFF `/api/paypads`) | — | — |
 | **Metadata de denominaciones** | `GET /api/masters/denominations` | `value`, `img`, `idCurrency` | — |
 
@@ -83,8 +95,9 @@ src/features/dispensing-control/
     dispensing-control-page.tsx # Composición general + estados (pending/error/empty) + aviso multimoneda
     dispensing-filters.tsx      # Select Pay+ + presets Hoy/24h/7d + rango custom
     metric-card.tsx             # Card reutilizable (título, valor, ícono, tono, sub-texto)
-    denomination-table.tsx      # Grid Cargada/Entregada/Rechazada/Saldo + alerta por fila
+    denomination-table.tsx      # Grid Inicial/Cargada/Entregada/Rechazo/Saldo + alertas por fila
                                 # (LowBalanceAlert vive aquí) + filas fuera de inventario (C9)
+                                # + conteo por encima de la base (C10)
     jam-diagnostics.tsx         # Panel de atascos: incidentes, evidencia por denominación, límites
     return-alerts-home.tsx      # Tarjetas de la alerta del inicio (errores de devuelta del día)
 
@@ -130,9 +143,9 @@ El acceso se resuelve **en el frontend por nombre de rol**, con el mismo patrón
 | --- | --- | --- | --- |
 | **D1** | Qué es "superAdmin" | A) Permiso + ruta asignados solo al rol superAdmin (data-driven, patrón de la app) · B) Chequeo de nombre de rol (`root`/`superadmin`) | **A**. Pregunta: ¿cómo se llama el rol superAdmin en la BD de producción? |
 | **D2** | Umbral de alerta del baúl (el spec dice "20% de capacidad máxima", **que no existe como campo en la BD**) | A) `minDpQuantity` ya existente por denominación (el backend legado ya usa `dpStored <= minDpQuantity + 10` para alertar) · B) % contra capacidad: almacenar `maxDpCapacity` por denominación en `PayPadConfiguration.extraDataJson` (key/value existente, **sin migración**) · C) Nueva columna + stored procedure (los SP no están en el repo; la más pesada) | **A** como v1 (cero cambios), **B** si se exige el porcentaje literal |
-| **D3** | Semántica de la tarjeta **DP** ("valor real entregado") | A) Último arqueo `totalDp` (físico) + subtítulo "Al último arqueo: fecha" · B) `dpTotal` de storage (inventario actual) · C) Transacciones exitosas del período | **A** (es "real"), con B como subtítulo de referencia |
+| **D3** | Semántica de la tarjeta **DP** ("valor real entregado") | A) ~~Último arqueo `totalDp`~~ (era stock, no entrega: corregido en C10) · B) Salida física desde la base (`Σ entregada × valor`) + subtítulo base/cargado/inventario · C) Transacciones exitosas del período | **B** (es lo realmente salido); sin base: «—» + inventario como referencia |
 | **D4** | Desglose por estado del período (RJ por `"Aprobada Error Devuelta"`) | A) Extensión BFF `byState` (~15 líneas, sin .NET) · B) Paginar `items` (pageSize≤100) en el cliente — inviable para períodos grandes | **A** |
-| **D5** | Columna "Cantidad Entregada" de la tabla de denominaciones | A) `quantityDp` del último arqueo por denominación (físico) · B) Delta aproximado `cargada + DP_anterior − DP_actual` (requiere 2 arqueos) | **A**; la variante por período (B) queda como extensión |
+| **D5** | Columna "Cantidad Entregada" de la tabla de denominaciones | A) ~~`quantityDp` del último arqueo~~ (es inventario, no movimiento: corregido en C10) · B) Salida física `inicial (base) + cargada (desde la base) − saldo (hoy)` + rechazo actual con delta | **B**; el preset «Desde último cargue» fija el período AP/RJ del arqueo operativo |
 
 ---
 
@@ -145,14 +158,18 @@ AP   = Σ neto(t)   donde t.estado = "Aprobada"                        [transacc
 RJ   = Σ neto(t)   donde t.estado = "Aprobada Error Devuelta"         [transacciones, período]
 neto(t) = incomeAmount(t) − returnAmount(t)                           [misma fórmula del BFF]
 
-DP   = últimoArqueo(M).totalDp                                         [arqueos, físico]
-AP_físico = últimoArqueo(M).totalAp     RJ_físico = últimoArqueo(M).totalRj
-
-Cargada(d)  = Σ carga.detalle.cantidad(d)  donde carga.fecha ∈ [from, to]   [cargues]
-Saldo(d)    = storage(M, d).dpStored     (valor: storage(M, d).dpTotal)     [storage]
-Alerta(d)   = storage(M, d).isDispensing && storage(M, d).dpStored <= storage(M, d).minDpQuantity (+10 tol. legacy)
+base(M) = últimoArqueo(M)               [snapshot físico; sin arqueo, DP es indeterminado]
+InicialDP(d) = base.details(d).quantityDp      (inventario de ese día, acotado ≥ 0)
+Cargada(d)   = Σ carga.detalle.cantidad(d)  donde carga.fecha > base.fecha   [cargues]
+Saldo(d)     = storage(M, d).dpStored     (valor: storage(M, d).dpTotal)      [storage]
+Entregada(d) = InicialDP(d) + Cargada(d) − Saldo(d)     [física; negativa = conteo subió]
+Rechazo(d)   = storage(M, d).rjStored     (Δ = hoy − base.details(d).quantityRj)
+DP   = Σ Entregada(d) × valor(d)          [valorizada por moneda; sin base: indeterminada]
+AP_físico: base.totalAp → aceptadores hoy (Σ apTotal)     RJ_físico: base.totalRj → reject hoy (Σ rjTotal)
+Alerta(d) = storage(M, d).isDispensing && storage(M, d).dpStored <= storage(M, d).minDpQuantity (+10 tol. legacy)
 
 últimoCargue = max(carga.fecha) ;  transcurrido = t − últimoCargue
+preset "Desde último cargue" = período AP/RJ [últimoCargue → ahora] (arqueo operativo)
 ```
 
 ### 5.2 Hook central (contrato)
@@ -195,14 +212,16 @@ interface DispensingMetrics {
 
 interface DenominationRow {
   id: number; value: string; img: string | null;
-  loadedInRange: number;    // Cargada (período)
-  delivered: number;        // Entregada (DP último arqueo)
-  rejected: number;         // Rechazada (RJ último arqueo)
+  initialDp/Rj/Ap: number;  // Inicial (arqueo base; negativos legacy → 0 + nota)
+  loadedSinceBase: number;  // Cargada (desde la base; sin base: período UI)
+  delivered: number | null; // Entregada física (inicial + cargada − saldo; null sin base)
+  rejected: number;         // Rechazo actual (rjStored) + rejectedDelta (hoy − base)
   balance: number;          // Saldo actual (dpStored)
   balanceValue: string;     // dpTotal
   isDispensing: boolean;
   minDpQuantity: number;
   low: boolean;             // saldo <= umbral
+  shortage: boolean;        // delivered < 0: el conteo subió (revisar, no es entrega)
 }
 ```
 
@@ -261,7 +280,7 @@ interface DenominationRow {
 | --- | --- | --- |
 | Máquina sin arqueo/cargue registrado (p. ej. nueva) | Cards DP/sin "último cargue" vacías | Estados vacíos explícitos ("Sin arqueo todavía") + DP cae a `dpTotal` de storage como referencia |
 | `GetByDate` devuelve el conjunto completo | Períodos muy amplios en máquinas de alto volumen → respuesta pesada | Topper de rango a 31 días en el selector custom; los presets (hoy/24h/7d) acotan por defecto |
-| Cantidades negativas legacy (Prueba1, backlog fase 3–4) | Filas de denominación con signos extraños | El reader conserva el signo solo en lecturas históricas; en el desglose de dispensado los negativos se **acotan a 0** con la nota «arqueo negativo, se muestra 0» (`negativeReport`, C9) en lugar de mostrarse como entregas |
+| Cantidades negativas legacy (Prueba1, backlog fase 3–4) | Filas de denominación con signos extraños | El reader conserva el signo solo en lecturas históricas; en el desglose, el **inicial** negativo de la base se **acota a 0** con nota (`negativeReport`, C9/C10), pero la **salida física negativa** (el conteo subió) se muestra en rojo con «Revisar conteo» en lugar de ocultarse |
 | Denominaciones heredadas en `PayPad/GetStorage` (p. ej. el billete de USD 1 de C.C. Centro2) | Filas sin inventario real que alarmaban o confundían | Regla de uso compartida (`denomination-usage.ts`, C9): solo se evalúan las que la máquina trabaja hoy; el resto se lista aparte con el motivo |
 | Máquina de cambio divisa (COP ⇄ USD) | Importes de monedas distintas sumados como si fueran comparables | Cálculo y agregados **por moneda** (`currencyLabels`, `multiCurrency`), títulos con etiqueta (`USD 10`) y «Importe en varias monedas» donde no hay separación posible (C8) |
 | Umbral "20% de capacidad" no existe en datos | Imposible literal sin cambio de esquema | D2 (A): `minDpQuantity` (existente y editable por operador) |

@@ -11,6 +11,7 @@ import { usePaypads } from "@/features/paypads/hooks";
 import { isSuperAdminRole } from "@/lib/roles/super-admin";
 import { currencyShortLabel } from "@/features/dispensing-control/denomination-currency";
 import {
+  apiIsoToLocalInputValue,
   buildJamScanRequest,
   createPresetRange,
   useDispensingJamScan,
@@ -95,6 +96,40 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
     setSelection(next);
   }
 
+  // Último cargue de la máquina (para el preset «Desde último cargue» y la pista de
+  // período). Se deriva de los mismos cargues del cuadre: sin refetch extra.
+  // (Antes del guard: los hooks no pueden ir tras un retorno condicional.)
+  const lastLoadIso = useMemo(() => {
+    let best: string | null = null;
+    let bestTime = Number.NEGATIVE_INFINITY;
+    for (const load of metricsQuery.sources.loads) {
+      const time = new Date(load.dateCreated ?? "").getTime();
+      if (!Number.isNaN(time) && time > bestTime) {
+        best = load.dateCreated ?? null;
+        bestTime = time;
+      }
+    }
+    return best;
+  }, [metricsQuery.sources.loads]);
+  const lastLoadLocal = lastLoadIso ? apiIsoToLocalInputValue(lastLoadIso) : null;
+
+  // Pista operativa: si el último cargue quedó fuera del período elegido (p. ej. Hoy),
+  // AP/RJ no cubren todo lo vendido desde el cargue: el arqueo completo pide el preset.
+  const lastLoadOutsideRange = useMemo(() => {
+    if (selection === null || lastLoadIso === null || selection.preset === "desde-cargue") {
+      return false;
+    }
+    const from = localDateTimeToApiIso(selection.range.from);
+    const to = localDateTimeToApiIso(selection.range.to, { endOfMinute: true });
+    if (!from || !to) {
+      return false;
+    }
+    const loadTime = new Date(lastLoadIso).getTime();
+    const fromTime = new Date(from).getTime();
+    const toTime = new Date(to).getTime();
+    return !Number.isNaN(loadTime) && (loadTime < fromTime || loadTime > toTime);
+  }, [selection, lastLoadIso]);
+
   if (!canAccess) {
     return <ForbiddenState description="El control de dispensado es exclusivo de usuarios con rol SuperAdmin." />;
   }
@@ -107,12 +142,18 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
     currencyTotals.length > 1
       ? currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
       : null;
+  const outflowTotals = metrics?.outflowTotalsByCurrency ?? [];
+  const outflowBreakdown =
+    outflowTotals.length > 1
+      ? outflowTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
+      : null;
   const multiCurrency = metrics?.multiCurrency ?? false;
   const currencyLabels = (metrics?.currencyLabels ?? []).join(", ");
   // Se declara en las tarjetas para que nadie lea un total agregado como si fuera
   // comparable: para eso está el desglose por moneda.
   const mixedCurrencyNote = multiCurrency ? " · suma monedas distintas (no comparable)" : "";
-  const dpTotal = metrics?.dp.total ?? null;
+  const dpOutflowTotal = metrics?.dp.outflowTotal ?? null;
+  const hasArqueoBase = metrics?.reconciliation.hasBase ?? false;
   const lastLoadElapsed = metrics?.lastLoad.elapsedMs ?? null;
 
   return (
@@ -139,6 +180,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
       {canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) > 0 ? (
         <DispensingFilters
           disabled={paypadId !== null && metricsQuery.isLoading}
+          lastLoadAt={lastLoadLocal}
           onApply={handleApply}
           paypadId={paypadId}
           paypads={paypadsQuery.data ?? []}
@@ -170,34 +212,54 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
                 </AlertDescription>
               </Alert>
             ) : null}
+            {lastLoadOutsideRange && lastLoadIso ? (
+              <Alert>
+                <TimerReset aria-hidden="true" className="size-4" />
+                <AlertTitle>El último cargue está fuera del período ({rangeLabel})</AlertTitle>
+                <AlertDescription>
+                  Fue el {formatDashboardDateTime(lastLoadIso)}: AP y RJ solo cubren {rangeLabel}. Para el arqueo operativo completo
+                  (desde el último cargue hasta hoy) usa el preset «Desde último cargue».
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {!hasArqueoBase && metrics && !metricsQuery.isLoading ? (
+              <Alert variant="warning">
+                <TriangleAlert aria-hidden="true" className="size-4" />
+                <AlertTitle>Sin arqueo base</AlertTitle>
+                <AlertDescription>
+                  Esta máquina nunca se ha arqueado: la salida física (DP) no es calculable y la tabla muestra el inventario actual como
+                  referencia. Registra un arqueo en Pay+ → Arquear para activar el cuadre completo.
+                </AlertDescription>
+              </Alert>
+            ) : null}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard
                 icon={CircleCheck}
                 label="AP · Aprobadas del período"
                 loading={metricsQuery.isLoading && metrics === null}
-                subtitle={`${metrics?.ap.count ?? 0} transacción${(metrics?.ap.count ?? 0) === 1 ? "" : "es"}${metrics?.apPhysical.at ? ` · Arqueo: ${formatDashboardMoney(metrics.apPhysical.total ?? "0")}` : ""}${mixedCurrencyNote}`}
+                subtitle={`${metrics?.ap.count ?? 0} transacción${(metrics?.ap.count ?? 0) === 1 ? "" : "es"}${metrics?.apPhysical.at ? ` · Base: ${formatDashboardMoney(metrics.apPhysical.total ?? "0")}` : " · Sin arqueo base"} · Aceptadores hoy: ${metrics ? formatDashboardMoney(metrics.apPhysical.currentTotal) : "—"}${mixedCurrencyNote}`}
                 tone="approved"
                 value={metrics ? formatDashboardMoney(metrics.ap.total) : "—"}
               />
               <MetricCard
                 icon={PackageOpen}
-                label="DP · Real entregado"
+                label="DP · Salida física desde la base"
                 loading={metricsQuery.isLoading && metrics === null}
                 subtitle={
-                  metrics?.dp.at
-                    ? `Último arqueo: ${formatDashboardDateTime(metrics.dp.at)}${currencyBreakdown ? ` (total del backend${multiCurrency ? ", suma monedas distintas: no separable" : ""}) · inventario actual por moneda: ${currencyBreakdown}` : ""}`
+                  metrics?.reconciliation.hasBase && metrics.dp.at
+                    ? `Base: ${formatDashboardDateTime(metrics.dp.at)} · Cargado: ${formatDashboardMoney(metrics.reconciliation.loadsSinceBaseTotal)} · Inventario hoy: ${formatDashboardMoney(metrics.dp.storageTotal)}${outflowBreakdown ? ` · por moneda: ${outflowBreakdown}` : ""}${mixedCurrencyNote}`
                     : metrics
-                      ? `Sin arqueo · inventario${currencyBreakdown ? " por moneda" : ""}: ${currencyBreakdown ?? formatDashboardMoney(metrics.dp.storageTotal)}`
+                      ? `Sin arqueo base · inventario hoy${currencyBreakdown ? " por moneda" : ""}: ${currencyBreakdown ?? formatDashboardMoney(metrics.dp.storageTotal)}`
                       : null
                 }
                 tone="system"
-                value={dpTotal === null ? "—" : formatDashboardMoney(dpTotal)}
+                value={dpOutflowTotal === null ? "—" : formatDashboardMoney(dpOutflowTotal)}
               />
               <MetricCard
                 icon={XCircle}
                 label="RJ · Aprobada Error Devuelta"
                 loading={metricsQuery.isLoading && metrics === null}
-                subtitle={`${metrics?.rj.count ?? 0} transacción${(metrics?.rj.count ?? 0) === 1 ? "" : "es"}${metrics?.rj.physicalTotal ? ` · Baúl rechazo: ${formatDashboardMoney(metrics.rj.physicalTotal)}` : ""}${mixedCurrencyNote}`}
+                subtitle={`${metrics?.rj.count ?? 0} transacción${(metrics?.rj.count ?? 0) === 1 ? "" : "es"} · Baúl rechazo hoy: ${metrics ? formatDashboardMoney(metrics.rj.currentTotal) : "—"}${metrics?.rj.physicalTotal ? ` (base: ${formatDashboardMoney(metrics.rj.physicalTotal)})` : ""}${mixedCurrencyNote}`}
                 tone="cancelled"
                 value={metrics ? formatDashboardMoney(metrics.rj.total) : "—"}
               />
@@ -216,10 +278,12 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
             </div>
 
             {/* Orden pedido por operación: primero el desglose por denominaciones
-                (cargada/entregada/rechazada/saldo) y debajo la detección de atascos. */}
+                (inicial/cargada/entregada/rechazo/saldo) y debajo la detección de atascos. */}
             <DenominationTable
+              baseAt={metrics?.reconciliation.baseAt ?? null}
               denominations={metricsQuery.denominations}
               excludedRows={metrics?.excludedRows ?? []}
+              hasBase={metrics?.reconciliation.hasBase ?? false}
               loading={metricsQuery.isLoading && metrics === null}
               rangeLabel={rangeLabel}
               rows={metrics?.rows ?? []}
@@ -237,7 +301,8 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
             />
 
             <p className="text-xs text-muted-foreground">
-              Fuentes: transacciones del período (AP/RJ, valor neto = ingresado − devuelto) · último arqueo y almacenamiento del Pay+ (DP, saldos de baúl) · cargues registrados (período y último).
+              Fuentes: transacciones del período (AP/RJ, valor neto = ingresado − devuelto) · arqueo base + cargues desde la base + inventario
+              actual (cuadre físico DP: entregada = inicial + cargada − saldo; rechazo = baúl actual con su delta).
               El umbral de alerta por denominación se configura en Pay+ → Configurar denominaciones (mínimo DP); la tolerancia del arqueo legacy añade 10 unidades.
             </p>
           </>
