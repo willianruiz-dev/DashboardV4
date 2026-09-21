@@ -451,7 +451,7 @@ expect("no hay incidentes", ccCentroDiagnostics.incidents.length === 0, incident
 expect("los totales por moneda no incluyen USD", ccCentroMetrics.storageTotalsByCurrency.every((entry) => entry.label === "COP"));
 expect(
   "la entrega negativa del arqueo se acota a 0",
-  ccCentroMetrics.excludedRows.every((row) => (row.delivered ?? 0) >= 0 && (row.negativeReport === null || row.delivered === 0)),
+  ccCentroMetrics.excludedRows.every((row) => (row.deliveredFromBase ?? 0) >= 0 && (row.negativeReport === null || row.deliveredFromBase === 0)),
 );
 expect(
   "cada fila en uso explica por qué (tooltip del panel)",
@@ -712,14 +712,14 @@ function arqueoRow(value: string) {
 console.log(`  entregadas: ${arqueoCase.rows.map((row) => `${row.denominationValue}=${String(row.delivered)}`).join(" · ")}`);
 console.log(`  excluidas: ${arqueoCase.excludedRows.map((row) => row.denominationValue).join(", ") || "ninguna"}`);
 
-expect("el 50.000 cuadra: 12 + 5 − 10 = 7", arqueoRow("50000")?.delivered === 7, String(arqueoRow("50000")?.delivered));
-expect("el 20.000 cuadra: 8 + 2 − 5 = 5", arqueoRow("20000")?.delivered === 5, String(arqueoRow("20000")?.delivered));
-expect("el 10.000 agotado sigue visible: 4 + 0 − 0 = 4", arqueoRow("10000")?.delivered === 4, String(arqueoRow("10000")?.delivered));
-expect("el 5.000 cuadra: 25 + 10 − 20 = 15", arqueoRow("5000")?.delivered === 15, String(arqueoRow("5000")?.delivered));
+expect("el 50.000 cuadra: 12 + 5 − 10 = 7", arqueoRow("50000")?.deliveredFromBase === 7, String(arqueoRow("50000")?.delivered));
+expect("el 20.000 cuadra: 8 + 2 − 5 = 5", arqueoRow("20000")?.deliveredFromBase === 5, String(arqueoRow("20000")?.delivered));
+expect("el 10.000 agotado sigue visible: 4 + 0 − 0 = 4", arqueoRow("10000")?.deliveredFromBase === 4, String(arqueoRow("10000")?.delivered));
+expect("el 5.000 cuadra: 25 + 10 − 20 = 15", arqueoRow("5000")?.deliveredFromBase === 15, String(arqueoRow("5000")?.delivered));
 expect(
   "el 2.000 retirado explica sus 30 salidos (30 + 0 − 0)",
-  arqueoRow("2000")?.delivered === 30 && arqueoRow("2000")?.initialDp === 30,
-  `delivered=${String(arqueoRow("2000")?.delivered)} inicial=${String(arqueoRow("2000")?.initialDp)}`,
+  arqueoRow("2000")?.deliveredFromBase === 30 && arqueoRow("2000")?.initialDp === 30,
+  `delivered=${String(arqueoRow("2000")?.deliveredFromBase)} inicial=${String(arqueoRow("2000")?.initialDp)}`,
 );
 expect("el 1.000 muerto queda excluido con motivo", arqueoCase.excludedRows.some((row) => row.denominationValue === "1000"));
 expect(
@@ -734,8 +734,8 @@ expect(
 );
 expect(
   "el entregado al cliente descuenta el rechazo: 625.000 salidos − 2×5.000 − 2×2.000 = 611.000",
-  arqueoCase.dp.clientsFromBaseTotal === "611000",
-  String(arqueoCase.dp.clientsFromBaseTotal),
+  arqueoCase.dp.arqueoTotal === "611000",
+  String(arqueoCase.dp.arqueoTotal),
 );
 expect("el baúl de rechazo actual vale 19.000", arqueoCase.rj.currentTotal === "19000", arqueoCase.rj.currentTotal);
 expect("los aceptadores de hoy valen 35.000", arqueoCase.apPhysical.currentTotal === "35000", arqueoCase.apPhysical.currentTotal);
@@ -769,7 +769,7 @@ expect(
   arqueoFreshBase.excludedRows.some((row) => row.denominationValue === "2000"),
   arqueoFreshBase.excludedRows.map((row) => row.denominationValue).join(", "),
 );
-expect("con base fresca el 50.000 cuadra: 10 + 0 − 8 = 2", arqueoFreshBase.rows.find((row) => row.denominationValue === "50000")?.delivered === 2);
+expect("con base fresca el 50.000 cuadra: 10 + 0 − 8 = 2", arqueoFreshBase.rows.find((row) => row.denominationValue === "50000")?.deliveredFromBase === 2);
 
 // Sin arqueo base la salida física NO se inventa: queda indeterminada.
 const arqueoNoBase = computeDispensingMetrics({
@@ -784,8 +784,12 @@ const arqueoNoBase = computeDispensingMetrics({
   storage: [storageRow("50000", 1, "8", { dispensingTotal: "400000", min: "2" })],
 });
 
-expect("sin base la entregada es indeterminada (null)", arqueoNoBase.rows[0]?.delivered === null, String(arqueoNoBase.rows[0]?.delivered));
-expect("sin base no hay total de salida", arqueoNoBase.dp.clientsFromBaseTotal === null, String(arqueoNoBase.dp.clientsFromBaseTotal));
+expect("sin base la entrega del arqueo es indeterminada (null)", arqueoNoBase.rows[0]?.deliveredFromBase === null, String(arqueoNoBase.rows[0]?.deliveredFromBase));
+expect(
+  "sin base no hay auditoría del arqueo ni dispensado calculable",
+  arqueoNoBase.dp.arqueoTotal === null && arqueoNoBase.dp.dispensedTotal === null,
+  `arqueo=${String(arqueoNoBase.dp.arqueoTotal)} periodo=${String(arqueoNoBase.dp.dispensedTotal)}`,
+);
 expect("sin base el delta de rechazo es indeterminado", arqueoNoBase.rows[0]?.rejectedDelta === null);
 expect("sin cifra del sistema no hay verificación que mostrar", arqueoNoBase.reconciliationCheck === null);
 
@@ -807,11 +811,13 @@ function inderCase(loads: ReturnType<typeof load>[], storage = inderStorage, cas
     byState: { Aprobada: { count: 3, total: "6000" } },
     cashDispensedTotal,
     denominations: [catalogDenomination(5, COP, "2000", "Peso colombiano")],
+    tonnages: [inderBase],
     lastTonnage: inderBase,
     loads,
     machineCurrency: { id: COP, label: "COP" },
     now: new Date("2026-09-21T21:00:00.000Z"),
-    rangeFrom: new Date("2026-09-20T15:00:00.000Z"),
+    // Período «Desde último cargue»: el cargue mismo abre la ventana.
+    rangeFrom: new Date("2026-09-19T18:20:00.000Z"),
     rangeTo: new Date("2026-09-21T21:00:00.000Z"),
     storage,
   });
@@ -825,53 +831,63 @@ const inder = inderCase([
 const inderRow = inder.rows[0] ?? null;
 
 console.log(
-  `  entregado al cliente: ${String(inderRow?.deliveredToClients)} (84 + 140 − 11 − 5) · sólo cargue: ${String(inderRow?.deliveredToClientsFromLoad)} (140 − 11 − 5) · salieron del dispensador: ${String(inderRow?.deliveredFromBase)}`,
+  `  dispensado: ${String(inderRow?.dispensedInPeriod)} (140 − 11 − 5) · cargado: ${String(inderRow?.loadedInPeriod)} · rechazado: ${String(inderRow?.rejectedInPeriod)} · en dispensadores: ${String(inderRow?.balance)} · auditoría arqueo: ${String(inderRow?.dispensedFromArqueo)}`,
 );
 
 // LA CIFRA OPERATIVA: la del cargue. Nunca puede superar lo cargado — es exactamente lo
 // que el operador exige («si cargué 140 no puedo tener 200 entregados»).
 expect(
-  "el recibido del período del cargue es 140 y su modelo descontando el rechazo da 124",
-  inderRow?.loadedSinceLastLoad === 140 && inderRow?.deliveredToClientsFromLoad === 124,
-  `recibido=${String(inderRow?.loadedSinceLastLoad)} modeloCargue=${String(inderRow?.deliveredToClientsFromLoad)}`,
+  "CARGADO del período = 140",
+  inderRow?.loadedInPeriod === 140,
+  String(inderRow?.loadedInPeriod),
 );
 expect(
-  "el modelo «sólo el cargue» nunca excede lo recibido (invariante del operador)",
-  inder.rows.every((row) => row.deliveredToClientsFromLoad === null || row.deliveredToClientsFromLoad <= row.loadedSinceLastLoad),
+  "DISPENSADO = cargado − en dispensadores − rechazado = 140 − 11 − 5 = 124",
+  inderRow?.dispensedInPeriod === 124,
+  String(inderRow?.dispensedInPeriod),
 );
 expect(
-  "ENTREGADO AL CLIENTE (arqueo como apertura): 84 + 140 − 11 − 5 = 208",
-  inderRow?.deliveredToClients === 208,
-  String(inderRow?.deliveredToClients),
+  "RECHAZADO del período = 5 (baúl de rechazo hoy, sin rechazo al inicio)",
+  inderRow?.rejectedInPeriod === 5 && inderRow?.rejectedAtPeriodStart === 0,
+  `periodo=${String(inderRow?.rejectedInPeriod)} inicio=${String(inderRow?.rejectedAtPeriodStart)}`,
 );
 expect(
-  "sin el inventario previo del arqueo el mismo cargue daría 140 − 11 − 5 = 124",
-  inderRow?.deliveredToClientsFromLoad === 124,
-  String(inderRow?.deliveredToClientsFromLoad),
+  "EL CUADRE CIERRA: 124 dispensados + 5 rechazados + 11 en dispensadores = 140 cargados",
+  inderRow !== null && (inderRow.dispensedInPeriod ?? 0) + inderRow.rejectedInPeriod + inderRow.balance === inderRow.loadedInPeriod,
 );
 expect(
-  "las dos cifras se publican juntas para que la verificación decida (no se esconde ninguna)",
-  inderRow?.deliveredToClients === 208 && inderRow?.deliveredToClientsFromLoad === 124,
+  "el dispensado nunca supera lo cargado (invariante del operador)",
+  inder.rows.every((row) => row.dispensedInPeriod === null || row.dispensedInPeriod <= row.loadedInPeriod),
 );
 expect(
-  "el período del cargue incluye sólo el último cargue (140)",
-  inder.reconciliation.loadsSinceLastLoadCount === 1 && inder.reconciliation.loadsSinceLastLoadTotal === "280000",
-  `cargues=${String(inder.reconciliation.loadsSinceLastLoadCount)} total=${inder.reconciliation.loadsSinceLastLoadTotal}`,
+  "el inventario previo del arqueo (84) queda como auditoría, NO en el cuadre del período",
+  inderRow?.stockAtPeriodStart === 84 && inderRow?.dispensedFromArqueo === 208,
+  `previo=${String(inderRow?.stockAtPeriodStart)} auditoria=${String(inderRow?.dispensedFromArqueo)}`,
 );
 expect(
-  "el puente dice que había 84 al cargar (arqueo), y 84 + 140 − 11 = 213 cierra el cuadre del arqueo",
-  inderRow?.stockAtLastLoad === 84 && (inderRow?.stockAtLastLoad ?? 0) + (inderRow?.loadedSinceLastLoad ?? 0) - (inderRow?.balance ?? 0) === 213,
-  `alCargar=${String(inderRow?.stockAtLastLoad)}`,
+  "valorizado: dispensado 124 × 2.000 = 248.000, cargado 280.000, rechazado 10.000, en dispensadores 22.000",
+  inder.dp.dispensedTotal === "248000" && inder.dp.loadedTotal === "280000" && inder.dp.rejectedTotal === "10000" && inder.dp.storageTotal === "22000",
+  `disp=${String(inder.dp.dispensedTotal)} carg=${String(inder.dp.loadedTotal)} rech=${String(inder.dp.rejectedTotal)} disp=${String(inder.dp.storageTotal)}`,
 );
 expect(
-  "el entregado al cliente valorizado (modelo arqueo) es 208 × 2.000 = 416.000",
-  inder.dp.clientsFromBaseTotal === "416000",
-  String(inder.dp.clientsFromBaseTotal),
+  "el valorizado cierra: 248.000 + 10.000 + 22.000 = 280.000",
+  Number(inder.dp.dispensedTotal) + Number(inder.dp.rejectedTotal) + Number(inder.dp.storageTotal) === Number(inder.dp.loadedTotal),
 );
 expect(
-  "el modelo «sólo el cargue» (baúl desde vacío) daría 124 × 2.000 = 248.000",
-  inder.dp.clientsFromLoadTotal === "248000",
-  String(inder.dp.clientsFromLoadTotal),
+  "la auditoría valorizada con el inventario previo es 208 × 2.000 = 416.000",
+  inder.dp.arqueoTotal === "416000",
+  String(inder.dp.arqueoTotal),
+);
+
+// Caso del operador con baúl SIN inventario previo (arqueo de apertura en cero): el mismo
+// cargue da la misma cifra, y no hay nada que auditar.
+const inderEmptyStart = inderCase([
+  load(42, "2026-09-19T18:20:00.000Z", [loadDetail(5, "2000", "140")], "280000"),
+], inderStorage, "248000");
+expect(
+  "sin inventario previo el cuadre es idéntico y el sistema lo confirma",
+  inderEmptyStart.rows[0]?.stockAtPeriodStart === 84 && inderEmptyStart.reconciliationCheck?.best === "periodo",
+  JSON.stringify(inderEmptyStart.reconciliationCheck),
 );
 
 // VERIFICACIÓN contra el sistema (Σ returnAmount): con 208 unidades devueltas el modelo del
@@ -882,8 +898,8 @@ const inderSystemBase = inderCase(
   "416000",
 );
 expect(
-  "si el sistema registró 416.000 devueltos, el cuadre del arqueo es el correcto",
-  inderSystemBase.reconciliationCheck?.best === "base",
+  "si el sistema registró 416.000 devueltos, sólo cuadra contando el inventario previo del arqueo",
+  inderSystemBase.reconciliationCheck?.best === "arqueo",
   JSON.stringify(inderSystemBase.reconciliationCheck),
 );
 const inderSystemLoad = inderCase(
@@ -892,8 +908,8 @@ const inderSystemLoad = inderCase(
   "248000",
 );
 expect(
-  "si registró 248.000, el arqueo no refleja el inventario real del baúl",
-  inderSystemLoad.reconciliationCheck?.best === "load",
+  "si registró 248.000, el cuadre del período (cargado − dispensadores − rechazado) es el correcto",
+  inderSystemLoad.reconciliationCheck?.best === "periodo",
   JSON.stringify(inderSystemLoad.reconciliationCheck),
 );
 const inderSystemUnknown = inderCase(
@@ -903,7 +919,7 @@ const inderSystemUnknown = inderCase(
 );
 expect(
   "si no coincide con ninguno, la diferencia se declara (dinero sin registro)",
-  inderSystemUnknown.reconciliationCheck?.best === "ninguno" && inderSystemUnknown.reconciliationCheck?.differences.base === "316000",
+  inderSystemUnknown.reconciliationCheck?.best === "ninguno" && inderSystemUnknown.reconciliationCheck?.differences.periodo === "148000",
   JSON.stringify(inderSystemUnknown.reconciliationCheck),
 );
 expect("la cargada desde el arqueo coincide con el cargue de 140", inderRow?.loadedSinceBase === 140, String(inderRow?.loadedSinceBase));
@@ -925,21 +941,15 @@ expect(
   `rejected=${String(inderRow?.rejected)} delta=${String(inderRow?.rejectedDelta)}`,
 );
 
-// Un cargue ANTERIOR al arqueo, con otro posterior: la «Cargada» del cargue es sólo la
-// última ventana y el puente no aplica si el último cargue quedó antes del arqueo.
+// Un cargue ANTERIOR al arqueo de referencia, con otro posterior: sólo el del período cuenta.
 const inderTwoLoads = inderCase([
   load(40, "2026-09-19T12:00:00.000Z", [loadDetail(5, "2000", "60")], "120000"),
   load(42, "2026-09-19T18:20:00.000Z", [loadDetail(5, "2000", "40")], "80000"),
 ]);
 expect(
-  "un cargue anterior al arqueo no vuelve a sumarse a la cargada desde la base",
-  inderTwoLoads.rows[0]?.loadedSinceBase === 40 && inderTwoLoads.rows[0]?.loadsSinceBaseTrace.length === 1,
-  `cargada=${String(inderTwoLoads.rows[0]?.loadedSinceBase)} traza=${String(inderTwoLoads.rows[0]?.loadsSinceBaseTrace.length)}`,
-);
-expect(
-  "con dos cargues el puente suma el intermedio: 84 + (40 − 40) = 84 al cargar",
-  inderTwoLoads.rows[0]?.stockAtLastLoad === 84,
-  String(inderTwoLoads.rows[0]?.stockAtLastLoad),
+  "un cargue anterior al período no se suma al cargado",
+  inderTwoLoads.rows[0]?.loadedInPeriod === 40 && inderTwoLoads.rows[0]?.dispensedInPeriod === 24,
+  `cargado=${String(inderTwoLoads.rows[0]?.loadedInPeriod)} dispensado=${String(inderTwoLoads.rows[0]?.dispensedInPeriod)}`,
 );
 
 // Un arqueo que NO cuadra consigo mismo se detecta: sus detalles no explican sus totales.
@@ -963,11 +973,11 @@ expect(
 );
 expect("sin cargues posteriores la traza queda vacía", inderIncoherentBase.rows[0]?.loadsSinceBaseTrace.length === 0);
 expect(
-  "sin cargues registrados no hay modelo del cargue, pero el arqueo sigue dando 84 − 11 − 5 = 68 al cliente",
-  inderIncoherentBase.rows[0]?.deliveredToClientsFromLoad === null &&
-    inderIncoherentBase.rows[0]?.deliveredToClients === 68 &&
+  "sin cargues en el período no hay dispensado, pero la auditoría del arqueo sigue dando 84 − 11 − 5 = 68",
+  inderIncoherentBase.rows[0]?.dispensedInPeriod === null &&
+    inderIncoherentBase.rows[0]?.dispensedFromArqueo === 68 &&
     inderIncoherentBase.rows[0]?.deliveredFromBase === 73,
-  `cliente=${String(inderIncoherentBase.rows[0]?.deliveredToClients)} salieron=${String(inderIncoherentBase.rows[0]?.deliveredFromBase)}`,
+  `periodo=${String(inderIncoherentBase.rows[0]?.dispensedInPeriod)} auditoria=${String(inderIncoherentBase.rows[0]?.dispensedFromArqueo)}`,
 );
 
 /* ------------------------------------------------------------------ resumen */

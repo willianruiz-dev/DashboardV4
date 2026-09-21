@@ -143,19 +143,16 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
     currencyTotals.length > 1
       ? `Virtual hoy por moneda: ${currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")}`
       : "";
-  // ENTREGADO AL CLIENTE: modelo A (arqueo base como apertura) y modelo B (baúl desde vacío).
-  const clientsFromBaseTotal = metrics?.dp.clientsFromBaseTotal ?? null;
-  const clientsFromLoadTotal = metrics?.dp.clientsFromLoadTotal ?? null;
-  const deliveredTotal = clientsFromBaseTotal ?? clientsFromLoadTotal;
-  const loadOutflowTotals = metrics?.loadOutflowTotalsByCurrency ?? [];
-  const loadOutflowBreakdown =
-    loadOutflowTotals.length > 1
-      ? loadOutflowTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")
-      : null;
+  // Cuadre del período: cargado = dispensado + rechazado + en dispensadores.
+  const loadedTotal = metrics?.dp.loadedTotal ?? "0";
+  const dispensedTotal = metrics?.dp.dispensedTotal ?? null;
+  const rejectedTotal = metrics?.dp.rejectedTotal ?? "0";
+  const storageTotal = metrics?.dp.storageTotal ?? "0";
+  const arqueoTotal = metrics?.dp.arqueoTotal ?? null;
   const check = metrics?.reconciliationCheck ?? null;
-  // El cuadre sin el inventario previo del arqueo (sólo el cargue): se declara cuando existe
-  // y difiere, para que la verificación contra el sistema muestre ambos candidatos.
-  const baseVsLoadDifferent = clientsFromBaseTotal !== null && clientsFromLoadTotal !== null && clientsFromBaseTotal !== clientsFromLoadTotal;
+  // Auditoría: si el arqueo de referencia tenía inventario previo, el dispensado "real"
+  // (contando ese inventario) es mayor que el del período. Se declara, no se suma.
+  const priorStock = (metrics?.rows ?? []).reduce((total, row) => total + (row.stockAtPeriodStart ?? 0), 0);
   const multiCurrency = metrics?.multiCurrency ?? false;
   const currencyLabels = (metrics?.currencyLabels ?? []).join(", ");
   // Se declara en las tarjetas para que nadie lea un total agregado como si fuera
@@ -241,36 +238,35 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               </Alert>
             ) : null}
             {/* VERIFICACIÓN: lo que el sistema registró haber devuelto (Σ returnAmount) contra
-                el cuadre físico. Es la medición independiente que decide si la apertura del
-                cuadre (el arqueo) explica el inventario. */}
+                el dispensado del período. Es la medición independiente que valida el cuadre. */}
             {check && check.systemTotal !== null ? (
               <Alert variant={check.best === "ninguno" ? "warning" : "default"}>
                 <CircleCheck aria-hidden="true" className="size-4" />
                 <AlertTitle>
-                  {check.best === "base"
-                    ? "El cuadro físico cuadra con lo que el sistema registró"
-                    : check.best === "load"
-                      ? "El registro del sistema coincide con el cargue, no con el arqueo"
-                      : "El cuadre físico no coincide con lo que el sistema registró"}
+                  {check.best === "periodo"
+                    ? "El dispensado coincide con lo que el sistema registró"
+                    : check.best === "arqueo"
+                      ? "Sólo cuadra contando el inventario previo del arqueo"
+                      : "El dispensado no coincide con lo que el sistema registró"}
                 </AlertTitle>
                 <AlertDescription>
                   <span className="block">
                     Sistema (Σ devuelto de {check.transactionCount} transacción(es) aprobadas): <strong>{formatDashboardMoney(check.systemTotal)}</strong>
                     {" · "}
-                    Cuadre físico desde el arqueo: <strong>{check.fromBaseTotal === null ? "no calculable" : formatDashboardMoney(check.fromBaseTotal)}</strong>
-                    {check.differences.base === null ? "" : ` (diferencia ${formatDashboardMoney(check.differences.base)})`}
-                    {baseVsLoadDifferent && check.fromLoadTotal !== null
-                      ? ` · Cuadre contando sólo el último cargue: ${formatDashboardMoney(check.fromLoadTotal)}${
-                          check.differences.load === null ? "" : ` (diferencia ${formatDashboardMoney(check.differences.load)})`
+                    Dispensado del período: <strong>{check.fromPeriodTotal === null ? "no calculable" : formatDashboardMoney(check.fromPeriodTotal)}</strong>
+                    {check.differences.periodo === null ? "" : ` (diferencia ${formatDashboardMoney(check.differences.periodo)})`}
+                    {check.fromArqueoTotal !== null && check.fromArqueoTotal !== check.fromPeriodTotal
+                      ? ` · contando el inventario previo del arqueo: ${formatDashboardMoney(check.fromArqueoTotal)}${
+                          check.differences.arqueo === null ? "" : ` (diferencia ${formatDashboardMoney(check.differences.arqueo)})`
                         }`
                       : ""}
                   </span>
                   <span className="mt-1 block">
-                    {check.best === "base"
-                      ? "El inventario del dispensador queda explicado: la apertura del arqueo es la correcta."
-                      : check.best === "load"
-                        ? "El baúl tenía inventario que el arqueo no refleja (o se arqueó en otro momento): para que el cuadre cierre hay que registrar un arqueo en el momento correcto."
-                        : "Hay dinero sin registro en una de las dos partes: revisa cargues no registrados, extracciones manuales o el estado del arqueo."}
+                    {check.best === "periodo"
+                      ? "El cuadre cierra: cargado − en dispensadores − rechazado explica lo entregado a clientes."
+                      : check.best === "arqueo"
+                        ? "El inventario previo del arqueo sí pasó por el dispensador: revisa si el baúl se cargó sobre saldo existente o si esas unidades se retiraron en mantenimiento."
+                        : "Hay dinero sin registro en una de las dos partes: revisa cargues no registrados, retiros manuales o el estado de los baúles."}
                   </span>
                 </AlertDescription>
               </Alert>
@@ -308,27 +304,24 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               />
               <MetricCard
                 icon={PackageOpen}
-                label="DP · Entregado al cliente"
+                label="DP · Dispensado en el período"
                 loading={metricsQuery.isLoading && metrics === null}
                 subtitle={
                   metrics
                     ? [
-                        metrics.reconciliation.hasBase
-                          ? `Arqueado ${formatDashboardDateTime(metrics.reconciliation.baseAt)} + recibido ${formatDashboardMoney(metrics.reconciliation.loadsSinceBaseTotal)} − virtual hoy ${formatDashboardMoney(metrics.dp.storageTotal)} − rechazo`
-                          : `Sin arqueo base · recibido ${formatDashboardMoney(metrics.reconciliation.loadsSinceBaseTotal)} − virtual hoy ${formatDashboardMoney(metrics.dp.storageTotal)} − rechazo`,
-                        baseVsLoadDifferent && clientsFromLoadTotal !== null
-                          ? `sólo el cargue daría ${formatDashboardMoney(clientsFromLoadTotal)}`
+                        `Cargado ${formatDashboardMoney(loadedTotal)} − rechazado ${formatDashboardMoney(rejectedTotal)} − en dispensadores ${formatDashboardMoney(storageTotal)}`,
+                        priorStock > 0
+                          ? `el arqueo de referencia tenía ${priorStock} unidad(es) previas: contándolas saldrían ${formatDashboardMoney(arqueoTotal ?? "0")}`
                           : "",
-                        loadOutflowBreakdown ? `por moneda: ${loadOutflowBreakdown}` : "",
-                        storageByCurrencyNote,
                         mixedCurrencyNote.trim(),
+                        storageByCurrencyNote,
                       ]
                         .filter((part) => part.length > 0)
                         .join(" · ")
                     : null
                 }
                 tone="system"
-                value={deliveredTotal === null ? "—" : formatDashboardMoney(deliveredTotal)}
+                value={dispensedTotal === null ? "—" : formatDashboardMoney(dispensedTotal)}
               />
               <MetricCard
                 icon={XCircle}
@@ -363,6 +356,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               lastLoadAt={metrics?.lastLoad.at ?? null}
               loading={metricsQuery.isLoading && metrics === null}
               rangeLabel={rangeLabel}
+              totals={{ dispensed: dispensedTotal ?? "0", loaded: loadedTotal, rejected: rejectedTotal, storage: storageTotal }}
               rows={metrics?.rows ?? []}
               totalsByCurrency={metrics?.storageTotalsByCurrency ?? []}
             />
@@ -378,9 +372,9 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
             />
 
             <p className="text-xs text-muted-foreground">
-              Fuentes: transacciones del período (AP/RJ, valor neto = ingresado − devuelto) · arqueo base + cargues desde la base + inventario
-              actual (DP: entregada = cargada desde el último cargue − saldo hoy, nunca mayor que lo cargado; el cuadre desde el arqueo base
-              se muestra como referencia; rechazo = baúl actual con su delta).
+              Fuentes: transacciones del período (AP/RJ, valor neto = ingresado − devuelto) · cargues del período + baúles actuales (DP:
+              dispensado = cargado − en dispensadores − rechazado; se verifica contra Σ devuelto del sistema) · arqueos como referencia de
+              apertura.
               El umbral de alerta por denominación se configura en Pay+ → Configurar denominaciones (mínimo DP); la tolerancia del arqueo legacy añade 10 unidades.
             </p>
           </>

@@ -42,8 +42,10 @@ export function LowBalanceAlert({ balance, minDpQuantity }: LowBalanceAlertProps
 }
 
 interface DenominationTableProps {
-  /** Fecha del arqueo base (`null` = la máquina nunca se arqueó: Inicial y cuadre desde la base no calculables). */
+  /** Fecha del arqueo base (`null` = la máquina nunca se arqueó). */
   baseAt?: string | null;
+  /** Totales valorizados del cuadre del período (por moneda cuando hay varias). */
+  totals: { dispensed: string; loaded: string; rejected: string; storage: string };
   /** Validación del arqueo base contra sus propios totales (null = no comparable). */
   baseSelfCheck?: DispensingBaseSelfCheck | null;
   denominations: readonly CurrencyDenomination[];
@@ -75,42 +77,31 @@ function rejectionDeltaText(delta: number | null): string | null {
   return `${delta > 0 ? "+" : ""}${delta} desde la base`;
 }
 
-/**
- * La ecuación del ENTREGADO (modelo A: el arqueo base es la apertura):
- * `arqueado + recibido − virtual hoy − rechazo(Δ) = entregado al cliente`.
- * Con tus números: `84 + 140 − 11 − 5 = 208`.
- */
-function clientsEquation(row: DispensingDenominationRow): string {
-  const rejectPart = Math.max(0, row.rejectedDelta ?? 0);
+/** El cuadre del período, visible: cargado − en dispensadores hoy − rechazado. */
+function dispensedEquation(row: DispensingDenominationRow): string {
+  const rejectPart = row.rejectedInPeriod;
   return rejectPart > 0
-    ? `${row.initialDp} + ${row.loadedSinceBase} − ${row.balance} − ${rejectPart}`
-    : `${row.initialDp} + ${row.loadedSinceBase} − ${row.balance}`;
+    ? `${row.loadedInPeriod} − ${row.balance} − ${rejectPart}`
+    : `${row.loadedInPeriod} − ${row.balance}`;
 }
 
-function clientsExplanation(row: DispensingDenominationRow): string {
-  const rejectPart = Math.max(0, row.rejectedDelta ?? 0);
-  const leftDispenser = row.deliveredFromBase ?? 0;
-  return [
-    `Entregado al cliente desde el arqueo base: ${row.initialDp} arqueado + ${row.loadedSinceBase} recibido − ${row.balance} virtual hoy${rejectPart > 0 ? ` − ${rejectPart} al baúl de rechazo` : ""} = ${row.deliveredToClients ?? 0} unidad(es).`,
-    `Salieron del dispensador (incluye lo que fue a rechazo): ${leftDispenser}.`,
-    row.rejectServiced ? "El baúl de rechazo bajó desde la base: se vació, así que la separación cliente/rechazo no es exacta." : "",
-  ]
-    .filter((part) => part.length > 0)
-    .join(" ");
+function dispensedExplanation(row: DispensingDenominationRow): string {
+  const rejectPart = row.rejectedInPeriod;
+  const closing = `${row.dispensedInPeriod ?? 0} dispensados + ${rejectPart} rechazados + ${row.balance} en el dispensador = ${row.loadedInPeriod} cargados`;
+  const reference =
+    row.stockAtPeriodStart !== null && row.stockAtPeriodStart > 0
+      ? ` OJO: el arqueo al inicio del período reportaba ${row.stockAtPeriodStart} unidad(es) en el baúl; si esas unidades se entregaron a clientes, el dispensado real sería mayor (${row.dispensedFromArqueo ?? "—"} contando el inventario previo).`
+      : "";
+  return `Dispensado en el período = cargado − en dispensadores hoy − rechazado = ${row.dispensedInPeriod ?? 0}. Cierra: ${closing}.${reference}`;
 }
 
-/** Modelo B (baúl llenado desde vacío): `recibido − virtual hoy − rechazo actual`. */
-function loadModelText(row: DispensingDenominationRow): string {
-  return `${row.loadedSinceLastLoad} − ${row.balance} − ${row.rejected} = ${row.deliveredToClientsFromLoad ?? 0}`;
-}
-
-/** Importe de `unidades × valor de la denominación` (enteros, sin decimales). */
+/** Trazabilidad de la columna «Cargada»: cargues con fecha y cantidad. */
+/** Importe de `unidades × valor de la denominación`. */
 function unitsValue(denominationValue: string, units: number): string {
   const value = Number(denominationValue);
   return Number.isFinite(value) ? String(value * units) : "0";
 }
 
-/** Trazabilidad de la columna «Cargada»: cargues con fecha y cantidad. */
 function loadsTraceText(row: DispensingDenominationRow): string | undefined {
   if (row.loadsSinceBaseTrace.length === 0) {
     return undefined;
@@ -143,8 +134,10 @@ export function DenominationTable({
   loading = false,
   rangeLabel,
   rows,
+  totals,
   totalsByCurrency = [],
 }: DenominationTableProps) {
+  const { dispensed: dispensedTotal, loaded: loadedTotal, rejected: rejectedTotal, storage: storageTotal } = totals;
   const lowRows = rows.filter((row) => row.low);
   const shortageRows = rows.filter((row) => row.shortage);
   // Máquina de cambio divisa: los importes de monedas distintas no se suman entre sí.
@@ -157,19 +150,10 @@ export function DenominationTable({
           <div>
             <h2 className="text-base font-semibold tracking-tight">Desglose por denominaciones</h2>
             <p className="text-sm text-muted-foreground">
-              {hasBase ? (
-                <>
-                  Arqueado: lo que la máquina reportó en el arqueo del {formatDashboardDateTime(baseAt)} · Recibido: cargues posteriores a ese
-                  arqueo{lastLoadAt ? ` (último: ${formatDashboardDateTime(lastLoadAt)})` : ""} · Virtual y Rechazo: baúles hoy ·{" "}
-                  <span className="font-medium text-foreground">Entregado al cliente = arqueado + recibido − virtual hoy − rechazo</span>. El filtro
-                  de período sólo mueve AP/RJ; el cuadre físico va del arqueo a hoy.
-                </>
-              ) : (
-                <>
-                  Sin arqueo base: Arqueado y Entregado no son calculables · Recibido del período ({rangeLabel}) · Virtual y Rechazo: inventario
-                  actual. Registra un arqueo antes de cargar para el cuadre completo.
-                </>
-              )}
+              <span className="font-medium text-foreground">Cargado = dispensado + rechazado + en dispensadores</span>. El período ({rangeLabel})
+              manda el «Cargado»; «En dispensadores» es lo que la máquina reporta hoy y «Rechazado» lo que quedó en el baúl de rechazo
+              {lastLoadAt ? ` (último cargue: ${formatDashboardDateTime(lastLoadAt)})` : ""}.
+              {hasBase ? ` Arqueo de referencia: ${formatDashboardDateTime(baseAt)}.` : " Sin arqueo de apertura, el inventario previo no es auditable: registra un arqueo antes de cargar."}
               {multiCurrency ? " Cada baúl indica su moneda: los importes de monedas distintas no se suman." : ""}
             </p>
             {multiCurrency && totalsByCurrency.length > 1 ? (
@@ -230,17 +214,41 @@ export function DenominationTable({
           </p>
         ) : (
           <>
-            {/* Desktop: tabla con Alert warning integrada bajo cada fila afectada */}
+            {/* El cuadre del período, valorizado: cargado = dispensado + rechazado + en
+                dispensadores. Cada columna se puede auditar por separado. */}
+            <div className="grid gap-1 rounded-lg border border-slate-200/80 bg-slate-50/60 p-3 text-sm dark:border-slate-800 dark:bg-slate-900/40 sm:grid-cols-4">
+              <div>
+                <p className="text-xs text-muted-foreground">Cargado ({rangeLabel})</p>
+                <p className="font-numeric font-semibold text-blue-600 dark:text-blue-400">{formatDashboardMoney(loadedTotal)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Dispensado (clientes)</p>
+                <p className="font-numeric font-semibold text-emerald-600 dark:text-emerald-400">{formatDashboardMoney(dispensedTotal)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Rechazado</p>
+                <p className="font-numeric font-semibold text-red-500 dark:text-red-400">{formatDashboardMoney(rejectedTotal)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">En dispensadores (virtual hoy)</p>
+                <p className="font-numeric font-semibold">{formatDashboardMoney(storageTotal)}</p>
+              </div>
+              <p className="text-xs text-muted-foreground sm:col-span-4">
+                Cierra: {formatDashboardMoney(dispensedTotal)} + {formatDashboardMoney(rejectedTotal)} + {formatDashboardMoney(storageTotal)} ={" "}
+                {formatDashboardMoney(loadedTotal)} cargados
+                {multiCurrency ? " · cada moneda por separado (los importes de monedas distintas no se suman)" : ""}.
+              </p>
+            </div>
+
             <div className="hidden overflow-hidden rounded-lg border border-slate-200/80 lg:block dark:border-slate-800">
               <Table aria-label="Desglose de denominaciones por baúl">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Billete</TableHead>
-                    <TableHead className="text-right" title="Lo que la máquina reportó en el arqueo base (el punto de partida del cuadre).">Arqueado</TableHead>
-                    <TableHead className="text-right" title="Cargues registrados posteriores al arqueo base.">Recibido</TableHead>
-                    <TableHead className="text-right" title="Saldo del dispensador que reporta la máquina hoy.">Virtual hoy</TableHead>
-                    <TableHead className="text-right" title="Baúl de rechazo hoy y su cambio desde el arqueo.">Rechazo (RJ)</TableHead>
-                    <TableHead className="text-right" title="Entregado al cliente = arqueado + recibido − virtual hoy − rechazo.">Entregado</TableHead>
+                    <TableHead className="text-right" title={`Cargues dentro del período consultado (${rangeLabel}).`}>Cargado</TableHead>
+                    <TableHead className="text-right" title="Dispensado = cargado − en dispensadores hoy − rechazado.">Dispensado</TableHead>
+                    <TableHead className="text-right" title="Baúl de rechazo hoy y su cambio desde el arqueo.">Rechazado (RJ)</TableHead>
+                    <TableHead className="text-right" title="Saldo del dispensador que reporta la máquina hoy.">En dispensadores</TableHead>
                     <TableHead>Estado</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -268,56 +276,42 @@ export function DenominationTable({
                               </span>
                             </div>
                           </TableCell>
-                          {/* ARQUEADO: lo que la máquina reportó en el arqueo base. Es el punto
-                              de partida del cuadre (el operador arquiva justo antes de cargar). */}
                           <TableCell className={cn("text-right align-top", tinted)}>
-                            {!hasBase ? (
-                              <span className="font-numeric text-muted-foreground" title="Sin arqueo base">—</span>
-                            ) : (
-                              <span
-                                className="font-numeric font-medium text-slate-600 dark:text-slate-300"
-                                title={`Reportado por la máquina en el arqueo base${baseAt ? ` del ${formatDashboardDateTime(baseAt)}` : ""}: unidades que había en el dispensador.`}
-                              >
-                                {row.initialDp}
-                              </span>
-                            )}
-                            {hasBase ? <span className="block text-xs text-muted-foreground">{formatDashboardMoney(unitsValue(row.denominationValue, row.initialDp))}</span> : null}
-                            {row.negativeReport ? (
-                              <span className="block text-xs text-amber-600 dark:text-amber-400" title={row.negativeReport}>arqueo negativo, se toma 0</span>
-                            ) : null}
-                          </TableCell>
-                          {/* RECIBIDO: cargues posteriores al arqueo (lo que el operador cargó). */}
-                          <TableCell className={cn("text-right align-top", tinted)}>
-                            <span
-                              className="font-numeric font-medium text-blue-600 dark:text-blue-400"
-                              title={loadsTraceText(row) ?? "Sin cargues posteriores al arqueo base para esta denominación"}
-                            >
-                              {row.loadedSinceBase}
+                            <span className="font-numeric font-medium text-blue-600 dark:text-blue-400" title={loadsTraceText(row) ?? "Sin cargues en el período para esta denominación"}>
+                              {row.loadedInPeriod}
                             </span>
-                            <span className="block text-xs text-muted-foreground">{formatDashboardMoney(unitsValue(row.denominationValue, row.loadedSinceBase))}</span>
+                            <span className="block text-xs text-muted-foreground">{formatDashboardMoney(unitsValue(row.denominationValue, row.loadedInPeriod))}</span>
                             {loadsTraceCaption(row) ? <span className="block text-xs text-muted-foreground">{loadsTraceCaption(row)}</span> : null}
                           </TableCell>
-                          {/* VIRTUAL HOY: el saldo que la máquina reporta en el dispensador. */}
                           <TableCell className={cn("text-right align-top", tinted)}>
-                            <span
-                              className="font-numeric font-semibold"
-                              title="Saldo del dispensador que reporta la máquina hoy (Pay+ → Almacenamiento → Dispensadores)."
-                            >
-                              {row.balance}
-                            </span>
-                            <span className="block text-xs text-muted-foreground">{formatDashboardMoney(row.balanceValue)}</span>
+                            {row.dispensedInPeriod === null ? (
+                              <span className="font-numeric text-muted-foreground" title="Sin cargues en el período: el dispensado no es calculable">—</span>
+                            ) : (
+                              <>
+                                <span
+                                  className={cn("font-numeric font-semibold", row.dispensedInPeriod < 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400")}
+                                  title={dispensedExplanation(row)}
+                                >
+                                  {row.dispensedInPeriod}
+                                </span>
+                                <span className="block text-xs text-muted-foreground">{dispensedEquation(row)}</span>
+                                <span className="block text-xs text-muted-foreground">{formatDashboardMoney(unitsValue(row.denominationValue, row.dispensedInPeriod))}</span>
+                                {row.dispensedInPeriod < 0 ? (
+                                  <span className="block text-xs text-red-600 dark:text-red-400">
+                                    hay inventario previo sin cargue en el período: revisa el arqueo de inicio
+                                  </span>
+                                ) : null}
+                              </>
+                            )}
                           </TableCell>
                           <TableCell className={cn("text-right align-top", tinted)}>
-                            <span
-                              className="font-numeric font-medium text-red-500 dark:text-red-400"
-                              title="Unidades que la máquina reporta hoy en el baúl de rechazo (no en el dispensador)."
-                            >
+                            <span className="font-numeric font-medium text-red-500 dark:text-red-400" title="Unidades en el baúl de rechazo hoy.">
                               {row.rejected}
                             </span>
                             <span className="block text-xs text-muted-foreground">{formatDashboardMoney(row.rejectedValue)}</span>
                             {deltaText ? (
                               <span
-                                title="Entradas al baúl de rechazo desde el arqueo base: salieron del dispensador, así que están DENTRO de la columna Entregada."
+                                title="Cambio del baúl de rechazo desde el arqueo de referencia: ese dinero salió del dispensador y está descontado del dispensado."
                                 className={cn(
                                   "block text-xs",
                                   (row.rejectedDelta ?? 0) > 0
@@ -331,50 +325,21 @@ export function DenominationTable({
                               </span>
                             ) : null}
                           </TableCell>
-                          {/* ENTREGADO AL CLIENTE = arqueado + recibido − virtual hoy − rechazo. */}
                           <TableCell className={cn("text-right align-top", tinted)}>
-                            {row.deliveredToClients === null ? (
-                              <>
-                                <span className="font-numeric text-muted-foreground" title="Sin arqueo base: el cuadre del arqueo no es calculable">—</span>
-                                {row.deliveredToClientsFromLoad !== null ? (
-                                  <span className="block text-xs text-muted-foreground" title="Modelo alterno: baúl llenado desde vacío (recibido − virtual − rechazo).">
-                                    sólo cargue: <span className="font-numeric">{row.deliveredToClientsFromLoad}</span> ({loadModelText(row)})
-                                  </span>
-                                ) : null}
-                              </>
-                            ) : (
-                              <>
-                                <span
-                                  className={cn(
-                                    "font-numeric font-semibold",
-                                    (row.deliveredToClients ?? 0) < 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400",
-                                  )}
-                                  title={clientsExplanation(row)}
-                                >
-                                  {row.deliveredToClients}
-                                </span>
-                                <span className="block text-xs text-muted-foreground">{clientsEquation(row)}</span>
-                                <span className="block text-xs text-muted-foreground">{formatDashboardMoney(unitsValue(row.denominationValue, row.deliveredToClients))}</span>
-                                {(row.deliveredToClients ?? 0) < 0 ? (
-                                  <span className="block text-xs text-red-600 dark:text-red-400">
-                                    negativo: el virtual o el rechazo superan arqueado + recibido (revisa cargues sin registrar)
-                                  </span>
-                                ) : null}
-                                {row.rejectServiced ? (
-                                  <span className="block text-xs text-amber-600 dark:text-amber-400">el rechazo se vació: separación cliente/rechazo aproximada</span>
-                                ) : null}
-                              </>
-                            )}
+                            <span className="font-numeric font-semibold" title="Saldo del dispensador que reporta la máquina hoy (dpStored).">
+                              {row.balance}
+                            </span>
+                            <span className="block text-xs text-muted-foreground">{formatDashboardMoney(row.balanceValue)}</span>
                           </TableCell>
                           <TableCell className={cn("align-top", tinted)}>
-                            {row.shortage ? (
+                            {row.dispensedInPeriod !== null && row.dispensedInPeriod < 0 ? (
                               <Badge
-                                title="El conteo físico subió desde la base: revisa cargues sin registrar antes de conciliar."
+                                title="El baúl tiene más unidades que las cargadas en el período: el inventario previo no viene de un cargue. Registra un arqueo de apertura."
                                 variant="destructive"
                                 className="gap-1.5"
                               >
                                 <TriangleAlert aria-hidden="true" className="size-3.5" />
-                                Revisar conteo
+                                Inventario previo
                               </Badge>
                             ) : row.low ? (
                               <Badge variant="warning" className="gap-1.5">
@@ -386,9 +351,6 @@ export function DenominationTable({
                                 OK
                               </Badge>
                             )}
-                            {/* Una fila de otra moneda que SÍ está en uso se declara como tal:
-                                si aparece, es porque la máquina la trabaja hoy (configurada,
-                                con saldo, con cargue o con existencias), no por herencia. */}
                             {row.foreignCurrency ? (
                               <Badge
                                 className="mt-1 flex w-fit"
@@ -402,7 +364,7 @@ export function DenominationTable({
                         </TableRow>
                         {row.low ? (
                           <TableRow className="border-b bg-amber-50/40 dark:bg-amber-500/5">
-                            <TableCell colSpan={7} className="p-2">
+                            <TableCell colSpan={6} className="p-2">
                               <LowBalanceAlert balance={row.balance} minDpQuantity={row.minDpQuantity} />
                             </TableCell>
                           </TableRow>
@@ -414,87 +376,52 @@ export function DenominationTable({
               </Table>
             </div>
 
-            {/* Móvil: una card por denominación con su alerta integrada */}
+            {/* Móvil: una card por denominación */}
             <div className="grid gap-3 lg:hidden">
               {rows.map((row) => {
                 const image = denominationImage(denominations, row);
                 const deltaText = rejectionDeltaText(row.rejectedDelta);
                 return (
-                  <div className="grid gap-3 rounded-lg border border-slate-200/80 p-4 transition-shadow duration-300 hover:shadow-lift dark:border-slate-800" key={row.denominationId}>
+                  <div className="grid gap-3 rounded-lg border border-slate-200/80 p-4 dark:border-slate-800" key={row.denominationId}>
                     <div className="flex items-center gap-3">
-                      <BackendStaticImage
-                        alt={image.alt}
-                        height={40}
-                        src={backendStaticFilePath(image.img)}
-                        width={64}
-                      />
+                      <BackendStaticImage alt={image.alt} height={40} src={backendStaticFilePath(image.img)} width={64} />
                       <div className="min-w-0">
                         <p className="font-numeric font-semibold">
                           {row.currencyLabel ? <span className="mr-1 text-xs font-medium text-muted-foreground">{row.currencyLabel}</span> : null}
                           {formatDashboardMoney(image.value)}
                         </p>
-                        <p className="text-xs text-muted-foreground" title={row.inUseReasons.length > 0 ? `En uso por: ${row.inUseReasons.join(", ")}` : undefined}>
-                          {row.isDispensing ? "Dispensadora" : "No dispensa"}
-                        </p>
+                        <p className="text-xs text-muted-foreground">{row.isDispensing ? "Dispensadora" : "No dispensa"}</p>
                       </div>
                       <div className="ml-auto flex flex-col items-end gap-1">
-                        {row.shortage ? (
-                          <Badge variant="destructive">Revisar</Badge>
+                        {row.dispensedInPeriod !== null && row.dispensedInPeriod < 0 ? (
+                          <Badge variant="destructive">Inventario previo</Badge>
                         ) : row.low ? null : (
                           <Badge variant="secondary">OK</Badge>
                         )}
-                        {row.foreignCurrency ? (
-                          <Badge title={`La moneda de este baúl (${row.currencyLabel ?? "no declarada"}) no es la del Pay+`} variant="outline">
-                            Otra moneda
-                          </Badge>
-                        ) : null}
                       </div>
                     </div>
                     <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
                       <div>
-                        <dt className="text-xs text-muted-foreground">Arqueado</dt>
-                        <dd className="font-numeric font-medium">{hasBase ? row.initialDp : "—"}</dd>
-                        {hasBase ? <dd className="text-xs text-muted-foreground">{formatDashboardMoney(unitsValue(row.denominationValue, row.initialDp))}</dd> : null}
+                        <dt className="text-xs text-muted-foreground">Cargado</dt>
+                        <dd className="font-numeric font-medium text-blue-600 dark:text-blue-400" title={loadsTraceText(row)}>{row.loadedInPeriod}</dd>
                       </div>
                       <div>
-                        <dt className="text-xs text-muted-foreground">Recibido</dt>
-                        <dd className="font-numeric font-medium text-blue-600 dark:text-blue-400" title={loadsTraceText(row)}>
-                          {row.loadedSinceBase}
+                        <dt className="text-xs text-muted-foreground">Dispensado</dt>
+                        <dd className={cn("font-numeric font-medium", row.dispensedInPeriod === null ? "text-muted-foreground" : row.dispensedInPeriod < 0 ? "font-semibold text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400")}>
+                          {row.dispensedInPeriod === null ? "—" : row.dispensedInPeriod}
                         </dd>
-                        {loadsTraceCaption(row) ? <dd className="text-xs text-muted-foreground">{loadsTraceCaption(row)}</dd> : null}
+                        {row.dispensedInPeriod !== null ? <dd className="text-xs text-muted-foreground">{dispensedEquation(row)}</dd> : null}
                       </div>
                       <div>
-                        <dt className="text-xs text-muted-foreground">Virtual hoy</dt>
-                        <dd className="font-numeric font-semibold">{row.balance}</dd>
-                        <dd className="text-xs text-muted-foreground">{formatDashboardMoney(row.balanceValue)}</dd>
-                      </div>
-                      <div>
-                        <dt className="text-xs text-muted-foreground">Entregado</dt>
-                        {row.deliveredToClients === null ? (
-                          <>
-                            <dd className="font-numeric text-muted-foreground">—</dd>
-                            {row.deliveredToClientsFromLoad !== null ? (
-                              <dd className="text-xs text-muted-foreground">
-                                sólo cargue: <span className="font-numeric">{row.deliveredToClientsFromLoad}</span> ({loadModelText(row)})
-                              </dd>
-                            ) : null}
-                          </>
-                        ) : (
-                          <>
-                            <dd className={cn("font-numeric font-semibold", (row.deliveredToClients ?? 0) < 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400")}>
-                              {row.deliveredToClients}
-                            </dd>
-                            <dd className="text-xs text-muted-foreground">{clientsEquation(row)}</dd>
-                          </>
-                        )}
-                        {row.negativeReport ? <dd className="text-xs text-amber-600 dark:text-amber-400">arqueo negativo</dd> : null}
-                      </div>
-                      <div>
-                        <dt className="text-xs text-muted-foreground">Rechazo</dt>
+                        <dt className="text-xs text-muted-foreground">Rechazado</dt>
                         <dd className="font-numeric font-medium text-red-500 dark:text-red-400">{row.rejected}</dd>
                         {deltaText ? <dd className="text-xs text-muted-foreground">{deltaText}</dd> : null}
                       </div>
-                      <div><dt className="text-xs text-muted-foreground">Saldo</dt><dd className="font-numeric font-semibold">{row.balance}</dd></div>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">En dispensadores</dt>
+                        <dd className="font-numeric font-semibold">{row.balance}</dd>
+                        <dd className="text-xs text-muted-foreground">{formatDashboardMoney(row.balanceValue)}</dd>
+                      </div>
                     </dl>
                     {row.low ? <LowBalanceAlert balance={row.balance} minDpQuantity={row.minDpQuantity} /> : null}
                   </div>

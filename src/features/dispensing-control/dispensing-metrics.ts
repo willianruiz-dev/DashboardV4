@@ -45,6 +45,12 @@ export interface DispensingMetricsInput {
   machineCurrency?: { id: number; label: string | null } | null;
   /** Último arqueo = base física del cuadre (`null` = la máquina nunca se arqueó). */
   lastTonnage: Tonnage | null;
+  /**
+   * Todos los arqueos: se usa el último arqueo ANTERIOR al inicio del período para saber
+   * cuánto había en los baúles cuando empezó la ventana (referencia, no parte del cuadre).
+   * Opcional: sin él, el período arranca asumiendo baúles vacíos y se declara.
+   */
+  tonnages?: readonly Tonnage[];
   loads: readonly Load[];
   now: Date;
   rangeFrom: Date;
@@ -87,6 +93,8 @@ export interface DispensingDenominationRow {
    */
   delivered: number | null;  /** El conteo físico SUBIÓ desde la base (`delivered < 0`): revisar, no es una entrega. */
   shortage: boolean;
+  /** El baúl tiene MÁS unidades que las cargadas en el período (inventario previo sin cargue). */
+  isNegativeStock: boolean;
   isDispensing: boolean;
   /** Cargues del período UI (Hoy/24h/7d/rango): referencia para AP/RJ, no entra al cuadre. */
   loadedInRange: number;
@@ -101,29 +109,26 @@ export interface DispensingDenominationRow {
    */
   loadedSinceLastLoad: number;
   /**
-   * ENTREGADO A CLIENTES, modelo A (el arqueo base como saldo de apertura):
-   * `inicial + recibido − virtual hoy − rechazo(Δ positivo)`. Es la cifra principal de la
-   * tabla. `null` sin arqueo base.
+   * DISPENSADO EN EL PERÍODO (cifra principal): `cargado − en dispensadores hoy −
+   * rechazado del período`. Es el cuadre del cargue — «cargué 140, quedan 11, 5 al
+   * rechazo ⇒ entregué 124» — y cierra por construcción:
+   * `dispensado + rechazado + enDispensadores = cargado`. `null` sin cargues en el período.
    */
-  deliveredToClients: number | null;
+  dispensedInPeriod: number | null;
+  /** CARGADO del período (cargues dentro del rango consultado). */
+  loadedInPeriod: number;
+  /** RECHAZADO del período: baúl de rechazo hoy − lo que había al inicio del período. */
+  rejectedInPeriod: number;
+  /** Rechazo al inicio del período (arqueo anterior al rango); `null` si no había arqueo. */
+  rejectedAtPeriodStart: number | null;
+  /** Unidades en el dispensador al inicio del período según el arqueo anterior al rango. */
+  stockAtPeriodStart: number | null;
   /**
-   * ENTREGADO A CLIENTES, modelo B (baúl llenado desde vacío en el último cargue):
-   * `recibido − virtual hoy − rechazo actual`. `null` sin cargues.
+   * AUDITORÍA: lo que habría salido contando el inventario previo del arqueo
+   * (`arqueado + cargado − en dispensadores − rechazo`). Se publica para comparar contra el
+   * registro del sistema; NO es la cifra del período.
    */
-  deliveredToClientsFromLoad: number | null;
-  /** El baúl de rechazo bajó desde la base: se vació y la separación no es exacta. */
-  rejectServiced: boolean;
-  /**
-   * @deprecated usar `deliveredToClients` (modelo A) o `deliveredToClientsFromLoad` (modelo B).
-   */
-  deliveredFromLoad: number | null;
-  /**
-   * Puente entre ambos cuadres: unidades que había en el baúl al momento del último
-   * cargue (según el arqueo base + los cargues intermedios). De ahí:
-   * `unidadesAlCargar + carguesDesdeElCargue − saldo = salida desde el arqueo`.
-   * `null` si el último cargue es anterior al arqueo o no hay base.
-   */
-  stockAtLastLoad: number | null;
+  dispensedFromArqueo: number | null;
   /**
    * Trazabilidad de la «Cargada»: cada cargue posterior al arqueo base que incluyó esta
    * denominación, con su fecha y cantidad. Un mismo total puede venir de varios cargues
@@ -166,13 +171,13 @@ export interface DispensingLoadTraceEntry {
  */
 export interface DispensingReconciliationCheck {
   /** Modelo que mejor explica el registro del sistema (tolerancia 1 %). */
-  best: "base" | "load" | "ninguno" | null;
-  /** Diferencia `modelo − sistema` para cada modelo (con signo; `null` si no es calculable). */
-  differences: { base: string | null; load: string | null };
-  /** Entregado a clientes desde el arqueo base (modelo A), valorizado por moneda en `dp`. */
-  fromBaseTotal: string | null;
-  /** Entregado a clientes contando sólo el último cargue (modelo B, baúl desde vacío). */
-  fromLoadTotal: string | null;
+  best: "arqueo" | "periodo" | "ninguno" | null;
+  /** Diferencia `modelo − sistema` (con signo; `null` si no es calculable). */
+  differences: { arqueo: string | null; periodo: string | null };
+  /** DISPENSADO del período (cifra principal), valorizado. */
+  fromPeriodTotal: string | null;
+  /** Auditoría: lo que saldría contando el inventario previo del arqueo. */
+  fromArqueoTotal: string | null;
   /** Σ `returnAmount` de las transacciones aprobadas del período. */
   systemTotal: string | null;
   /** Cuántas transacciones aprobadas respaldan `systemTotal`. */
@@ -204,14 +209,17 @@ export interface DispensingMetrics {
    * `storageTotal` = inventario actual.
    */
   /**
-   * Entregado a clientes. `clientsFromBaseTotal` = modelo A (arqueo base como apertura,
-   * cifra principal de la tabla); `clientsFromLoadTotal` = modelo B (baúl desde vacío en
-   * el último cargue). `storageTotal` = inventario hoy. `total` = `totalDp` del arqueo.
+   * El cuadre del período, valorizado: `cargado = dispensado + rechazado + en
+   * dispensadores`. `dispensedTotal` es la cifra principal (DISPENSADO); `storageTotal` es
+   * el total en dispensadores hoy (virtual); `arqueoTotal` es la auditoría con el inventario
+   * previo del arqueo; `total` es el `totalDp` del último arqueo.
    */
   dp: {
+    arqueoTotal: string | null;
     at: string | null;
-    clientsFromBaseTotal: string | null;
-    clientsFromLoadTotal: string | null;
+    dispensedTotal: string | null;
+    loadedTotal: string;
+    rejectedTotal: string;
     storageTotal: string;
     total: string | null;
   };
@@ -424,6 +432,16 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
   // la operación usa a diario — «cargué 140 el 19 y hoy quedan 16 ⇒ entregó 124» — y no
   // depende de ningún arqueo: por eso nunca puede dar más de lo cargado.
   const hasLastLoad = lastLoad !== null && !Number.isNaN(lastLoadTime);
+  const hasLoadInRange = loadsInRange.length > 0;
+  // Arqueo inmediatamente anterior (o al inicio) del período: dice cuánto había en los
+  // baúles cuando empezó la ventana. Es referencia de auditoría, no parte del cuadre.
+  const periodStartTonnage = latestBy(
+    (input.tonnages ?? []).filter((tonnage) => {
+      const time = toMillis(tonnage.dateCreated);
+      return !Number.isNaN(time) && time <= rangeFrom.getTime();
+    }),
+    (tonnage) => toMillis(tonnage.dateCreated),
+  );
   const loadsSinceLastLoad = hasLastLoad
     ? loads.filter((load) => {
         const time = toMillis(load.dateCreated);
@@ -485,24 +503,21 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       const initialDp = Math.max(0, rawInitialDp);
       const initialRj = Math.max(0, rawInitialRj);
       const initialAp = Math.max(0, rawInitialAp);
-      // Salieron del dispensador desde el arqueo (incluye lo que falló y cayó al rechazo).
+      // AUDITORÍA (arqueo): lo que habría salido contando el inventario previo del arqueo.
       const deliveredFromBase = hasBase ? initialDp + loadedSinceBase - balance : null;
-      // ENTREGADO AL CLIENTE (modelo A): lo que salió menos lo que quedó en el rechazo.
-      // Sólo se descuenta el CRECIMIENTO del rechazo: si el baúl se vació, ese dinero no
-      // pasó por el dispensador y no se puede sumar como entregado (se declara).
       const rejectedDelta = hasBase ? rejectionStock - initialRj : null;
       const rejectGrowth = rejectedDelta === null ? 0 : Math.max(0, rejectedDelta);
-      const deliveredToClients = deliveredFromBase === null ? null : deliveredFromBase - rejectGrowth;
-      // ENTREGADO AL CLIENTE (modelo B, baúl desde vacío): recibido − virtual − rechazo.
-      const deliveredToClientsFromLoad = hasLastLoad ? loadedSinceLastLoad - balance - rejectionStock : null;
-      const deliveredFromLoad = deliveredToClientsFromLoad;
-      // Puente entre el cuadre del cargue y el del arqueo: lo que el baúl tenía cuando se
-      // cargó (arqueo + cargues intermedios, sin poder descontar lo dispensado en medio).
-      // Sólo tiene sentido si el último cargue es POSTERIOR al arqueo.
-      const stockAtLastLoad =
-        hasBase && hasLastLoad && lastLoadTime > baseTime
-          ? Math.max(0, initialDp + (loadedSinceBase - loadedSinceLastLoad))
-          : null;
+      const dispensedFromArqueo = deliveredFromBase === null ? null : deliveredFromBase - rejectGrowth;
+      // CUADRE DEL PERÍODO (cifra principal): CARGADO − EN DISPENSADORES HOY − RECHAZADO
+      // DEL PERÍODO. Cierra por construcción: dispensado + rechazado + en dispensadores =
+      // cargado («cargué 140, quedan 11, 5 al rechazo ⇒ entregué 124»).
+      const loadedInPeriod = loadedInRange;
+      const startDetail = tonnageDetailFor(periodStartTonnage, entry.idCurrencyDenomination, entry.denominationValue);
+      const rejectedAtPeriodStart = startDetail ? Math.max(0, toInt(startDetail.quantityRj)) : null;
+      const stockAtPeriodStart = startDetail ? Math.max(0, toInt(startDetail.quantityDp)) : null;
+      const rejectedInPeriod = rejectionStock - (rejectedAtPeriodStart ?? 0);
+      const dispensedInPeriod = hasLoadInRange ? loadedInPeriod - balance - rejectedInPeriod : null;
+      const deliveredFromLoad = dispensedInPeriod;
       const currency = currencyIndex.get(entry.idCurrencyDenomination);
       const foreignCurrency = machineCurrencyId !== null && currency?.currencyId != null && currency.currencyId !== machineCurrencyId;
 
@@ -549,12 +564,15 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         currencyLabel: denominationCurrencyText(currency),
         denominationId: entry.idCurrencyDenomination,
         denominationValue: entry.denominationValue,
-        delivered: deliveredFromBase,
+        delivered: dispensedInPeriod,
         deliveredFromBase,
         deliveredFromLoad,
-        deliveredToClients,
-        deliveredToClientsFromLoad,
-        rejectServiced: rejectedDelta !== null && rejectedDelta < 0,
+        dispensedFromArqueo,
+        dispensedInPeriod,
+        loadedInPeriod,
+        rejectedAtPeriodStart,
+        rejectedInPeriod,
+        stockAtPeriodStart,
         excludedReason: excludedParts.length === 0 ? null : excludedParts.join(" "),
         foreignCurrency,
         initialAp,
@@ -573,8 +591,8 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         rejected: rejectionStock,
         rejectedDelta,
         rejectedValue: entry.rjTotal,
+        isNegativeStock: dispensedInPeriod !== null && dispensedInPeriod < 0,
         shortage: deliveredFromBase !== null && deliveredFromBase < 0,
-        stockAtLastLoad,
       };
     })
     // Moneda primero (agrupada) y valor descendente dentro de ella: sin esto, un
@@ -624,27 +642,23 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     return { byCurrency, total: centsToDecimal([...centsByCurrency.values()].reduce((sum, entry) => sum + entry.cents, 0n)) };
   }
 
-  // Modelo A (arqueo base como apertura): la cifra principal de la tabla.
-  let clientsFromBaseTotal: string | null = null;
+  // CUADRE DEL PERÍODO, valorizado por moneda: cargado = dispensado + rechazado + en
+  // dispensadores. Es la vista que la operación usa («cargué 140, quedan 11, 5 al rechazo,
+  // entregué 124») y se publica completa para que cada columna se pueda auditar.
+  const valuedLoaded = valueByCurrency((row) => row.loadedInPeriod);
+  const valuedDispensed = valueByCurrency((row) => row.dispensedInPeriod);
+  const valuedRejected = valueByCurrency((row) => row.rejectedInPeriod);
+  const valuedStorage = valueByCurrency((row) => row.balance);
+  const loadOutflowTotalsByCurrency = [...valuedDispensed.byCurrency.values()];
   const outflowByCurrency = new Map<string, DispensingCurrencyTotal>();
   if (hasBase) {
-    const valued = valueByCurrency((row) => row.deliveredToClients);
-    clientsFromBaseTotal = valued.total;
-    for (const [key, entry] of valued.byCurrency) {
+    const valuedArqueo = valueByCurrency((row) => row.dispensedFromArqueo);
+    for (const [key, entry] of valuedArqueo.byCurrency) {
       outflowByCurrency.set(key, entry);
     }
   }
-
-  // Modelo B (baúl llenado desde vacío en el último cargue): candidato de verificación.
-  let clientsFromLoadTotal: string | null = null;
-  const loadOutflowByCurrency = new Map<string, DispensingCurrencyTotal>();
-  if (hasLastLoad) {
-    const valued = valueByCurrency((row) => row.deliveredToClientsFromLoad);
-    clientsFromLoadTotal = valued.total;
-    for (const [key, entry] of valued.byCurrency) {
-      loadOutflowByCurrency.set(key, entry);
-    }
-  }
+  const clientsFromBaseTotal = hasBase ? valueByCurrency((row) => row.dispensedFromArqueo).total : null;
+  const clientsFromLoadTotal = hasLoadInRange ? valuedDispensed.total : null;
 
   // Verificación contra el sistema: `Σ returnAmount` de las transacciones aprobadas (el
   // cambio que el sistema registró haber devuelto) contra cada modelo físico. Tolerancia
@@ -671,13 +685,13 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
           const baseMatches = baseDiff !== null && (baseDiff < 0n ? -baseDiff : baseDiff) <= tolerance(systemCents);
           const loadMatches = loadDiff !== null && (loadDiff < 0n ? -loadDiff : loadDiff) <= tolerance(systemCents);
           return {
-            best: baseMatches ? "base" : loadMatches ? "load" : systemCents === 0n && clientsFromBaseTotal === null && clientsFromLoadTotal === null ? null : "ninguno",
+            best: loadMatches ? "periodo" : baseMatches ? "arqueo" : systemCents === 0n && clientsFromBaseTotal === null && clientsFromLoadTotal === null ? null : "ninguno",
             differences: {
-              base: baseDiff === null ? null : centsToDecimal(baseDiff),
-              load: loadDiff === null ? null : centsToDecimal(loadDiff),
+              arqueo: baseDiff === null ? null : centsToDecimal(baseDiff),
+              periodo: loadDiff === null ? null : centsToDecimal(loadDiff),
             },
-            fromBaseTotal: clientsFromBaseTotal,
-            fromLoadTotal: clientsFromLoadTotal,
+            fromArqueoTotal: clientsFromBaseTotal,
+            fromPeriodTotal: clientsFromLoadTotal,
             systemTotal: centsToDecimal(systemCents),
             transactionCount: byState[APPROVED_STATE]?.count ?? 0,
           };
@@ -746,10 +760,12 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       total: byState[CANCELLED_STATE]?.total ?? "0",
     },
     dp: {
+      arqueoTotal: clientsFromBaseTotal,
       at: lastTonnage?.dateCreated ?? null,
-      clientsFromBaseTotal,
-      clientsFromLoadTotal,
-      storageTotal,
+      dispensedTotal: clientsFromLoadTotal,
+      loadedTotal: valuedLoaded.total,
+      rejectedTotal: valuedRejected.total,
+      storageTotal: valuedStorage.total === "0" ? storageTotal : valuedStorage.total,
       total: lastTonnage?.totalDp ?? null,
     },
     lastLoad: {
@@ -777,7 +793,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
     },
     excludedRows,
     currencyLabels: [...new Set(rows.map((row) => row.currencyLabel ?? "moneda no declarada"))],
-    loadOutflowTotalsByCurrency: [...loadOutflowByCurrency.values()],
+    loadOutflowTotalsByCurrency,
     multiCurrency: new Set(rows.map((row) => row.currencyId)).size > 1,
     outflowTotalsByCurrency: [...outflowByCurrency.values()],
     rows,
