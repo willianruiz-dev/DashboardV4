@@ -217,19 +217,19 @@ export function DenominationTable({
             {/* El cuadre del período, valorizado: cargado = dispensado + rechazado + en
                 dispensadores. Cada columna se puede auditar por separado. */}
             <div className="grid gap-1 rounded-lg border border-slate-200/80 bg-slate-50/60 p-3 text-sm dark:border-slate-800 dark:bg-slate-900/40 sm:grid-cols-4">
-              <div>
+              <div title="Cargues registrados dentro del período consultado (api/Load/GetByPaypad, campo totalLoaded sumado del período).">
                 <p className="text-xs text-muted-foreground">Cargado ({rangeLabel})</p>
                 <p className="font-numeric font-semibold text-blue-600 dark:text-blue-400">{formatDashboardMoney(loadedTotal)}</p>
               </div>
-              <div>
+              <div title="Calculado en vivo: cargado − en dispensadores hoy − rechazado del período (no está almacenado en ninguna parte).">
                 <p className="text-xs text-muted-foreground">Dispensado (clientes)</p>
                 <p className="font-numeric font-semibold text-emerald-600 dark:text-emerald-400">{formatDashboardMoney(dispensedTotal)}</p>
               </div>
-              <div>
+              <div title="Baúl de rechazo reportado por la máquina HOY (api/PayPad/GetStorage, rjStored) menos lo que había al inicio del período.">
                 <p className="text-xs text-muted-foreground">Rechazado</p>
                 <p className="font-numeric font-semibold text-red-500 dark:text-red-400">{formatDashboardMoney(rejectedTotal)}</p>
               </div>
-              <div>
+              <div title="Saldo del dispensador que la máquina reporta HOY (api/PayPad/GetStorage, dpStored). Se refresca en cada consulta.">
                 <p className="text-xs text-muted-foreground">En dispensadores (virtual hoy)</p>
                 <p className="font-numeric font-semibold">{formatDashboardMoney(storageTotal)}</p>
               </div>
@@ -237,6 +237,12 @@ export function DenominationTable({
                 Cierra: {formatDashboardMoney(dispensedTotal)} + {formatDashboardMoney(rejectedTotal)} + {formatDashboardMoney(storageTotal)} ={" "}
                 {formatDashboardMoney(loadedTotal)} cargados
                 {multiCurrency ? " · cada moneda por separado (los importes de monedas distintas no se suman)" : ""}.
+              </p>
+              <p className="text-xs text-muted-foreground sm:col-span-4">
+                Origen de los datos: cargues <span className="font-mono">api/Load/GetByPaypad</span> · baúles de dispensadores y rechazo{" "}
+                <span className="font-mono">api/PayPad/GetStorage</span> · arqueo de referencia <span className="font-mono">api/Tonnage/GetByPaypad</span> ·
+                verificación <span className="font-mono">api/Transaction/GetByDate</span>. El «Dispensado» es el único valor calculado
+                (cargado − en dispensadores − rechazado); los demás los entrega el API tal cual.
               </p>
             </div>
 
