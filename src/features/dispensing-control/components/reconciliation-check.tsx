@@ -53,10 +53,14 @@ function isMeaningful(row: DispensingReconciliationCurrencyRow): boolean {
   return row.systemTotal !== null || row.periodTotal !== null || row.arqueoTotal !== null;
 }
 
-/** Moneda donde el sistema sólo registró dinero ACEPTADO (AP) y ninguna salida (DP). */
+/**
+ * Moneda que NO cuadró y donde el sistema sólo registró dinero ACEPTADO (AP), sin ninguna
+ * salida (DP). Se limita a las filas con veredicto «ninguno»: en una máquina de cambio divisa
+ * la moneda que sólo entra al aceptador (los dólares) no falla, así que no debe señalarse.
+ */
 function acceptedOnlyCurrencies(rows: readonly DispensingReconciliationCurrencyRow[]): string[] {
   return rows
-    .filter((row) => row.acceptedTotal !== null && row.acceptedTotal !== "0" && row.systemTotal === "0")
+    .filter((row) => row.best === "ninguno" && !isZero(row.acceptedTotal) && row.systemTotal === "0")
     .map((row) => currencyName(row));
 }
 
