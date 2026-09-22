@@ -23,10 +23,12 @@ import {
   DenominationTable,
 } from "@/features/dispensing-control/components/denomination-table";
 import { JamDiagnosticsSection } from "@/features/dispensing-control/components/jam-diagnostics";
+import { PayoutReconciliationSection } from "@/features/dispensing-control/components/payout-reconciliation";
 import { ReconciliationCheckAlert } from "@/features/dispensing-control/components/reconciliation-check";
 import { DispensingFilters, type DispensingFilterSelection } from "@/features/dispensing-control/components/dispensing-filters";
 import { MetricCard } from "@/features/dispensing-control/components/metric-card";
 import { computeJamDiagnostics } from "@/features/dispensing-control/dispensing-jams";
+import { buildPayoutReconciliation } from "@/features/dispensing-control/dispensing-payout-reconciliation";
 import { formatElapsed } from "@/features/dispensing-control/dispensing-metrics";
 import { dispensingPresetLabels, type JamScanRequest } from "@/features/dispensing-control/schemas";
 import { formatDashboardDateTime, localDateTimeToApiIso } from "@/lib/formatters/date";
@@ -96,6 +98,19 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
         tonnages: metricsQuery.sources.tonnages,
       }),
     [jamScanQuery.data, metricsArgs, metricsQuery.denominations, metricsQuery.machineCurrency, metricsQuery.sources],
+  );
+
+  // Conciliación esperado/real por denominación: se deriva del MISMO barrido de detalles que
+  // alimenta el motor de atascos (ninguna petición extra) y del inventario ya consultado.
+  const payoutReconciliation = useMemo(
+    () =>
+      buildPayoutReconciliation({
+        denominations: metricsQuery.denominations,
+        machineCurrency: metricsQuery.machineCurrency,
+        scan: jamScanQuery.data ?? null,
+        storage: metricsQuery.sources.storage,
+      }),
+    [jamScanQuery.data, metricsQuery.denominations, metricsQuery.machineCurrency, metricsQuery.sources.storage],
   );
 
   function handleApply(next: DispensingFilterSelection): void {
@@ -482,6 +497,12 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               isAnalyzing={jamScanQuery.isFetching}
               onAnalyze={() => void jamScanQuery.refetch()}
               onRetry={() => void jamScanQuery.refetch()}
+              rangeLabel={rangeLabel}
+            />
+
+            <PayoutReconciliationSection
+              data={payoutReconciliation}
+              loading={jamScanRequest !== null && jamScanQuery.isPending}
               rangeLabel={rangeLabel}
             />
 

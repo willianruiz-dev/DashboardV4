@@ -233,6 +233,35 @@
     único lugar puro (`dispensing-input.ts`), cubierto por las fixtures `arqueo-insumo` (con la base
     en 2 unidades y 5 hoy, el rechazado del período es 3; sin el historial sería 5).
 
+14. **B-15 — RESUELTO: conciliación por denominación (esperado vs. dispensado) con la causa
+    separada.** El operador pidió expresamente que la validación NO sea por valor total sino
+    «por dispositivo y por denominación», y que se distingan tres situaciones: no hay inventario,
+    hay inventario y el dispositivo no dispensa, y dispensó bien. Se añadió
+    `dispensing-payout-reconciliation.ts` (puro) + la sección «Conciliación por denominación»:
+    plan reconstruido por valor (`canonicalPayoutMix`), real del detalle, diferencia por
+    denominación, faltante valorizado repartido por denominación (y resto *no atribuible* cuando
+    el inventario no permitía la combinación), estados `correcto` / `no_entrego_con_saldo` /
+    `sin_saldo` (agotamiento) / `sin_inventario` / `sobre_entrega` (compensa) / `sin_atribucion`,
+    y el veredicto por transacción (solicitado, plan, entregado, faltante, estado del kiosco).
+    Regla clave implementada: **entregar el valor exacto con otra combinación válida es
+    CORRECTO**; sólo se busca causa cuando el valor no alcanzó. Evidencia: escenario
+    `esperado-real` en las fixtures (142/142). Auditoría completa del modelo funcional de los
+    quioscos: `docs/DISPENSING_DEVICE_MODEL_AUDIT.md` (21 puntos + distancia con el backend).
+
+15. **B-16 — BLOQUEADO POR DATOS: tipo de denominación (billete/moneda) y canal (Arduino).**
+    El catálogo expone sólo moneda, valor e imagen, así que (a) la regla de devolución
+    exclusivamente con monedas (tope $1.900) no puede aplicarse y (b) no se puede separar
+    monederos de billeteros. El código ya acepta `coinDenominationIds` + `maxCoinOnlyReturnValue`
+    y publica la limitación en pantalla; falta el dato (columna en `CurrencyDenomination` o
+    `extraDataJson` por Pay+). Sin él, el panel NO supone tipos: lo declara.
+
+16. **B-17 — BLOQUEADO POR DATOS: plan de devolución y estado del dispositivo.** El kiosco no
+    publica el plan que intentó (qué pidió a cada DP) ni el estado que reportó cada dispositivo
+    (vacío, atasco, sin respuesta): el panel reconstruye el plan con la combinación canónica y
+    sólo puede **inferir** el estado cruzando detalle + inventario + arqueo. Para confirmar
+    atascos sin heurística hacen falta una tabla de plan/resultado por operación y un campo de
+    estado por operación en el detalle.
+
 ## SUPUESTOS Y BLOQUEOS
 
 1. **B-01 — Eventos realtime:** no se encontró un contrato WebSocket/SignalR ni una implementación de Hub en el backend legado. No se inventó una conexión ni payload; la alerta de errores de devuelta del inicio usa **sondeo del navegador cada 30 s** con caché corta en el BFF (§9 de `docs/DISPENSING_JAM_DETECTION.md`), no un canal servidor→navegador.

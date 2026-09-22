@@ -23,12 +23,15 @@
  *                     no son «esta máquina nunca se ha arqueado» (caso Pay+ Inder 2)
  *   arqueo-insumo   – el insumo del cuadre incluye los arqueos: el rechazado del período es
  *                     el CRECIMIENTO del baúl y hay referencia de inicio de período
+ *   esperado-real   – conciliación por denominación: valor exacto = correcto, faltante con
+ *                     saldo = revisar el módulo, faltante sin saldo = agotamiento (no atasco)
  */
 import { summarizeMachineCurrencies } from "../src/features/dispensing-control/denomination-usage.ts";
 import { computeJamEarlyWarnings } from "../src/features/dispensing-control/jam-early-warning.ts";
 import { computeJamDiagnostics, type JamDiagnostics } from "../src/features/dispensing-control/dispensing-jams.ts";
 import { createDispensingMetricsInput } from "../src/features/dispensing-control/dispensing-input.ts";
 import { computeDispensingMetrics } from "../src/features/dispensing-control/dispensing-metrics.ts";
+import { buildPayoutReconciliation } from "../src/features/dispensing-control/dispensing-payout-reconciliation.ts";
 import { buildSystemDispensedEvidence, isSystemEvidenceUsable } from "../src/features/dispensing-control/system-dispensed.ts";
 import { summarizeTransactionsByCurrency } from "../src/features/transactions/transaction-search.ts";
 
@@ -1586,6 +1589,108 @@ expect(
   "sin el historial el mismo cuadre contaría el baúl completo (5): por eso el insumo no puede olvidarlo",
   wiringSinArqueos.rows.find((row) => row.denominationValue === "1000")?.rejectedInPeriod === 5,
   String(wiringSinArqueos.rows.find((row) => row.denominationValue === "1000")?.rejectedInPeriod),
+);
+
+// ── Conciliación esperado/real por denominación (regla del negocio) ─────────────────────
+// Los tres casos del operador: (A) se entrega el valor exacto con otra combinación válida,
+// (B) falta un billete de 10.000 CON saldo ⇒ revisar el módulo, (C) el mismo faltante SIN
+// saldo ⇒ agotamiento (no atasco). Más la regla de devolución sólo con monedas (tope $1.900),
+// que sólo puede aplicarse cuando se conocen las denominaciones que son moneda.
+const payIds = { "100": 7, "500": 6, "2000": 5, "5000": 4, "10000": 3 } as const;
+const payDenominations = Object.entries(payIds).map(([value, id]) => catalogDenomination(id, COP, value, "Peso colombiano"));
+const payStorage = (units: Partial<Record<keyof typeof payIds, string>>) =>
+  Object.entries(payIds).map(([value, id]) => storageRow(value, id, units[value as keyof typeof payIds] ?? "0", { dispensingTotal: "0", min: "0" }));
+const payScan = (transactions: ReturnType<typeof transaction>[]) => scan(transactions);
+const payPayout = (id: number, delivered: Record<string, number>, state = "Aprobada") =>
+  transaction(
+    id,
+    "2026-09-20T15:00:00.000Z",
+    Object.entries(delivered).map(([value, quantity]) => ({
+      denominationId: payIds[value as keyof typeof payIds],
+      operation: "Entregado",
+      operationId: 2,
+      quantity: String(quantity),
+    })),
+    { income: "100000", real: "20500", ret: "20500" },
+    state,
+  );
+function payCase(units: Partial<Record<keyof typeof payIds, string>>, transactions: ReturnType<typeof transaction>[]) {
+  return buildPayoutReconciliation({
+    denominations: payDenominations,
+    machineCurrency: { id: COP, label: "COP" },
+    scan: payScan(transactions),
+    storage: payStorage(units),
+  });
+}
+
+const payCorrect = payCase({ "10000": "10", "5000": "20", "500": "30" }, [payPayout(1, { "10000": 1, "5000": 2, "500": 1 })]);
+expect(
+  "entregar el valor exacto con otra combinación válida es CORRECTO (no se acusa al 10.000)",
+  payCorrect.transactions[0]?.complete === true &&
+    payCorrect.transactions[0]?.missingValue === "0" &&
+    payCorrect.byDenomination.find((row) => row.denominationValue === "10000")?.state === "correcto",
+  JSON.stringify({ byDenomination: payCorrect.byDenomination, transaction: payCorrect.transactions[0] }),
+);
+expect(
+  "el 5.000 que cubrió el hueco se marca como «entregó de más», no como culpable",
+  payCorrect.byDenomination.find((row) => row.denominationValue === "5000")?.state === "sobre_entrega",
+  JSON.stringify(payCorrect.byDenomination.find((row) => row.denominationValue === "5000")),
+);
+
+const payMissingWithStock = payCase({ "10000": "10", "5000": "20", "500": "30" }, [payPayout(2, { "5000": 2, "500": 1 }, "Aprobada Error Devuelta")]);
+const payMissingRow = payMissingWithStock.byDenomination.find((row) => row.denominationValue === "10000") ?? null;
+expect(
+  "faltó 1 × 10.000 con 10 en el baúl: se nombra la denominación y el resultado real",
+  payMissingWithStock.transactions[0]?.complete === false &&
+    payMissingWithStock.transactions[0]?.missingValue === "10000" &&
+    payMissingWithStock.transactions[0]?.unattributedMissingValue === "0" &&
+    payMissingWithStock.transactions[0]?.verdict.includes("$10,000 × 1") &&
+    payMissingRow?.missingUnits === 1,
+  JSON.stringify({ row: payMissingRow, transaction: payMissingWithStock.transactions[0] }),
+);
+expect(
+  "con saldo y sin dispensar el diagnóstico manda a revisar el módulo (no a cargar)",
+  payMissingRow?.state === "no_entrego_con_saldo" && payMissingRow?.reading.includes("revisar el módulo"),
+  String(payMissingRow?.reading),
+);
+
+const payMissingNoStock = payCase({ "10000": "0", "5000": "20", "500": "30" }, [payPayout(3, { "5000": 2, "500": 1 }, "Aprobada Error Devuelta")]);
+const payNoStockRow = payMissingNoStock.byDenomination.find((row) => row.denominationValue === "10000") ?? null;
+expect(
+  "el MISMO faltante sin saldo es agotamiento y no se declara atasco",
+  payNoStockRow?.state === "sin_saldo" && payNoStockRow?.reading.includes("AGOTAMIENTO"),
+  String(payNoStockRow?.reading),
+);
+
+const payNoCombination = payCase({ "10000": "5", "5000": "5", "2000": "5" }, [
+  payPayout(4, { "5000": 2, "2000": 2 }),
+]);
+expect(
+  "sin combinación exacta se declara el resto no atribuible en vez de repartirlo a ciegas",
+  payNoCombination.transactions[0]?.missingValue === "6500" &&
+    payNoCombination.transactions[0]?.unattributedMissingValue === "6000" &&
+    payNoCombination.byDenomination.find((row) => row.denominationValue === "10000")?.state === "sin_atribucion",
+  JSON.stringify(payNoCombination.transactions[0]),
+);
+expect(
+  "la limitación de billete/moneda se declara cuando el catálogo no distingue el tipo",
+  payNoCombination.limitations.some((text) => text.includes("BILLETE o MONEDA")) &&
+    payNoCombination.limitations.some((text) => text.includes("$1,900")),
+  JSON.stringify(payNoCombination.limitations),
+);
+
+const payCoinRule = buildPayoutReconciliation({
+  coinDenominationIds: [payIds["500"], payIds["100"]],
+  denominations: payDenominations,
+  machineCurrency: { id: COP, label: "COP" },
+  scan: payScan([payPayout(5, { "500": 4, "100": 3 })]),
+  storage: payStorage({ "10000": "10", "500": "30", "100": "50" }),
+});
+expect(
+  "con los tipos declarados la regla de sólo monedas se aplica: 2.300 en monedas supera el tope",
+  payCoinRule.notes.some((text) => text.includes("1 transacción(es)") && text.includes("$1,900")) &&
+    !payCoinRule.limitations.some((text) => text.includes("1.900")),
+  JSON.stringify({ limitations: payCoinRule.limitations, notes: payCoinRule.notes }),
 );
 
 // ── Máquina de UNA moneda con detalle: el comportamiento validado no cambia ────────────
