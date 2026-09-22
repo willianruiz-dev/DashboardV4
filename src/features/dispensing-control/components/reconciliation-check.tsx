@@ -78,7 +78,12 @@ function isAcceptOnlyRow(row: DispensingReconciliationCurrencyRow): boolean {
 }
 
 /** Texto de una moneda: físico contra sistema, con la auditoría del arqueo y el lado AP aparte. */
-function describeRow(row: DispensingReconciliationCurrencyRow, fromDetails: boolean, quiet: boolean): string {
+function describeRow(
+  row: DispensingReconciliationCurrencyRow,
+  fromDetails: boolean,
+  quiet: boolean,
+  periodStartReference: { at: string | null; id: number | null } | null,
+): string {
   if (isAcceptOnlyRow(row)) {
     return `no se dispensa en el período: entra al aceptador (AP) ${formatDashboardMoney(row.acceptedTotal ?? "0")} · nada que verificar`;
   }
@@ -110,8 +115,14 @@ function describeRow(row: DispensingReconciliationCurrencyRow, fromDetails: bool
     parts.push(`ventana del arqueo (inventario previo + cargues − en dispensadores − rechazado): ${formatDashboardMoney(row.arqueoTotal)} · ${paid}`);
   }
   if (row.periodStartStockValue !== null && Number(row.periodStartStockValue) > 0 && !row.periodExact) {
+    const reference =
+      periodStartReference === null
+        ? "en el arqueo de referencia anterior al período"
+        : `en el arqueo #${periodStartReference.id ?? "?"}${
+            periodStartReference.at ? ` del ${formatDashboardDateTime(periodStartReference.at)}` : ""
+          } (referencia anterior al período)`;
     parts.push(
-      `el baúl ya tenía ${formatDashboardMoney(row.periodStartStockValue)} al empezar el período: la resta del período mezcla esos pagos con los retiros, así que no se usa para acusar`,
+      `el baúl tenía ${formatDashboardMoney(row.periodStartStockValue)} ${reference}: la resta del período mezcla esos pagos con los retiros, así que no se usa para acusar`,
     );
   }
   // Dinero que salió del baúl y ningún pago explica: candidato a retiro/reemplazo al cargar.
@@ -154,14 +165,18 @@ export function ReconciliationCheckAlert({ baseAtIso, check, lastLoadAt, rangeLa
   const rows = check.currencies.filter(isMeaningful);
   const blocker = check.blocker;
   const fromDetails = check.systemSource === "detalles";
-  const Icon = blocker !== null ? blockerIcons[blocker.code] : check.best === "ninguno" ? TriangleAlert : CircleCheck;
-  const variant: "default" | "warning" = blocker === null && check.best === "ninguno" ? "warning" : "default";
+  const Icon =
+    blocker !== null ? blockerIcons[blocker.code] : check.best === "ninguno" || check.best === "retiro" ? TriangleAlert : CircleCheck;
+  const variant: "default" | "warning" =
+    blocker === null && (check.best === "ninguno" || check.best === "retiro") ? "warning" : "default";
   const acceptedOnly = acceptedOnlyCurrencies(rows);
 
   const title =
     blocker !== null
       ? blockerTitles[blocker.code]
-      : check.best === "periodo"
+      : check.best === "retiro"
+        ? "Salida del baúl sin pago registrado"
+        : check.best === "periodo"
         ? `El dispensado coincide con lo que el sistema registró${rows.length > 1 ? " (por moneda)" : ""}`
         : check.best === "arqueo"
           ? "Sólo cuadra contando el inventario previo del arqueo"
@@ -205,7 +220,7 @@ export function ReconciliationCheckAlert({ baseAtIso, check, lastLoadAt, rangeLa
           <span className="mt-1 block">
             {rows.map((row) => (
               <span className="block" key={row.currencyId === null ? "none" : String(row.currencyId)}>
-                <strong>{currencyName(row)}</strong> · {describeRow(row, fromDetails, quiet)}
+                <strong>{currencyName(row)}</strong> · {describeRow(row, fromDetails, quiet, check.periodStartArqueo)}
               </span>
             ))}
           </span>
@@ -241,7 +256,9 @@ export function ReconciliationCheckAlert({ baseAtIso, check, lastLoadAt, rangeLa
                 : "El cuadre cierra por moneda: cargado − en dispensadores − rechazado explica lo entregado a clientes."
               : check.best === "arqueo"
                 ? "El inventario previo del arqueo sí pasó por el dispensador: revisa si el baúl se cargó sobre saldo existente o si esas unidades se retiraron en mantenimiento."
-                : check.best === "ninguno"
+                : check.best === "retiro"
+                  ? "El baúl quedó exactamente en el cargue: lo que había antes (el inventario del arqueo) salió de los dispensadores durante la carga y ningún pago lo explica. Dos lecturas posibles: (1) fue el retiro del sobrante al cargar — regístralo como retiro para que el cuadre pueda conciliarlo; (2) el baúl está reportando sólo lo cargado, sin el sobrante anterior — en ese caso la lectura del baúl no sirve como inventario y hay que revisarla con el proveedor."
+                  : check.best === "ninguno"
                   ? `Hay dinero sin registro en una de las dos partes (${rows
                       .filter((row) => row.best === "ninguno")
                       .map((row) => currencyName(row))

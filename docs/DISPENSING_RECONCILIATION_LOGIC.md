@@ -139,14 +139,15 @@ base del arqueo. La diferencia entre ambas **no es dinero perdido, es diferencia
 | --- | --- | --- | --- |
 | Período con cargues y cuadra con «cargado − en dispensadores − rechazado» | `periodo` | `null` | «El dispensado coincide con lo que el sistema registró» |
 | Período con cargues y sólo cuadra contando el inventario previo del arqueo | `arqueo` | `null` | «Sólo cuadra contando el inventario previo del arqueo» |
-| Período con cargues y no cuadra con ningún modelo | `ninguno` | `null` | «El dispensado no coincide… Hay dinero sin registro» (**warning**) |
+| El baúl perdió dinero que ningún pago explica y el cargue **reemplazó** el contenido (el baúl quedó exactamente en lo cargado) | `retiro` | `null` | «Salida del baúl sin pago registrado» (**warning**): nombra el monto, dice que el sobrante salió al cargar y pide registrarlo como retiro (o revisar la lectura del baúl) — no acusa al dispensado |
+| Período con cargues y no cuadra con ningún modelo (el sistema registra MÁS salidas que la caída del baúl, o no hay firma de reemplazo) | `ninguno` | `null` | «El dispensado no coincide… Hay dinero sin registro» (**warning**) |
 | Período **sin transacciones** (0 aprobadas/rechazadas/devueltas **y** ninguna salida física) | `null` | `sin-transacciones` | «Sin transacciones en el período: nada que verificar»: el cargue sigue íntegro en los baúles; no hay veredicto, **no se audita contra el arqueo** (sería `$0 contra $X`) y la tarjeta explica que las operaciones visibles están ANTES del último cargue |
 | Período **sin transacciones pero con salida física** | `ninguno` | `null` | «Hay dinero sin registro…»: con 0 transacciones `Σ returnAmount = 0` no es ambiguo, se admite como medición en cualquier moneda y se acusa (fixture `odrbQuietLeak`) |
 | Período **sin cargues** (o sin ningún modelo calculable) | `null` | `sin-cargues` | «Sin período comparable para verificar»: explica las dos ventanas y sugiere «Desde último cargue» |
 | Máquina **multimoneda** sin detalle utilizable (caso ODRB Rionegro) | `null` | `multimoneda` | «Σ devuelto no es comparable en esta máquina»: explica AP vs DP y remite al detalle por denominación |
 | Barrido de detalles **parcial** (truncado, fallido o ilegible) en máquina multimoneda | `null` | `cobertura` | «El detalle del período está incompleto: la verificación no concluye» |
 | Sin ninguna medición del sistema | `null` | `sin-medicion` | «Sin medición del sistema para verificar» |
-| El baúl **ya tenía inventario** al empezar el período y no hay medición del sistema DENTRO de la ventana del arqueo | `null` | `inventario-previo` | «El baúl ya tenía inventario al empezar el período: la resta del período no puede acusar sola» |
+| El baúl **ya tenía inventario** en el arqueo de referencia previo y no hay medición del sistema DENTRO de la ventana del arqueo | `null` | `inventario-previo` | «El baúl ya tenía inventario al empezar el período: la resta del período no puede acusar sola» |
 
 Reglas implementadas: `periodComparable = hasLoadInRange`; `best` sólo puede ser `"ninguno"`
 cuando el período **sí** tiene cargues **y** existe una medición admisible (`systemSource ≠ null`).
@@ -191,6 +192,13 @@ Reglas implementadas:
    bloqueo `inventario-previo`: el panel declara qué falta (el detalle por transacción dentro de la
    ventana) en vez de acusar con una resta que no puede atribuir.
 5. La diferencia del período sólo se publica cuando esa resta es exacta.
+6. **Firma del retiro al cargar** (`stockReplacedAtLoad`): hay cargue desde el arqueo y el baúl
+   reporta exactamente lo cargado. Con esa firma, la salida sin pago de la ventana se declara como
+   `retiro` (no se acusa al dispensado). Sin la firma —o con el sistema registrando más salidas que
+   la caída del baúl— el veredicto vuelve a `ninguno`.
+7. El arqueo de referencia previo al período se publica con su **id y fecha**
+   (`check.periodStartArqueo`): si es de días atrás no representa el inventario de arranque y el
+   panel lo dice en vez de llamarlo «inicio del período».
 
 Lo que el panel **no** puede hacer todavía: hay una **salida sin pago** declarada porque no existe
 API de retiros (bolsa / vaciamiento al cargar). Mientras el retiro no se registre en el sistema, el

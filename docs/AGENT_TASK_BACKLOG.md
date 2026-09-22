@@ -276,9 +276,20 @@
     (el sistema registra más salidas que la caída del baúl) NO se explica por ningún retiro y
     sí se acusa;
     (d) la diferencia del período deja de publicarse cuando no es una resta exacta.
-    Evidencia: escenarios `alerta-recargada` y «Inder 1» en las fixtures (155/155), incluido el
+    Evidencia: escenarios `alerta-recargada` y «Inder 1» en las fixtures (156/156), incluido el
     contraste con sobre-registro del sistema. Pendiente de datos: no existe API de RETIROS
     (bolsa/vaciamiento), así que la salida sin pago sólo se puede declarar, no conciliar.
+
+    **Segunda vuelta con los números reales del operador (mismo día):** el arqueo de referencia
+    previo al período tenía **$288.000** (no lo medido en la versión anterior), el arqueo #5692
+    $164.000 y el cargue $590.000 con el baúl quedando exactamente en lo cargado. El titular
+    «el dispensado no coincide» era impreciso: lo que falta es el REGISTRO de la salida del baúl,
+    no el dispensado. Se añadió el veredicto `retiro` con la **firma del reemplazo**
+    (`stockReplacedAtLoad`: el baúl quedó exactamente en lo cargado) y el arqueo de referencia se
+    publica con id y fecha (`reconciliation.periodStartArqueo`), porque no es el inicio del
+    período. Dos lecturas que el panel declara en vez de elegir: (1) retiro del sobrante al cargar
+    —debe registrarse—; (2) el baúl reporta sólo lo cargado, sin el sobrante anterior, y entonces
+    la lectura del baúl no sirve como inventario (revisar con el proveedor).
 
 17. **B-18 — RESUELTO: el semáforo del inicio acusaba a las máquinas recién cargadas.**
     Caso real (Pay+ Inder 2, ID 71, 2026-09-22): el inicio mostraba «2 posibles atascos» en el

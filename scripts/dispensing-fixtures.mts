@@ -1294,10 +1294,12 @@ const inder1Storage = [
   storageRow("2000", 5, "290", { dispensingTotal: "580000", min: "5" }),
   storageRow("500", 6, "20", { dispensingTotal: "10000", min: "5" }),
 ];
-// Arqueo de inicio del día (base del período): el baúl tenía 165.000 antes de que empezara «Hoy».
+// Arqueo de referencia ANTERIOR al período (#5690): el baúl tenía 288.000 cuando terminó el día
+// anterior (dato real de la captura). No es el inventario de arranque de «Hoy», así que la resta
+// del período tampoco sirve para acusar: mide ventanas que no cubren los mismos pagos.
 const inder1PeriodStart = tonnage(5690, "2026-09-22T04:59:00.000Z", [
-  tonnageDetail("2000", 5, "72"),
-  tonnageDetail("500", 6, "42"),
+  tonnageDetail("2000", 5, "130"),
+  tonnageDetail("500", 6, "56"),
 ]);
 // Arqueo automático al abrir la máquina para cargar: 25 segundos antes del cargue, 164.000.
 const inder1Base = tonnage(5692, "2026-09-22T18:59:54.000Z", [
@@ -1354,9 +1356,13 @@ console.log(
   `  Inder 1 «Hoy»: período=${String(inder1Row?.periodTotal)} (exacto=${String(inder1Row?.periodExact)} · inventario de inicio=${String(inder1Row?.periodStartStockValue)}) · ventana del arqueo=${String(inder1Row?.arqueoTotal)} · pagos desde el arqueo=${String(inder1Row?.paymentsSinceBase)} · sin pago=${String(inder1Row?.outflowWithoutPayment)} · sistema del período=${String(inder1Row?.systemTotal)} · veredicto=${String(inder1Check?.best)}`,
 );
 expect(
-  "el cuadre del período NO es exacto: el baúl ya tenía 165.000 cuando empezó el día",
-  inder1Row?.periodExact === false && inder1Row?.periodStartStockValue === "165000" && inder1Row?.periodTotal === "0",
-  JSON.stringify({ exacto: inder1Row?.periodExact, inicio: inder1Row?.periodStartStockValue, periodo: inder1Row?.periodTotal }),
+  "el cuadre del período NO es exacto: el arqueo de referencia anterior al período tenía 288.000",
+  inder1Row?.periodExact === false &&
+    inder1Row?.periodStartStockValue === "288000" &&
+    inder1Row?.periodTotal === "0" &&
+    inder1Check?.periodStartArqueo?.id === 5690 &&
+    inder1Check?.periodStartArqueo?.at === "2026-09-22T04:59:00.000Z",
+  JSON.stringify({ exacto: inder1Row?.periodExact, referencia: inder1Row?.periodStartStockValue, arqueo: inder1Check?.periodStartArqueo }),
 );
 expect(
   "el lado del sistema se mide en LA MISMA ventana: 0 pagos después del arqueo (los 1.000 del día fueron antes)",
@@ -1364,14 +1370,17 @@ expect(
   JSON.stringify({ desdeArqueo: inder1Row?.paymentsSinceBase, tx: inder1Row?.paymentsSinceBaseTransactions, periodo: inder1Row?.systemTotal }),
 );
 expect(
-  "el cargue repuso el baúl: la salida de 164.000 del sobrante se declara como salida SIN pago registrado",
-  inder1Row?.arqueoTotal === "164000" && inder1Row?.outflowWithoutPayment === "164000" && inder1Check?.fromOutflowWithoutPayment === "164000",
-  JSON.stringify({ arqueo: inder1Row?.arqueoTotal, sinPago: inder1Row?.outflowWithoutPayment }),
+  "el cargue REEMPLAZÓ el contenido del baúl (quedó exactamente en lo cargado): firma del retiro",
+  inder1Row?.arqueoTotal === "164000" &&
+    inder1Row?.outflowWithoutPayment === "164000" &&
+    inder1Check?.fromOutflowWithoutPayment === "164000" &&
+    inder1Row?.stockReplacedAtLoad === true,
+  JSON.stringify({ arqueo: inder1Row?.arqueoTotal, sinPago: inder1Row?.outflowWithoutPayment, reemplazo: inder1Row?.stockReplacedAtLoad }),
 );
 expect(
-  "el veredicto ya no es «no coincide»: los pagos del día se explican (operativo 0 + inventario previo 165.000 − salida sin pago 164.000 = 1.000)",
-  inder1Check?.best === "periodo" && inder1Check?.blocker === null,
-  JSON.stringify({ best: inder1Check?.best, blocker: inder1Check?.blocker }),
+  "el veredicto es «retiro» (salida del baúl sin pago registrado), no «el dispensado no coincide»",
+  inder1Check?.best === "retiro" && inder1Check?.blocker === null && inder1Row?.best === "retiro",
+  JSON.stringify({ best: inder1Check?.best, fila: inder1Row?.best, blocker: inder1Check?.blocker }),
 );
 expect(
   "la diferencia del arqueo se publica contra los pagos de SU ventana (164.000), no contra los del día",
@@ -1421,6 +1430,35 @@ expect(
     desdeArqueo: inder1Missing.reconciliationCheck?.currencies[0]?.paymentsSinceBase,
     diferencia: inder1Missing.reconciliationCheck?.currencies[0]?.differenceArqueo,
   }),
+);
+
+// CONTRASTE: si el baúl NO quedó en el cargue (no hay firma de reemplazo), la salida sin pago
+// no se atribuye a un retiro y el veredicto vuelve a ser «no coincide».
+const inder1SinReemplazo = (() => {
+  const storage = [
+    storageRow("2000", 5, "140", { dispensingTotal: "280000", min: "5" }),
+    storageRow("500", 6, "20", { dispensingTotal: "10000", min: "5" }),
+  ];
+  return computeDispensingMetrics({
+    byState: { Aprobada: { count: 10, total: "10000" } },
+    cashDispensedTotal: "1000",
+    denominations: inder1Denominations,
+    lastTonnage: inder1Base,
+    loads: [inder1Load],
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-22T20:45:00.000Z"),
+    rangeFrom: new Date("2026-09-22T05:00:00.000Z"),
+    rangeTo: new Date("2026-09-22T23:59:59.000Z"),
+    storage,
+    systemEvidence: inder1Evidence,
+    tonnages: [inder1PeriodStart, inder1Base],
+  });
+})();
+expect(
+  "sin la firma del reemplazo (el baúl no quedó en el cargue) se acusa, no se declara retiro",
+  inder1SinReemplazo.reconciliationCheck?.best === "ninguno" &&
+    inder1SinReemplazo.reconciliationCheck?.currencies[0]?.stockReplacedAtLoad === false,
+  JSON.stringify({ best: inder1SinReemplazo.reconciliationCheck?.best, reemplazo: inder1SinReemplazo.reconciliationCheck?.currencies[0]?.stockReplacedAtLoad }),
 );
 
 // CONTRASTE: mismo día sin detalle legible (Σ devuelto): sin medición en la ventana del arqueo

@@ -259,8 +259,13 @@ export interface DispensingReconciliationCurrencyRow {
   acceptedTotal: string | null;
   /** Auditoría: dispensado contando el inventario previo del arqueo. */
   arqueoTotal: string | null;
-  /** Modelo que explica el registro del sistema en ESTA moneda (`null` = no comparable). */
-  best: "arqueo" | "periodo" | "ninguno" | null;
+  /**
+   * Modelo que explica el registro del sistema en ESTA moneda (`null` = no comparable).
+   * `"retiro"` = el baúl perdió dinero que ningún pago registrado explica y el cargue REEMPLAZÓ
+   * el contenido (el baúl quedó exactamente en lo cargado): es una salida sin registro, no un
+   * faltante de pagos.
+   */
+  best: "arqueo" | "periodo" | "ninguno" | "retiro" | null;
   currencyId: number | null;
   /**
    * `false` = el cuadre del período no es una identidad exacta en esta moneda: al empezar el
@@ -284,8 +289,13 @@ export interface DispensingReconciliationCurrencyRow {
   /** Pagos registrados por el detalle DENTRO de la ventana del arqueo base. */
   paymentsSinceBase: string | null;
   paymentsSinceBaseTransactions: number | null;
-  /** Inventario del baúl al empezar el período (valorizado; `null` = no hay arqueo de inicio). */
+  /** Inventario del baúl en el arqueo de referencia previo al período (valorizado). */
   periodStartStockValue: string | null;
+  /**
+   * El baúl quedó EXACTAMENTE en lo cargado desde el arqueo base: el cargue reemplazó el
+   * contenido (lo que había antes salió durante la carga). Es la firma del retiro del sobrante.
+   */
+  stockReplacedAtLoad: boolean;
   /** Dispensado del período (cifra principal del cuadre físico). */
   periodTotal: string | null;
   /** Lo que el sistema registró como DISPENSADO (DP) en esta moneda. */
@@ -299,13 +309,19 @@ export interface DispensingReconciliationCheck {
    * Modelo que mejor explica el registro del sistema (tolerancia 1 %), agregado sobre las
    * monedas comparables. `null` = la comparación NO aplica (ver `blocker`).
    */
-  best: "arqueo" | "periodo" | "ninguno" | null;
+  best: "arqueo" | "periodo" | "ninguno" | "retiro" | null;
   /** Por qué la verificación no aplica; `null` = sí aplica. */
   blocker: { code: DispensingReconciliationBlockerCode; detail: string } | null;
   /** Cobertura del barrido de detalles (`null` = no hay barrido). */
   coverage: { analyzed: number; complete: boolean; detailsFailures: number; truncated: boolean } | null;
   /** Comparación por moneda: la única válida cuando la máquina trabaja varias. */
   currencies: DispensingReconciliationCurrencyRow[];
+  /**
+   * Arqueo de referencia ANTERIOR al período (el último hasta el inicio del rango). Su fecha se
+   * publica porque puede ser de días atrás: entonces NO representa el inventario de arranque y
+   * la resta del período no se puede usar para acusar.
+   */
+  periodStartArqueo: { at: string | null; id: number | null } | null;
   /** Diferencia `modelo − sistema` agregada (con signo; `null` si no es calculable por moneda). */
   differences: { arqueo: string | null; periodo: string | null };
   /** Auditoría: lo que saldría contando el inventario previo del arqueo (una sola moneda). */
@@ -1074,6 +1090,18 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         // haya pagado (caso real Pay+ Inder 1, 2026-09-22).
         const periodStartStockCents =
           fallbackRow ? null : decimalToCents(valuedPeriodStartStock.byCurrency.get(key)?.total ?? "0");
+        // Firma del RETIRO AL CARGAR: hubo cargue desde el arqueo y el baúl reporta exactamente
+        // lo cargado (el sobrante anterior no está). Con esa firma la salida sin pago de la
+        // ventana es un retiro/reemplazo, no un faltante de pagos.verificar
+        const loadedSinceBaseCents =
+          fallbackRow ? null : decimalToCents(valuedLoadedSinceBase.byCurrency.get(key)?.total ?? "0");
+        const balanceCents = fallbackRow ? null : decimalToCents(valuedStorage.byCurrency.get(key)?.total ?? "0");
+        const stockReplacedAtLoad =
+          hasBase &&
+          loadedSinceBaseCents !== null &&
+          loadedSinceBaseCents > 0n &&
+          balanceCents !== null &&
+          abs(balanceCents - loadedSinceBaseCents) <= tolerance(loadedSinceBaseCents);
         const periodExact = periodStartStockCents === null || periodStartStockCents === 0n;
         // Salida del baúl en la ventana del arqueo base que NINGÚN pago registrado explica
         // (candidato a retiro / reemplazo del sobrante al cargar).
@@ -1120,7 +1148,12 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
                       // de la ventana del arqueo. Con inventario previo y sin esa ventana, la
                       // resta mide pagos + retiros − inventario previo: se declara, no se acusa.
                       currencyHasLoad && (periodExact || systemCents === 0n || paymentsSinceBase !== null)
-                      ? "ninguno"
+                      ? stockReplacedAtLoad &&
+                        outflowWithoutPaymentCents !== null &&
+                        outflowWithoutPaymentCents > 0n &&
+                        systemCents > 0n
+                        ? "retiro"
+                        : "ninguno"
                       : null,
           currencyId: currency.currencyId,
           differenceArqueo:
@@ -1135,6 +1168,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
           paymentsSinceBaseTransactions,
           periodExact,
           periodStartStockValue: fallbackRow ? null : (valuedPeriodStartStock.byCurrency.get(key)?.total ?? null),
+          stockReplacedAtLoad,
           periodTotal,
           systemTotal,
           transactions: detailEntry?.payoutTransactions ?? 0,
@@ -1160,9 +1194,11 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         ? null
         : comparableRows.some((row) => row.best === "ninguno")
           ? "ninguno"
-          : comparableRows.every((row) => row.best === "periodo")
-            ? "periodo"
-            : "arqueo";
+          : comparableRows.some((row) => row.best === "retiro")
+            ? "retiro"
+            : comparableRows.every((row) => row.best === "periodo")
+              ? "periodo"
+              : "arqueo";
 
     // El detalle y `Σ returnAmount` miden cosas distintas en esta máquina: se publican las dos
     // cifras con su origen para que el operador vea de dónde sale cada una (en cambio divisa,
@@ -1259,6 +1295,10 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       fromPeriodTotal: scalarOf((row) => row.periodTotal),
       paymentsSinceBaseTotal: scalarOf((row) => row.paymentsSinceBase),
       periodComparable,
+      periodStartArqueo:
+        periodStartTonnage === null
+          ? null
+          : { at: periodStartTonnage.dateCreated ?? null, id: periodStartTonnage.id ?? null },
       returnAmountTotal: input.cashDispensedTotal ?? null,
       systemSource,
       systemSourceConflict,
