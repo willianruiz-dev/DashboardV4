@@ -46,6 +46,13 @@ export interface SystemDispensedCurrencyTotal {
   /** Valor ACEPTADO (entra al aceptador, AP) según los detalles. */
   acceptedValue: string;
   currencyId: number | null;
+  /**
+   * Dispensado DENTRO de la ventana del arqueo base `(base → ahora]`: es la cifra que se
+   * compara con el cuadre físico de esa misma ventana. `null` = no se pidió la ventana.
+   */
+  dispensedSinceBase: { transactions: number; value: string } | null;
+  /** Dispensado DENTRO de la ventana del último cargue `(último cargue → ahora]`. */
+  dispensedSinceLastLoad: { transactions: number; value: string } | null;
   /** Unidades que los detalles muestran SALIENDO del dispensador (DP). */
   dispensedUnits: number;
   /** Valor DISPENSADO (sale al cliente, DP) según los detalles. */
@@ -63,6 +70,9 @@ export interface SystemDispensedEvidence {
   acceptedTotal: string;
   /** Transacciones del período que el barrido realmente analizó. */
   analyzedTransactions: number;
+  /** Dispensado total (todas las monedas sumadas: sólo referencia, no comparable). */
+  dispensedSinceBaseTotal: string | null;
+  dispensedSinceLastLoadTotal: string | null;
   /**
    * Los importes dicen que las operaciones «de salida» del detalle describen lo ACEPTADO
    * (lectura invertida): el lado DP deducido no es confiable y no debe usarse para verificar.
@@ -95,6 +105,18 @@ export interface SystemDispensedEvidence {
 export interface SystemDispensedEvidenceInput {
   /** Catálogo de denominaciones: aporta la moneda de cada detalle. */
   denominations?: readonly CurrencyDenomination[];
+  /**
+   * Ventanas con las que se compara el lado físico. El cuadre físico sólo es una identidad
+   * exacta cuando arranca de un conteo de baúl (arqueo) o del propio cargue: por eso el lado
+   * del sistema debe poder medirse en ESAS ventanas y no sólo en el período del día. Sin
+   * ventanas, el lado del sistema sigue midiéndose sobre todo el período.
+   */
+  windows?: {
+    /** Fecha del arqueo base: ventana `(base → ahora]`. */
+    baseAtMs?: number | null;
+    /** Fecha del último cargue: ventana `(último cargue → ahora]`. */
+    lastLoadAtMs?: number | null;
+  } | null;
   /** Moneda declarada por el Pay+ (respaldo de etiqueta si el catálogo no responde). */
   machineCurrency?: { id: number; label: string | null } | null;
   /** Barrido de detalles ya consultado por la detección de atascos (`null` = sin barrido). */
@@ -109,6 +131,15 @@ function toInt(value: string | number | null | undefined, fallback = 0): number 
 
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** Fecha a milisegundos; `NaN` cuando no es utilizable (nunca se asume «ahora»). */
+function toMillis(value: string | null | undefined): number {
+  if (!value) {
+    return Number.NaN;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
 function centsToDecimal(cents: bigint): string {
@@ -128,6 +159,12 @@ interface CurrencyAccumulator {
   failed: bigint;
   label: string | null;
   payoutTransactions: Set<number>;
+  /** Dispensado (y transacciones) DENTRO de la ventana del arqueo base. */
+  sinceBase: bigint;
+  sinceBaseTransactions: Set<number>;
+  /** Dispensado (y transacciones) DENTRO de la ventana del último cargue. */
+  sinceLastLoad: bigint;
+  sinceLastLoadTransactions: Set<number>;
   units: number;
 }
 
@@ -191,17 +228,55 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
       failed: 0n,
       label,
       payoutTransactions: new Set<number>(),
+      sinceBase: 0n,
+      sinceBaseTransactions: new Set<number>(),
+      sinceLastLoad: 0n,
+      sinceLastLoadTransactions: new Set<number>(),
       units: 0,
     };
     byCurrency.set(currencyId, created);
     return created;
   };
 
+  // Ventanas de comparación. `null` = no se pidió esa ventana: no se inventa una cifra.
+  const baseAtMs = input.windows?.baseAtMs ?? null;
+  const lastLoadAtMs = input.windows?.lastLoadAtMs ?? null;
+  const hasBaseWindow = baseAtMs !== null && Number.isFinite(baseAtMs);
+  const hasLastLoadWindow = lastLoadAtMs !== null && Number.isFinite(lastLoadAtMs);
+
   let acceptedTotal = 0n;
   let dispensedTotal = 0n;
+  let dispensedSinceBaseTotal = 0n;
+  let dispensedSinceLastLoadTotal = 0n;
   let returnAmountTotal = 0n;
   let payoutTransactions = 0;
   let detailsRead = 0;
+
+  /** Suma una salida del dispensador a la moneda y a las ventanas que correspondan. */
+  const addDispensed = (
+    accumulator: CurrencyAccumulator,
+    value: bigint,
+    quantity: number,
+    transactionId: number,
+    at: number,
+    inBaseWindow: boolean,
+    inLastLoadWindow: boolean,
+  ): void => {
+    accumulator.dispensed += value;
+    accumulator.units += quantity;
+    accumulator.payoutTransactions.add(transactionId);
+    dispensedTotal += value;
+    if (inBaseWindow) {
+      accumulator.sinceBase += value;
+      accumulator.sinceBaseTransactions.add(transactionId);
+      dispensedSinceBaseTotal += value;
+    }
+    if (inLastLoadWindow) {
+      accumulator.sinceLastLoad += value;
+      accumulator.sinceLastLoadTransactions.add(transactionId);
+      dispensedSinceLastLoadTotal += value;
+    }
+  };
 
   for (const transaction of transactions) {
     const errorState = isErrorReturnedState(transaction.stateTransaction);
@@ -209,6 +284,14 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
     const hasPayout = payoutCents > 0n;
     returnAmountTotal += payoutCents;
     detailsRead += transaction.details.length;
+
+    // Ventanas: el límite inferior es EXCLUSIVO (el arqueo y el cargue son el conteo de
+    // arranque, no un movimiento posterior), igual que el cuadre físico.
+    const transactionAt = toMillis(transaction.dateCreated ?? null);
+    const inBaseWindow =
+      hasBaseWindow && !Number.isNaN(transactionAt) && transactionAt > (baseAtMs as number);
+    const inLastLoadWindow =
+      hasLastLoadWindow && !Number.isNaN(transactionAt) && transactionAt > (lastLoadAtMs as number);
 
     let dispensedInTransaction = false;
     for (const detail of transaction.details) {
@@ -234,11 +317,8 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
       }
 
       if (kind === "dispense") {
-        accumulator.dispensed += value;
-        accumulator.units += quantity;
-        accumulator.payoutTransactions.add(transaction.id);
+        addDispensed(accumulator, value, quantity, transaction.id, transactionAt, inBaseWindow, inLastLoadWindow);
         dispensedInTransaction = true;
-        dispensedTotal += value;
         continue;
       }
 
@@ -258,11 +338,8 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
         accumulator.failed += value;
         continue;
       }
-      accumulator.dispensed += value;
-      accumulator.units += quantity;
-      accumulator.payoutTransactions.add(transaction.id);
+      addDispensed(accumulator, value, quantity, transaction.id, transactionAt, inBaseWindow, inLastLoadWindow);
       dispensedInTransaction = true;
-      dispensedTotal += value;
     }
 
     if (dispensedInTransaction) {
@@ -282,6 +359,12 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
     byCurrency: sorted.map((entry) => ({
       acceptedValue: centsToDecimal(entry.accepted),
       currencyId: entry.currencyId,
+      dispensedSinceBase: hasBaseWindow
+        ? { transactions: entry.sinceBaseTransactions.size, value: centsToDecimal(entry.sinceBase) }
+        : null,
+      dispensedSinceLastLoad: hasLastLoadWindow
+        ? { transactions: entry.sinceLastLoadTransactions.size, value: centsToDecimal(entry.sinceLastLoad) }
+        : null,
       dispensedUnits: entry.units,
       dispensedValue: centsToDecimal(entry.dispensed),
       failedValue: centsToDecimal(entry.failed),
@@ -289,6 +372,8 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
       payoutTransactions: entry.payoutTransactions.size,
     })),
     detailsFailures: scan.detailsFailures,
+    dispensedSinceBaseTotal: hasBaseWindow ? centsToDecimal(dispensedSinceBaseTotal) : null,
+    dispensedSinceLastLoadTotal: hasLastLoadWindow ? centsToDecimal(dispensedSinceLastLoadTotal) : null,
     dispensedTotal: centsToDecimal(dispensedTotal),
     multiCurrency,
     payoutTransactions,

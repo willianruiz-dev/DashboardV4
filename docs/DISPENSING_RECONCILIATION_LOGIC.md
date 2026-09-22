@@ -146,6 +146,7 @@ base del arqueo. La diferencia entre ambas **no es dinero perdido, es diferencia
 | Máquina **multimoneda** sin detalle utilizable (caso ODRB Rionegro) | `null` | `multimoneda` | «Σ devuelto no es comparable en esta máquina»: explica AP vs DP y remite al detalle por denominación |
 | Barrido de detalles **parcial** (truncado, fallido o ilegible) en máquina multimoneda | `null` | `cobertura` | «El detalle del período está incompleto: la verificación no concluye» |
 | Sin ninguna medición del sistema | `null` | `sin-medicion` | «Sin medición del sistema para verificar» |
+| El baúl **ya tenía inventario** al empezar el período y no hay medición del sistema DENTRO de la ventana del arqueo | `null` | `inventario-previo` | «El baúl ya tenía inventario al empezar el período: la resta del período no puede acusar sola» |
 
 Reglas implementadas: `periodComparable = hasLoadInRange`; `best` sólo puede ser `"ninguno"`
 cuando el período **sí** tiene cargues **y** existe una medición admisible (`systemSource ≠ null`).
@@ -157,6 +158,43 @@ transacciones caía en `cobertura` y no acusaba nada.
 El código distingue «no se puede comparar» (neutro) de «no coincide» (advertencia) y nunca los
 mezcla. `systemSource` dice qué cifra se usó (`"detalles"` o `"returnAmount"`), `currencies[]` trae
 la comparación por moneda (con lo aceptado aparte) y `note` explica la salvedad del origen.
+
+### Las tres ventanas del cuadre (y por qué la del período no acusa sola)
+
+> Caso real reportado por el operador (Pay+ Inder 1, ID 70, 2026-09-22, preset «Hoy»):
+> «físico (cargado − en dispensadores − rechazado): $0 · sistema (DP): $1.000 · diferencia −$1.000 ·
+> contando el inventario previo del arqueo: $164.000 (diferencia $163.000)». La máquina había sido
+> cargada a las 02:00:19 p.m. (el baúl quedó exactamente en el cargue) y el arqueo base era de 25
+> segundos antes (01:59:54 p.m.). El operador preguntó por qué salía el aviso si el día tenía pagos.
+
+Hay **tres** ventanas en juego y cada una mide algo distinto:
+
+| Ventana | Cómo se calcula | Cuándo es una identidad exacta |
+| --- | --- | --- |
+| **Período** (la operativa del día) | `cargado(período) − en dispensadores − rechazado(período)` | Sólo si el baúl estaba **vacío** al empezar el período: si ya tenía inventario, la resta mide `pagos + retiros − inventario previo` |
+| **Arqueo base** (`reconciliation.dp.arqueoTotal`) | `inventario del arqueo base + cargues desde la base − en dispensadores − rechazo desde la base` | Siempre (arranca de un conteo real del baúl) |
+| **Sistema en la ventana del arqueo** (`paymentsSinceBase`) | Detalle por transacción **con fecha posterior al arqueo base** | — (es la medición con la que se compara la anterior) |
+
+Reglas implementadas:
+
+1. El lado del sistema se mide **en la ventana del arqueo** (`dispensedSinceBase` /
+   `dispensedSinceLastLoad` en `system-dispensed.ts`, con las fechas que arma el hook): comparar la
+   cifra del día completo contra una ventana que arranca al mediodía es el falso descuadre clásico de
+   las máquinas recargadas.
+2. La resta del período decide **sólo** cuando es exacta (`periodExact`, sin inventario previo) o
+   cuando cierra la descomposición `operativo + inventario previo − salida sin pago = pagos`.
+3. **Salida del baúl sin pago registrado** (`outflowWithoutPayment`): salida física de la ventana del
+   arqueo menos los pagos registrados en esa misma ventana. Es el sobrante que se retiró/reemplazó al
+   cargar; se declara con la acción («regístralo como retiro»). Un residuo **negativo** (el sistema
+   registra más salidas que la caída del baúl) no lo explica ningún retiro: ahí sí se acusa.
+4. Sin medición en la ventana del arqueo y con inventario previo, el veredicto es `null` con el
+   bloqueo `inventario-previo`: el panel declara qué falta (el detalle por transacción dentro de la
+   ventana) en vez de acusar con una resta que no puede atribuir.
+5. La diferencia del período sólo se publica cuando esa resta es exacta.
+
+Lo que el panel **no** puede hacer todavía: hay una **salida sin pago** declarada porque no existe
+API de retiros (bolsa / vaciamiento al cargar). Mientras el retiro no se registre en el sistema, el
+cuadre puede explicarlo pero no conciliarlo (ver B-19 en `docs/AGENT_TASK_BACKLOG.md`).
 
 ### «Sin arqueo base» decía tres cosas distintas con la misma frase
 

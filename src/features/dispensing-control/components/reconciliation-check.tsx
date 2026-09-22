@@ -29,6 +29,7 @@ import { formatDashboardMoney } from "@/lib/formatters/money";
 
 const blockerTitles: Record<DispensingReconciliationBlockerCode, string> = {
   cobertura: "El detalle del período está incompleto: la verificación no concluye",
+  "inventario-previo": "El baúl ya tenía inventario al empezar el período: la resta del período no puede acusar sola",
   multimoneda: "«Σ devuelto» no es comparable en esta máquina (trabaja varias monedas)",
   "sin-cargues": "Sin período comparable para verificar",
   "sin-medicion": "Sin medición del sistema para verificar",
@@ -37,6 +38,7 @@ const blockerTitles: Record<DispensingReconciliationBlockerCode, string> = {
 
 const blockerIcons: Record<DispensingReconciliationBlockerCode, typeof TimerReset> = {
   cobertura: TimerReset,
+  "inventario-previo": TimerReset,
   multimoneda: Scale,
   "sin-cargues": TimerReset,
   "sin-medicion": TimerReset,
@@ -90,33 +92,50 @@ function describeRow(row: DispensingReconciliationCurrencyRow, fromDetails: bool
   }
 
   const parts: string[] = [
-    `físico (cargado − en dispensadores − rechazado): ${money(row.periodTotal, "no calculable (sin cargue de esta moneda en el período)")}`,
+    `físico del período (cargado − en dispensadores − rechazado): ${money(row.periodTotal, "no calculable (sin cargue de esta moneda en el período)")}`,
     row.systemTotal === null
       ? "sistema (DP): sin medición"
-      : `sistema (DP): ${formatDashboardMoney(row.systemTotal)}${
-          row.differencePeriodo === null || row.periodTotal === null ? "" : ` · diferencia ${formatDashboardMoney(row.differencePeriodo)}`
+      : // La diferencia del período sólo se publica cuando ESA resta es una identidad exacta:
+        // con inventario previo en el baúl el número confunde (da $0 en máquinas que pagaron).
+        `sistema (DP) del período: ${formatDashboardMoney(row.systemTotal)}${
+          row.differencePeriodo === null || row.periodTotal === null || !row.periodExact
+            ? ""
+            : ` · diferencia ${formatDashboardMoney(row.differencePeriodo)}`
         }`,
   ];
-  // La auditoría del arqueo sólo se muestra cuando hay algo contra qué compararla: con el
-  // período quieto y sin cifra del sistema, «$0 contra $8.013.400» parece un faltante y no lo es.
-  const comparable = row.systemTotal !== null || !isZero(row.periodTotal);
-  if (
-    comparable &&
-    row.arqueoTotal !== null &&
-    row.arqueoTotal !== row.periodTotal &&
-    !(isZero(row.arqueoTotal) && isZero(row.systemTotal))
-  ) {
+  // Ventana del arqueo: es la única comparación exacta (inicial contado + cargues − saldo −
+  // rechazo). Se publica con los pagos REGISTRADOS EN ESA MISMA VENTANA, no con los del día.
+  if (row.arqueoTotal !== null) {
+    const paid = row.paymentsSinceBase === null ? "sin medición en esa ventana" : `pagos registrados desde ese arqueo: ${formatDashboardMoney(row.paymentsSinceBase)}`;
+    parts.push(`ventana del arqueo (inventario previo + cargues − en dispensadores − rechazado): ${formatDashboardMoney(row.arqueoTotal)} · ${paid}`);
+  }
+  if (row.periodStartStockValue !== null && Number(row.periodStartStockValue) > 0 && !row.periodExact) {
     parts.push(
-      `contando el inventario previo del arqueo: ${formatDashboardMoney(row.arqueoTotal)}${
-        row.differenceArqueo === null ? "" : ` (diferencia ${formatDashboardMoney(row.differenceArqueo)})`
+      `el baúl ya tenía ${formatDashboardMoney(row.periodStartStockValue)} al empezar el período: la resta del período mezcla esos pagos con los retiros, así que no se usa para acusar`,
+    );
+  }
+  // Dinero que salió del baúl y ningún pago explica: candidato a retiro/reemplazo al cargar.
+  if (row.outflowWithoutPayment !== null && Number(row.outflowWithoutPayment) > 0) {
+    parts.push(
+      `salida del baúl sin pago registrado en esa ventana: ${formatDashboardMoney(row.outflowWithoutPayment)}${
+        row.loadedSinceBaseValue !== null && Number(row.loadedSinceBaseValue) > 0
+          ? " (hubo cargue en la ventana: si fue el retiro del sobrante al cargar, regístralo como retiro)"
+          : ""
       }`,
     );
   }
+  // La auditoría del arqueo sólo se muestra cuando hay algo contra qué compararla: con el
+  // período quieto y sin cifra del sistema, «$0 contra $8.013.400» parece un faltante y no lo es.
+
   if (fromDetails && !isZero(row.acceptedTotal) && !isAcceptOnlyRow(row)) {
     parts.push(`aceptado (AP) según el detalle: ${formatDashboardMoney(row.acceptedTotal ?? "0")}`);
   }
   if (fromDetails && row.transactions > 0) {
-    parts.push(`${row.transactions} transacción(es) con salida`);
+    parts.push(
+      `${row.transactions} transacción(es) con salida${
+        row.paymentsSinceBaseTransactions === null ? "" : ` (${row.paymentsSinceBaseTransactions} posterior(es) al arqueo)`
+      }`,
+    );
   }
 
   return parts.join(" · ");
@@ -209,13 +228,17 @@ export function ReconciliationCheckAlert({ baseAtIso, check, lastLoadAt, rangeLa
                 ? "La comparación válida es por moneda y con el detalle por denominación (sección «Detección de atascos»): ahí cada billete tiene moneda y dirección (AP entra, DP sale). Sin ese detalle el panel no concluye descuadre."
                 : blocker.code === "cobertura"
                 ? "Re-analiza el período (o acótalo) para completar el detalle: mientras la cobertura sea parcial no se declara descuadre."
-                : blocker.code === "sin-transacciones"
+                : blocker.code === "inventario-previo"
+                  ? "El baúl ya tenía inventario al empezar el período: «cargado − en dispensadores − rechazado» mide pagos + retiros − inventario previo, así que una diferencia no prueba dinero sin registro. Para verificarlo hace falta el detalle por transacción DENTRO de la ventana del arqueo: revisa el período sobre el que se hizo el barrido o acótalo al tramo del arqueo."
+                  : blocker.code === "sin-transacciones"
                   ? rows.some((row) => row.loadedTotal !== null)
                     ? "El cuadre físico confirma que no salió nada: lo cargado sigue íntegro en los dispensadores. Las operaciones que buscas ocurrieron ANTES del último cargue (quedaron fuera de esta ventana): amplía el período («Últimos 7 días» o un rango personalizado desde el cargue anterior) para incluirlas en el cuadre."
                     : "El período no tiene cargues ni transacciones: no hay cuadre que calcular. Elige una ventana con actividad (p. ej. «Desde último cargue» o «Últimos 7 días»)."
                   : "Selecciona un período con cargues y transacciones para poder verificar el cuadre."
             : check.best === "periodo"
-              ? "El cuadre cierra por moneda: cargado − en dispensadores − rechazado explica lo entregado a clientes."
+              ? rows.some((row) => row.outflowWithoutPayment !== null && Number(row.outflowWithoutPayment) > 0)
+                ? "El cuadre cierra por moneda una vez descontados el inventario previo del baúl y la salida que ningún pago explica (retiro o reemplazo del sobrante al cargar): esa salida NO es dispensado a clientes. Regístrala como retiro para que el próximo cuadre no la tenga que declarar."
+                : "El cuadre cierra por moneda: cargado − en dispensadores − rechazado explica lo entregado a clientes."
               : check.best === "arqueo"
                 ? "El inventario previo del arqueo sí pasó por el dispensador: revisa si el baúl se cargó sobre saldo existente o si esas unidades se retiraron en mantenimiento."
                 : check.best === "ninguno"

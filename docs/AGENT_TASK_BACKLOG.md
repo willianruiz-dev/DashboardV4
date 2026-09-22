@@ -255,6 +255,31 @@
     y publica la limitación en pantalla; falta el dato (columna en `CurrencyDenomination` o
     `extraDataJson` por Pay+). Sin él, el panel NO supone tipos: lo declara.
 
+18. **B-19 — RESUELTO: el cuadre comparaba ventanas distintas y acusaba falsos descuadres
+    en máquinas recargadas.** Caso real (Pay+ Inder 1, ID 70, 2026-09-22, preset «Hoy»): la
+    tarjeta mostraba «físico (cargado − en dispensadores − rechazado): $0 · sistema (DP):
+    $1.000 · diferencia −$1.000 · contando el inventario previo del arqueo: $164.000
+    (diferencia $163.000)». Tres cifras, tres ventanas: la del período ignora que el baúl ya
+    tenía $165.000 cuando empezó el día; la del arqueo arranca en un arqueo tomado 25 s ANTES
+    del cargue (que REPUSO el sobrante: el baúl quedó exactamente en lo cargado); y el sistema
+    sumaba los pagos del día completo, que ocurrieron antes de ese arqueo. Corrección:
+    (a) el lado del sistema se mide **en la ventana del arqueo base** (`dispensedSinceBase` en
+    `system-dispensed.ts`), con las ventanas que arma el hook (arqueo base y último cargue);
+    (b) el cuadre del período sólo decide cuando esa resta es una identidad exacta (el baúl
+    estaba vacío al empezar el período) o cuando la descomposición cierra
+    (`operativo + inventario previo − salida sin pago = pagos`); con inventario previo y sin
+    medición en la ventana del arqueo el veredicto es **NULL** con el bloqueo
+    `inventario-previo` (se declara, no se acusa);
+    (c) nuevo concepto **salida del baúl sin pago registrado** = salida física de la ventana
+    del arqueo − pagos registrados en esa misma ventana, publicado con la acción sugerida
+    («si fue el retiro del sobrante al cargar, regístralo como retiro»); un residuo negativo
+    (el sistema registra más salidas que la caída del baúl) NO se explica por ningún retiro y
+    sí se acusa;
+    (d) la diferencia del período deja de publicarse cuando no es una resta exacta.
+    Evidencia: escenarios `alerta-recargada` y «Inder 1» en las fixtures (155/155), incluido el
+    contraste con sobre-registro del sistema. Pendiente de datos: no existe API de RETIROS
+    (bolsa/vaciamiento), así que la salida sin pago sólo se puede declarar, no conciliar.
+
 17. **B-18 — RESUELTO: el semáforo del inicio acusaba a las máquinas recién cargadas.**
     Caso real (Pay+ Inder 2, ID 71, 2026-09-22): el inicio mostraba «2 posibles atascos» en el
     100 y el 500 («No bajó en el arqueo (~49 entre arqueos) y conserva 100 unidad(es)») y el

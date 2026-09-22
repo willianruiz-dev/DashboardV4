@@ -247,6 +247,7 @@ export interface DispensingLoadTraceEntry {
  */
 export type DispensingReconciliationBlockerCode =
   | "cobertura"
+  | "inventario-previo"
   | "multimoneda"
   | "sin-cargues"
   | "sin-medicion"
@@ -261,11 +262,30 @@ export interface DispensingReconciliationCurrencyRow {
   /** Modelo que explica el registro del sistema en ESTA moneda (`null` = no comparable). */
   best: "arqueo" | "periodo" | "ninguno" | null;
   currencyId: number | null;
+  /**
+   * `false` = el cuadre del período no es una identidad exacta en esta moneda: al empezar el
+   * período el baúl ya tenía inventario (`periodStartStockValue`), así que «cargado − en
+   * dispensadores − rechazado» mide pagos + retiros − inventario previo y puede dar $0 en una
+   * máquina que sí pagó (caso real Pay+ Inder 1: cargue que reemplazó el sobrante del baúl).
+   */
+  periodExact: boolean;
   differenceArqueo: string | null;
   differencePeriodo: string | null;
   label: string | null;
   /** Cargado del período en esta moneda (`null` si no tuvo cargues). */
   loadedTotal: string | null;
+  /** Cargue de la ventana del arqueo base: lo que repuso el baúl después de la base. */
+  loadedSinceBaseValue: string | null;
+  /**
+   * Salida del baúl en la ventana del arqueo base que ningún pago registrado explica
+   * (`salida física − pagos desde la base`). Es el candidato a retiro/reemplazo al cargar.
+   */
+  outflowWithoutPayment: string | null;
+  /** Pagos registrados por el detalle DENTRO de la ventana del arqueo base. */
+  paymentsSinceBase: string | null;
+  paymentsSinceBaseTransactions: number | null;
+  /** Inventario del baúl al empezar el período (valorizado; `null` = no hay arqueo de inicio). */
+  periodStartStockValue: string | null;
   /** Dispensado del período (cifra principal del cuadre físico). */
   periodTotal: string | null;
   /** Lo que el sistema registró como DISPENSADO (DP) en esta moneda. */
@@ -290,6 +310,12 @@ export interface DispensingReconciliationCheck {
   differences: { arqueo: string | null; periodo: string | null };
   /** Auditoría: lo que saldría contando el inventario previo del arqueo (una sola moneda). */
   fromArqueoTotal: string | null;
+  /**
+   * Salida del baúl en la ventana del arqueo base que ningún pago registrado explica
+   * (una sola moneda). Es el candidato a retiro/reemplazo del sobrante al cargar: NO es
+   * dispensado a clientes y debe declararse, no confundirse con la diferencia del período.
+   */
+  fromOutflowWithoutPayment: string | null;
   /** DISPENSADO del período (cifra principal), valorizado (una sola moneda). */
   fromPeriodTotal: string | null;
   /**
@@ -306,6 +332,8 @@ export interface DispensingReconciliationCheck {
    * cifras con su origen: en una máquina de cambio divisa `Σ returnAmount` no mide el dispensador.
    */
   systemSourceConflict: boolean;
+  /** Pagos registrados por el detalle DENTRO de la ventana del arqueo (una sola moneda). */
+  paymentsSinceBaseTotal: string | null;
   /** Cifra del sistema usada en la verificación (una sola moneda; `null` si hay varias). */
   systemTotal: string | null;
   /** `Σ returnAmount` del período (referencia; mezcla monedas en máquinas multimoneda). */
@@ -823,6 +851,11 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
   const valuedDispensed = valueByCurrency((row) => row.dispensedInPeriod);
   const valuedRejected = valueByCurrency((row) => row.rejectedInPeriod);
   const valuedStorage = valueByCurrency((row) => row.balance);
+  // Auditoría de ventanas: lo que el cargue repuso desde el arqueo base y lo que el baúl ya
+  // tenía cuando empezó el período. Sin estas dos cifras el operador no puede explicar por qué
+  // «cargado − en dispensadores − rechazado» da $0 en una máquina que sí pagó.
+  const valuedLoadedSinceBase = valueByCurrency((row) => row.loadedSinceBase);
+  const valuedPeriodStartStock = valueByCurrency((row) => row.stockAtPeriodStart);
   const loadOutflowTotalsByCurrency = [...valuedDispensed.byCurrency.values()];
   const outflowByCurrency = new Map<string, DispensingCurrencyTotal>();
   if (hasBase) {
@@ -1017,13 +1050,52 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
             : systemSource === "returnAmount"
               ? centsToDecimal(returnAmountCents ?? 0n)
               : null;
+        // Lado del sistema EN LA VENTANA DEL ARQUEO BASE: es la única comparación exacta
+        // (salida = inicial + cargues − saldo − rechazo, desde un conteo real del baúl).
+        // Sin esa ventana se conserva la cifra del período, que es lo único que hay.
+        // Sin la ventana pedida NO se asume cero: se declara «sin medición» para esa ventana.
+        const paymentsSinceBase = systemSource === "detalles" ? (detailEntry?.dispensedSinceBase?.value ?? null) : null;
+        const paymentsSinceBaseTransactions =
+          systemSource === "detalles" ? (detailEntry?.dispensedSinceBase?.transactions ?? null) : null;
         const periodCents = periodTotal === null ? null : decimalToCents(periodTotal);
         const arqueoCents = arqueoTotal === null ? null : decimalToCents(arqueoTotal);
         const systemCents = systemTotal === null ? null : decimalToCents(systemTotal);
+        const paymentsSinceBaseCents = paymentsSinceBase === null ? null : decimalToCents(paymentsSinceBase);
+        const alignedArqueoSystemCents = paymentsSinceBaseCents ?? systemCents;
         const matches = (modelCents: bigint | null): boolean =>
           modelCents !== null && systemCents !== null && abs(modelCents - systemCents) <= tolerance(systemCents);
+        const matchesAgainst = (modelCents: bigint | null, againstCents: bigint | null): boolean =>
+          modelCents !== null && againstCents !== null && abs(modelCents - againstCents) <= tolerance(againstCents);
         const periodMatches = matches(periodCents);
-        const arqueoMatches = matches(arqueoCents);
+        const arqueoMatches = matchesAgainst(arqueoCents, alignedArqueoSystemCents);
+        // Inventario del baúl AL EMPEZAR EL PERÍODO (`null` = no hay arqueo de inicio). Si había
+        // unidades, «cargado − en dispensadores − rechazado» deja de ser una identidad exacta:
+        // mide pagos + retiros − inventario previo, y una máquina recargada puede dar $0 aunque
+        // haya pagado (caso real Pay+ Inder 1, 2026-09-22).
+        const periodStartStockCents =
+          fallbackRow ? null : decimalToCents(valuedPeriodStartStock.byCurrency.get(key)?.total ?? "0");
+        const periodExact = periodStartStockCents === null || periodStartStockCents === 0n;
+        // Salida del baúl en la ventana del arqueo base que NINGÚN pago registrado explica
+        // (candidato a retiro / reemplazo del sobrante al cargar).
+        const outflowWithoutPaymentCents =
+          arqueoCents === null || paymentsSinceBaseCents === null ? null : arqueoCents - paymentsSinceBaseCents;
+        // Descomposición del período: pagos = operativo + inventario previo − salida sin pago.
+        // Cierra cuando el cargue reemplazó el sobrante, y es lo que permite decir «coincide»
+        // en vez de acusar por la resta que no puede ver esos pagos.
+        const periodExplainedCents =
+          periodCents === null || systemCents === null || periodStartStockCents === null
+            ? null
+            : periodCents + periodStartStockCents - (outflowWithoutPaymentCents ?? 0n);
+        // La descomposición NO decide por sí sola: con un término libre (la salida sin pago)
+        // cualquier cifra del sistema «cerraría». Sólo se usa cuando HAY pagos que explicar.
+        const periodExplainedMatches =
+          periodExplainedCents !== null &&
+          systemCents !== null &&
+          systemCents > 0n &&
+          // Un «retiro» negativo no explica nada: significa que el sistema registró MÁS salidas
+          // que la caída del baúl (el baúl no puede perder dinero que nunca salió).
+          (outflowWithoutPaymentCents ?? 0n) >= 0n &&
+          abs(periodExplainedCents - systemCents) <= tolerance(systemCents);
         // 0 contra 0 no es una verificación, es ausencia de movimiento: una moneda que la
         // máquina no dispensó (p. ej. los dólares que sólo entran al aceptador en una máquina
         // de cambio divisa) no puede decidir el veredicto global con un «cuadra» vacío.
@@ -1036,18 +1108,33 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
           best:
             systemCents === null || nothingToVerify
               ? null
-              : periodMatches
+              : periodMatches && (periodExact || periodExplainedMatches || periodStartStockCents === null)
                 ? "periodo"
                 : arqueoMatches
                   ? "arqueo"
-                  : currencyHasLoad
-                    ? "ninguno"
-                    : null,
+                  : periodExplainedMatches
+                    ? "periodo"
+                    : // Se acusa sólo cuando la comparación puede atribuir la diferencia: el
+                      // cuadre del período es exacto, o el sistema no registró NI UN pago
+                      // (entonces toda la salida es dinero sin registro), o existe la medición
+                      // de la ventana del arqueo. Con inventario previo y sin esa ventana, la
+                      // resta mide pagos + retiros − inventario previo: se declara, no se acusa.
+                      currencyHasLoad && (periodExact || systemCents === 0n || paymentsSinceBase !== null)
+                      ? "ninguno"
+                      : null,
           currencyId: currency.currencyId,
-          differenceArqueo: arqueoCents === null || systemCents === null ? null : centsToDecimal(arqueoCents - systemCents),
+          differenceArqueo:
+            arqueoCents === null || alignedArqueoSystemCents === null ? null : centsToDecimal(arqueoCents - alignedArqueoSystemCents),
           differencePeriodo: periodCents === null || systemCents === null ? null : centsToDecimal(periodCents - systemCents),
           label: currency.label,
+          loadedSinceBaseValue:
+            fallbackRow ? (hasBase ? valuedLoadedSinceBase.total : null) : (hasBase ? (valuedLoadedSinceBase.byCurrency.get(key)?.total ?? null) : null),
           loadedTotal: fallbackRow ? (periodComparable ? valuedLoaded.total : null) : (currencyHasLoad ? (valuedLoaded.byCurrency.get(key)?.total ?? null) : null),
+          outflowWithoutPayment: outflowWithoutPaymentCents === null ? null : centsToDecimal(outflowWithoutPaymentCents),
+          paymentsSinceBase,
+          paymentsSinceBaseTransactions,
+          periodExact,
+          periodStartStockValue: fallbackRow ? null : (valuedPeriodStartStock.byCurrency.get(key)?.total ?? null),
           periodTotal,
           systemTotal,
           transactions: detailEntry?.payoutTransactions ?? 0,
@@ -1122,6 +1209,20 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
             "La máquina trabaja varias monedas y el DTO de transacción no declara la moneda de cada importe: «Σ devuelto» (returnAmount) suma monedas distintas y, en una máquina de cambio divisa, describe lo que entró al aceptador (AP) y no lo que salió del dispensador (DP).",
         };
       }
+      // Inventario previo al período y sin medición del sistema EN la ventana del arqueo:
+      // la resta del período mide pagos + retiros − inventario previo, así que una diferencia
+      // no prueba dinero sin registro (caso real Pay+ Inder 1: cargue que reemplazó el sobrante
+      // del baúl y pagos del día que la resta no puede ver).
+      if (
+        currencies.some((row) => !row.periodExact && row.loadedSinceBaseValue !== null) &&
+        currencies.every((row) => row.paymentsSinceBase === null)
+      ) {
+        return {
+          code: "inventario-previo",
+          detail:
+            "El baúl ya tenía inventario cuando empezó el período, así que «cargado − en dispensadores − rechazado» mide pagos + retiros − inventario previo y no puede acusar por sí solo. Falta la medición del sistema dentro de la ventana del arqueo (el detalle por transacción con su fecha).",
+        };
+      }
       return {
         code: "sin-medicion",
         detail: "No hay una medición del lado del sistema que se pueda comparar con el cuadre físico.",
@@ -1153,7 +1254,10 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         periodo: scalarOf((row) => row.differencePeriodo),
       },
       fromArqueoTotal: scalarOf((row) => row.arqueoTotal),
+      // Salida del baúl de la ventana del arqueo que ningún pago registrado explica.
+      fromOutflowWithoutPayment: scalarOf((row) => (row.outflowWithoutPayment !== null && Number(row.outflowWithoutPayment) > 0 ? row.outflowWithoutPayment : null)),
       fromPeriodTotal: scalarOf((row) => row.periodTotal),
+      paymentsSinceBaseTotal: scalarOf((row) => row.paymentsSinceBase),
       periodComparable,
       returnAmountTotal: input.cashDispensedTotal ?? null,
       systemSource,

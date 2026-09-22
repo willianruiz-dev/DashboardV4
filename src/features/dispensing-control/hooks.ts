@@ -12,7 +12,7 @@ import { useTransactionSearch } from "@/features/transactions/hooks";
 import type { TransactionSearchRequest, TransactionStateBucket } from "@/features/transactions/schemas";
 import { localDateTimeToApiIso } from "@/lib/formatters/date";
 import type { JamScanPayload } from "./dispensing-jams";
-import { createDispensingMetricsInput } from "./dispensing-input";
+import { createDispensingMetricsInput, latestUsableTonnage } from "./dispensing-input";
 import { computeDispensingMetrics, type DispensingMetrics } from "./dispensing-metrics";
 import { buildSystemDispensedEvidence, type SystemDispensedEvidence } from "./system-dispensed";
 import {
@@ -207,22 +207,6 @@ export function useDispensingMetrics(
       denominationsQuery.isPending ||
       (searchRequest !== null && searchQuery.isPending));
 
-  // Evidencia del lado del sistema (AP/DP por moneda) construida con el barrido de detalles que
-  // ya hace la detección de atascos: misma ventana, mismos detalles, ninguna petición extra.
-  const scan = options.scan ?? null;
-  const systemEvidence = useMemo<SystemDispensedEvidence | null>(
-    () =>
-      paypadId === null
-        ? null
-        : buildSystemDispensedEvidence({
-            denominations: denominationsQuery.data ?? [],
-            machineCurrency: args?.machineCurrency ?? null,
-            scan,
-            storage: storageQuery.data ?? [],
-          }),
-    [args?.machineCurrency, denominationsQuery.data, paypadId, scan, storageQuery.data],
-  );
-
   // Datos crudos de las mismas queries: alimentan el cuadre y el motor de atascos sin refetch
   // extra. Se arman ANTES del cuadre porque son su insumo.
   const sources = useMemo<DispensingMetricsSources>(
@@ -237,6 +221,38 @@ export function useDispensingMetrics(
           },
     [paypadId, searchQuery.data, loadsQuery.data, storageQuery.data, tonnagesQuery.data],
   );
+
+  // Evidencia del lado del sistema (AP/DP por moneda) construida con el barrido de detalles que
+  // ya hace la detección de atascos: misma ventana, mismos detalles, ninguna petición extra.
+  // Se miden TAMBIÉN las ventanas del arqueo base y del último cargue: el cuadre físico sólo es
+  // una identidad exacta cuando arranca de un conteo del baúl, y comparar la cifra del día con
+  // esa ventana produce falsos descuadres en máquinas recargadas (caso real Pay+ Inder 1).
+  const scan = options.scan ?? null;
+  const systemEvidence = useMemo<SystemDispensedEvidence | null>(() => {
+    if (paypadId === null) {
+      return null;
+    }
+
+    const baseAt = latestUsableTonnage(sources.tonnages)?.dateCreated ?? null;
+    const lastLoadAt = sources.loads.reduce<string | null>((latest, load) => {
+      const current = load.dateCreated ?? null;
+      if (current === null) {
+        return latest;
+      }
+      return latest === null || Date.parse(current) > Date.parse(latest) ? current : latest;
+    }, null);
+
+    return buildSystemDispensedEvidence({
+      denominations: denominationsQuery.data ?? [],
+      machineCurrency: args?.machineCurrency ?? null,
+      scan,
+      storage: storageQuery.data ?? [],
+      windows: {
+        baseAtMs: baseAt === null ? null : Date.parse(baseAt),
+        lastLoadAtMs: lastLoadAt === null ? null : Date.parse(lastLoadAt),
+      },
+    });
+  }, [args?.machineCurrency, denominationsQuery.data, paypadId, scan, sources.loads, sources.tonnages, storageQuery.data]);
 
   const metrics = useMemo<DispensingMetrics | null>(() => {
     if (args === null || paypadId === null) {

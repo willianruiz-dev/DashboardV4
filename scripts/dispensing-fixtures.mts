@@ -961,14 +961,20 @@ expect(
   JSON.stringify(inderTodayWithLoad.reconciliationCheck),
 );
 
-// Caso del operador con baúl SIN inventario previo (arqueo de apertura en cero): el mismo
-// cargue da la misma cifra, y no hay nada que auditar.
+// CONTRASTE (regla nueva): cuando el baúl YA tenía inventario al empezar el período y no hay
+// medición del sistema DENTRO de la ventana del arqueo, la resta del período mide
+// «pagos + retiros − inventario previo»: puede dar $0 en una máquina que sí pagó (caso real
+// Pay+ Inder 1) o coincidir por casualidad. No se acusa ni se declara verificado: se declara
+// qué falta (el detalle por transacción con su fecha), con las cifras publicadas.
 const inderEmptyStart = inderCase([
   load(42, "2026-09-19T18:20:00.000Z", [loadDetail(5, "2000", "140")], "280000"),
 ], inderStorage, "248000");
 expect(
-  "sin inventario previo el cuadre es idéntico y el sistema lo confirma",
-  inderEmptyStart.rows[0]?.stockAtPeriodStart === 84 && inderEmptyStart.reconciliationCheck?.best === "periodo",
+  "con inventario previo y sin medición en la ventana del arqueo el veredicto es NULL (se declara, no se acusa)",
+  inderEmptyStart.rows[0]?.stockAtPeriodStart === 84 &&
+    inderEmptyStart.reconciliationCheck?.best === null &&
+    inderEmptyStart.reconciliationCheck?.blocker?.code === "inventario-previo" &&
+    inderEmptyStart.reconciliationCheck?.currencies[0]?.periodExact === false,
   JSON.stringify(inderEmptyStart.reconciliationCheck),
 );
 
@@ -990,8 +996,11 @@ const inderSystemLoad = inderCase(
   "248000",
 );
 expect(
-  "si registró 248.000, el cuadre del período (cargado − dispensadores − rechazado) es el correcto",
-  inderSystemLoad.reconciliationCheck?.best === "periodo",
+  "aunque Σ devuelto sea 248.000 (igual a la cifra operativa), sin la ventana del arqueo NO se declara verificado: la coincidencia puede ser «retiro = inventario previo»",
+  inderSystemLoad.reconciliationCheck?.best === null &&
+    inderSystemLoad.reconciliationCheck?.blocker?.code === "inventario-previo" &&
+    inderSystemLoad.reconciliationCheck?.fromPeriodTotal === "248000" &&
+    inderSystemLoad.reconciliationCheck?.systemTotal === "248000",
   JSON.stringify(inderSystemLoad.reconciliationCheck),
 );
 const inderSystemUnknown = inderCase(
@@ -1000,8 +1009,10 @@ const inderSystemUnknown = inderCase(
   "100000",
 );
 expect(
-  "si no coincide con ninguno, la diferencia se declara (dinero sin registro)",
-  inderSystemUnknown.reconciliationCheck?.best === "ninguno" && inderSystemUnknown.reconciliationCheck?.differences.periodo === "148000",
+  "si no coincide y falta la ventana del arqueo, la diferencia se PUBLICA pero no se acusa: no es atribuible con esa medición",
+  inderSystemUnknown.reconciliationCheck?.best === null &&
+    inderSystemUnknown.reconciliationCheck?.blocker?.code === "inventario-previo" &&
+    inderSystemUnknown.reconciliationCheck?.differences.periodo === "148000",
   JSON.stringify(inderSystemUnknown.reconciliationCheck),
 );
 expect("la cargada desde el arqueo coincide con el cargue de 140", inderRow?.loadedSinceBase === 140, String(inderRow?.loadedSinceBase));
@@ -1263,6 +1274,166 @@ expect(
   JSON.stringify(reloadedUnknownLoads),
 );
 
+/* ------------------- 11-bis) CASO REAL Pay+ Inder 1 (ID 70): el cargue REPONE el sobrante del baúl
+ *
+ * Captura del 2026-09-22 con el preset «Hoy»: la tarjeta mostraba
+ *   físico (cargado − en dispensadores − rechazado): $0 · sistema (DP): $1.000 · diferencia −$1.000
+ *   contando el inventario previo del arqueo: $164.000 (diferencia $163.000)
+ * y el operador preguntó por qué salía si el día tenía pagos. Las tres cifras medidas ventanas
+ * distintas: la del período ignora que el baúl ya tenía $165.000 cuando empezó el día, la del
+ * arqueo arranca en un arqueo tomado 25 s ANTES del cargue, y la del sistema suma los pagos del
+ * día completo (que ocurrieron ANTES de ese arqueo). Con el cargue que REPONE el sobrante
+ * (el baúl queda exactamente en lo cargado), la resta del período puede dar $0 aunque haya pagos.
+ * La comparación válida es la de la ventana del arqueo, con los pagos registrados EN esa ventana.
+ */
+const inder1Denominations = [
+  catalogDenomination(5, COP, "2000", "Peso colombiano"),
+  catalogDenomination(6, COP, "500", "Peso colombiano"),
+];
+const inder1Storage = [
+  storageRow("2000", 5, "290", { dispensingTotal: "580000", min: "5" }),
+  storageRow("500", 6, "20", { dispensingTotal: "10000", min: "5" }),
+];
+// Arqueo de inicio del día (base del período): el baúl tenía 165.000 antes de que empezara «Hoy».
+const inder1PeriodStart = tonnage(5690, "2026-09-22T04:59:00.000Z", [
+  tonnageDetail("2000", 5, "72"),
+  tonnageDetail("500", 6, "42"),
+]);
+// Arqueo automático al abrir la máquina para cargar: 25 segundos antes del cargue, 164.000.
+const inder1Base = tonnage(5692, "2026-09-22T18:59:54.000Z", [
+  tonnageDetail("2000", 5, "72"),
+  tonnageDetail("500", 6, "40"),
+]);
+// El cargue (02:00:19 p.m. COT = 19:00:19Z): 590.000, exactamente lo que el baúl reporta ahora.
+const inder1Load = load(77, "2026-09-22T19:00:19.000Z", [
+  loadDetail(5, "2000", "290"),
+  loadDetail(6, "500", "20"),
+], "590000");
+// Pagos del día: 10 aprobadas con Σ devuelto 1.000, TODOS antes del arqueo base (mañana).
+const inder1Transactions = [
+  transaction(800, "2026-09-22T14:10:00.000Z", [{ denominationId: 6, operation: "Entregado", operationId: 2, quantity: "1" }], {
+    income: "20000",
+    real: "19000",
+    ret: "500",
+  }),
+  transaction(801, "2026-09-22T15:20:00.000Z", [{ denominationId: 6, operation: "Entregado", operationId: 2, quantity: "1" }], {
+    income: "20000",
+    real: "19000",
+    ret: "500",
+  }),
+];
+const inder1Evidence = buildSystemDispensedEvidence({
+  denominations: inder1Denominations,
+  machineCurrency: { id: COP, label: "COP" },
+  scan: scan(inder1Transactions),
+  storage: inder1Storage,
+  windows: { baseAtMs: Date.parse(inder1Base.dateCreated ?? ""), lastLoadAtMs: Date.parse(inder1Load.dateCreated ?? "") },
+});
+
+function inder1Metrics(systemEvidence: ReturnType<typeof buildSystemDispensedEvidence>, loads = [inder1Load]) {
+  return computeDispensingMetrics({
+    byState: { Aprobada: { count: 10, total: "10000" } },
+    cashDispensedTotal: "1000",
+    denominations: inder1Denominations,
+    lastTonnage: inder1Base,
+    loads,
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-22T20:45:00.000Z"),
+    rangeFrom: new Date("2026-09-22T05:00:00.000Z"),
+    rangeTo: new Date("2026-09-22T23:59:59.000Z"),
+    storage: inder1Storage,
+    systemEvidence,
+    tonnages: [inder1PeriodStart, inder1Base],
+  });
+}
+
+const inder1 = inder1Metrics(inder1Evidence);
+const inder1Check = inder1.reconciliationCheck;
+const inder1Row = inder1Check?.currencies[0] ?? null;
+console.log(
+  `  Inder 1 «Hoy»: período=${String(inder1Row?.periodTotal)} (exacto=${String(inder1Row?.periodExact)} · inventario de inicio=${String(inder1Row?.periodStartStockValue)}) · ventana del arqueo=${String(inder1Row?.arqueoTotal)} · pagos desde el arqueo=${String(inder1Row?.paymentsSinceBase)} · sin pago=${String(inder1Row?.outflowWithoutPayment)} · sistema del período=${String(inder1Row?.systemTotal)} · veredicto=${String(inder1Check?.best)}`,
+);
+expect(
+  "el cuadre del período NO es exacto: el baúl ya tenía 165.000 cuando empezó el día",
+  inder1Row?.periodExact === false && inder1Row?.periodStartStockValue === "165000" && inder1Row?.periodTotal === "0",
+  JSON.stringify({ exacto: inder1Row?.periodExact, inicio: inder1Row?.periodStartStockValue, periodo: inder1Row?.periodTotal }),
+);
+expect(
+  "el lado del sistema se mide en LA MISMA ventana: 0 pagos después del arqueo (los 1.000 del día fueron antes)",
+  inder1Row?.paymentsSinceBase === "0" && inder1Row?.paymentsSinceBaseTransactions === 0 && inder1Row?.systemTotal === "1000",
+  JSON.stringify({ desdeArqueo: inder1Row?.paymentsSinceBase, tx: inder1Row?.paymentsSinceBaseTransactions, periodo: inder1Row?.systemTotal }),
+);
+expect(
+  "el cargue repuso el baúl: la salida de 164.000 del sobrante se declara como salida SIN pago registrado",
+  inder1Row?.arqueoTotal === "164000" && inder1Row?.outflowWithoutPayment === "164000" && inder1Check?.fromOutflowWithoutPayment === "164000",
+  JSON.stringify({ arqueo: inder1Row?.arqueoTotal, sinPago: inder1Row?.outflowWithoutPayment }),
+);
+expect(
+  "el veredicto ya no es «no coincide»: los pagos del día se explican (operativo 0 + inventario previo 165.000 − salida sin pago 164.000 = 1.000)",
+  inder1Check?.best === "periodo" && inder1Check?.blocker === null,
+  JSON.stringify({ best: inder1Check?.best, blocker: inder1Check?.blocker }),
+);
+expect(
+  "la diferencia del arqueo se publica contra los pagos de SU ventana (164.000), no contra los del día",
+  inder1Row?.differenceArqueo === "164000" && inder1Row?.differencePeriodo === "-1000",
+  JSON.stringify({ arqueo: inder1Row?.differenceArqueo, periodo: inder1Row?.differencePeriodo }),
+);
+
+// CONTRASTE: el sistema registra 200.000 de salidas DESPUÉS del arqueo base, pero el baúl no
+// bajó (quedó exactamente en el cargue). Un «retiro» negativo no explica nada: eso sí se acusa,
+// y con la cifra alineada a la ventana del arqueo (−36.000 = 164.000 del baúl − 200.000 del sistema).
+const inder1Missing = (() => {
+  const pagosDespues = [820, 821, 822, 823].map((id, index) =>
+    transaction(id, `2026-09-22T20:0${index}:00.000Z`, [{ denominationId: 6, operation: "Entregado", operationId: 2, quantity: "100" }], {
+      income: "50000",
+      real: "50000",
+      ret: "50000",
+    }),
+  );
+  return computeDispensingMetrics({
+    byState: { Aprobada: { count: 10, total: "10000" } },
+    cashDispensedTotal: "201000",
+    denominations: inder1Denominations,
+    lastTonnage: inder1Base,
+    loads: [inder1Load],
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-22T20:45:00.000Z"),
+    rangeFrom: new Date("2026-09-22T05:00:00.000Z"),
+    rangeTo: new Date("2026-09-22T23:59:59.000Z"),
+    storage: inder1Storage,
+    systemEvidence: buildSystemDispensedEvidence({
+      denominations: inder1Denominations,
+      machineCurrency: { id: COP, label: "COP" },
+      scan: scan(pagosDespues),
+      storage: inder1Storage,
+      windows: { baseAtMs: Date.parse(inder1Base.dateCreated ?? ""), lastLoadAtMs: Date.parse(inder1Load.dateCreated ?? "") },
+    }),
+    tonnages: [inder1PeriodStart, inder1Base],
+  });
+})();
+expect(
+  "si el sistema registra más salidas que la caída del baúl, SÍ se acusa (y con las cifras de la ventana del arqueo)",
+  inder1Missing.reconciliationCheck?.best === "ninguno" &&
+    inder1Missing.reconciliationCheck?.currencies[0]?.paymentsSinceBase === "200000" &&
+    inder1Missing.reconciliationCheck?.currencies[0]?.differenceArqueo === "-36000",
+  JSON.stringify({
+    best: inder1Missing.reconciliationCheck?.best,
+    desdeArqueo: inder1Missing.reconciliationCheck?.currencies[0]?.paymentsSinceBase,
+    diferencia: inder1Missing.reconciliationCheck?.currencies[0]?.differenceArqueo,
+  }),
+);
+
+// CONTRASTE: mismo día sin detalle legible (Σ devuelto): sin medición en la ventana del arqueo
+// la diferencia del período no se acusa NI se declara verificada.
+const inder1SinVentana = inder1Metrics(null);
+expect(
+  "sin medición en la ventana del arqueo, el inventario previo bloquea el veredicto (se declara, no se acusa)",
+  inder1SinVentana.reconciliationCheck?.best === null &&
+    inder1SinVentana.reconciliationCheck?.blocker?.code === "inventario-previo" &&
+    inder1SinVentana.reconciliationCheck?.differences.periodo === "-1000",
+  JSON.stringify({ best: inder1SinVentana.reconciliationCheck?.best, blocker: inder1SinVentana.reconciliationCheck?.blocker }),
+);
+
 /* ------------------------------------------- 12) ODRB Rionegro (id 1288): AP ≠ DP y monedas mezcladas */
 
 console.log("\n[odrb-divisa] máquina multimoneda que recibe USD y entrega COP: la verificación es por moneda y por lado (AP/DP)");
@@ -1331,6 +1502,10 @@ const odrbEvidence = buildSystemDispensedEvidence({
   machineCurrency: { id: COP, label: "COP" },
   scan: odrbScan,
   storage: odrbStorage,
+  windows: {
+    baseAtMs: Date.parse(odrbBase.dateCreated ?? ""),
+    lastLoadAtMs: Date.parse(odrbLoads[0]?.dateCreated ?? ""),
+  },
 });
 
 function odrbMetrics(systemEvidence: ReturnType<typeof buildSystemDispensedEvidence>) {
@@ -1804,6 +1979,11 @@ expect(
 const inderEvidence = buildSystemDispensedEvidence({
   denominations: [catalogDenomination(5, COP, "2000", "Peso colombiano")],
   machineCurrency: { id: COP, label: "COP" },
+  // Mismas ventanas que arma el hook en producción: arqueo base y último cargue.
+  windows: {
+    baseAtMs: Date.parse(inderBase.dateCreated ?? ""),
+    lastLoadAtMs: Date.parse("2026-09-19T18:20:00.000Z"),
+  },
   scan: scan([
     transaction(700, "2026-09-20T15:00:00.000Z", [{ denominationId: 5, operation: "Entregado", operationId: 2, quantity: "64" }], {
       income: "200000",
