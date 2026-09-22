@@ -199,10 +199,27 @@ Reglas implementadas:
 7. El arqueo de referencia previo al período se publica con su **id y fecha**
    (`check.periodStartArqueo`): si es de días atrás no representa el inventario de arranque y el
    panel lo dice en vez de llamarlo «inicio del período».
+8. La «ventana del arqueo» se publica **con el arqueo que la abre** (`check.windowArqueo`, el más
+   reciente con fecha utilizable). Puede ser DISTINTO del arqueo de referencia previo al período:
+   con arqueos intermedios dentro del período, citar sólo el de arranque hace que el lector
+   atribuya la ventana (y los «pagos desde ese arqueo») al arqueo equivocado. Caso real Inder 1:
+   referencia #5680 del sábado, ventana abierta en el #5692 del mismo día.
+9. **Tramos entre arqueos** (`row.tramos`): se audita cada tramo entre arqueos consecutivos del
+   historial (arrancando en la referencia previa al período) que la ventana del arqueo base no
+   puede ver, porque abre DESPUÉS de ellos. Por tramo y por moneda:
+   `salida contada (conteo inicial + cargues del tramo − conteo final − rechazo nuevo) − pagos
+   registrados DENTRO del tramo`. Los pagos del tramo se miden por diferencia de acumulados de la
+   evidencia (`dispensedSinceBoundaries` en `system-dispensed.ts`, fronteras que arma el hook con
+   las fechas de todos los arqueos) y sólo se afirman con cobertura completa del barrido: un
+   barrido truncado declara «sin medición», nunca un «sin pago» fabricado con la parte que llegó.
+10. Un tramo sólo se declara cuando queda dinero sin pago **más allá de la tolerancia** (un bajón
+    explicado por los pagos del tramo no es noticia) y siempre con **ambos conteos visibles**
+    («entre el arqueo #5690 ($288.000) y el #5692 ($164.000)…») para que el operador pueda
+    verificar los conteos que producen la cifra.
 
 Lo que el panel **no** puede hacer todavía: hay una **salida sin pago** declarada porque no existe
 API de retiros (bolsa / vaciamiento al cargar). Mientras el retiro no se registre en el sistema, el
-cuadre puede explicarlo pero no conciliarlo (ver B-19 en `docs/AGENT_TASK_BACKLOG.md`).
+cuadre puede explicarlo pero no conciliarlo (ver B-19/B-21 en `docs/AGENT_TASK_BACKLOG.md`).
 
 ### «Sin arqueo base» decía tres cosas distintas con la misma frase
 

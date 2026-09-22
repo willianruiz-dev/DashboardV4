@@ -253,6 +253,29 @@ export type DispensingReconciliationBlockerCode =
   | "sin-medicion"
   | "sin-transacciones";
 
+/**
+ * Auditoría de un TRAMO entre dos arqueos consecutivos (por moneda): cuánto bajó el baúl
+ * entre un conteo y el siguiente, cuánto explican los pagos registrados DENTRO del tramo y
+ * cuánto quedó sin pago. La ventana del arqueo base (el MÁS RECIENTE) no puede ver estos
+ * tramos porque arranca después de ellos (caso real Pay+ Inder 1, 2026-09-22: −$124.000
+ * entre los arqueos #5690 y #5692 del mismo día, invisibles para la ventana que abre en
+ * el #5692 y que la tarjeta confundía con la referencia #5680 del sábado anterior).
+ */
+export interface DispensingArqueoTramo {
+  fromArqueo: { at: string | null; id: number | null };
+  toArqueo: { at: string | null; id: number | null };
+  /** Valor contado en dispensadores en el arqueo de arranque del tramo (esta moneda). */
+  fromValue: string;
+  /** Valor contado en dispensadores en el arqueo de cierre del tramo (esta moneda). */
+  toValue: string;
+  /** Salida del baúl en el tramo: contado inicial + cargues del tramo − contado final − rechazo nuevo. */
+  outflow: string;
+  /** Pagos registrados por el detalle DENTRO del tramo; `null` = sin medición en esa ventana. */
+  payments: string | null;
+  /** `outflow − payments`; `null` cuando los pagos del tramo no tienen medición. */
+  sinPago: string | null;
+}
+
 /** Comparación por moneda: el registro del sistema contra cada modelo físico. */
 export interface DispensingReconciliationCurrencyRow {
   /** Lo que el detalle registra como ACEPTADO (AP) en esta moneda; `null` sin detalle. */
@@ -302,6 +325,11 @@ export interface DispensingReconciliationCurrencyRow {
   systemTotal: string | null;
   /** Transacciones con salidas del dispensador en esta moneda (0 sin detalle). */
   transactions: number;
+  /**
+   * Tramos entre arqueos consecutivos del historial con salida que ningún pago del tramo
+   * explica (auditoría; vacío cuando todo queda explicado o no hay arqueos intermedios).
+   */
+  tramos: DispensingArqueoTramo[];
 }
 
 export interface DispensingReconciliationCheck {
@@ -322,6 +350,14 @@ export interface DispensingReconciliationCheck {
    * la resta del período no se puede usar para acusar.
    */
   periodStartArqueo: { at: string | null; id: number | null } | null;
+  /**
+   * Arqueo BASE que abre la «ventana del arqueo» (el MÁS RECIENTE con fecha utilizable).
+   * Puede ser DISTINTO de `periodStartArqueo` (el último anterior al período): con arqueos
+   * intermedios dentro del período, citar sólo el de arranque del período hace leer mal la
+   * ventana (caso real Inder 1: referencia #5680 del sábado, ventana abierta en el #5692
+   * de ese mismo día, 25 s antes del cargue).
+   */
+  windowArqueo: { at: string | null; id: number | null } | null;
   /** Diferencia `modelo − sistema` agregada (con signo; `null` si no es calculable por moneda). */
   differences: { arqueo: string | null; periodo: string | null };
   /** Auditoría: lo que saldría contando el inventario previo del arqueo (una sola moneda). */
@@ -1047,6 +1083,153 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       currencyKeys.set("maquina", { currencyId: machineCurrencyId, label: input.machineCurrency?.label ?? null });
     }
 
+    // ── TRAMOS ENTRE ARQUEOS ────────────────────────────────────────────────────
+    // La ventana del arqueo base sólo ve (base → ahora]. Los bajones ENTRE arqueos
+    // intermedios del historial quedan invisibles aunque estén contados (caso real Inder 1:
+    // −$124.000 entre los arqueos #5690 y #5692 del mismo día). Se audita cada tramo entre
+    // arqueos consecutivos —arrancando en la referencia anterior al período— restando de la
+    // salida CONTADA los pagos registrados DENTRO del tramo (por diferencia de acumulados
+    // de la evidencia). Sólo se declara lo que queda sin pago más allá de la tolerancia.
+    const tramosByCurrency = new Map<string, DispensingArqueoTramo[]>();
+    (() => {
+      // Los pagos del tramo sólo se afirman con cobertura COMPLETA del barrido (mismo
+      // candado que `paymentsSinceBase`): un barrido truncado subestima los pagos y
+      // fabricaría un «sin pago» inexistente. Sin cobertura se declara «sin medición».
+      const tramoEvidence = evidenceUsable ? evidence : null;
+      const rangeFromMs = input.rangeFrom.getTime();
+      const rangeToMs = input.rangeTo.getTime();
+      const usable = (input.tonnages ?? [])
+        .map((tonnage) => ({ atMs: toMillis(tonnage.dateCreated ?? null), tonnage }))
+        .filter((entry) => !Number.isNaN(entry.atMs) && entry.atMs > rangeFromMs && entry.atMs <= rangeToMs)
+        .sort((left, right) => left.atMs - right.atMs);
+      const startAtMs = toMillis(periodStartTonnage?.dateCreated ?? null);
+      const boundaries = [
+        ...(periodStartTonnage !== null && !Number.isNaN(startAtMs)
+          ? [{ atMs: startAtMs, tonnage: periodStartTonnage }]
+          : []),
+        ...usable,
+      ];
+      if (boundaries.length < 2) {
+        return;
+      }
+      // Moneda de un detalle de arqueo/cargue: por id contra el catálogo y, si es legacy sin
+      // id, por el valor visible contra el inventario en uso (mismo respaldo que usa
+      // `arqueoTotalsByCurrency`).
+      const currencyKeyOfDetail = (detail: {
+        idCurrencyDenomination: number | null;
+        denominationValue: string | number | null;
+      }): { key: string; currencyId: number | null } => {
+        const byId = detail.idCurrencyDenomination === null ? undefined : currencyIndex.get(detail.idCurrencyDenomination);
+        if (byId) {
+          return { key: byId.currencyId === null ? "none" : String(byId.currencyId), currencyId: byId.currencyId };
+        }
+        const byValue = rows.find((row) => toInt(row.denominationValue) === toInt(detail.denominationValue));
+        const currencyId = byValue?.currencyId ?? null;
+        return { key: currencyId === null ? "none" : String(currencyId), currencyId };
+      };
+      for (let index = 0; index + 1 < boundaries.length; index += 1) {
+        const from = boundaries[index]!;
+        const to = boundaries[index + 1]!;
+        if (from.tonnage.id !== null && from.tonnage.id === to.tonnage.id) {
+          continue;
+        }
+        const loadsInTramo = loads.filter((load) => {
+          const time = toMillis(load.dateCreated);
+          return !Number.isNaN(time) && time > from.atMs && time <= to.atMs;
+        });
+        // Identidad por denominación: contado inicial + cargues del tramo − contado final −
+        // rechazo NUEVO (el rechazo que baja se vació: no es entrega y no suma).
+        const denominations = new Map<
+          string,
+          { currencyId: number | null; dpFrom: number; dpTo: number; loaded: number; rjFrom: number; rjTo: number; value: string }
+        >();
+        const detailKey = (detail: { idCurrencyDenomination: number | null; denominationValue: string | number | null }) =>
+          `${detail.idCurrencyDenomination ?? "?"}|${String(detail.denominationValue ?? "")}`;
+        const denominationEntry = (
+          detail: { idCurrencyDenomination: number | null; denominationValue: string | number | null },
+        ) => {
+          const key = detailKey(detail);
+          let entry = denominations.get(key);
+          if (!entry) {
+            entry = {
+              currencyId: currencyKeyOfDetail(detail).currencyId,
+              dpFrom: 0,
+              dpTo: 0,
+              loaded: 0,
+              rjFrom: 0,
+              rjTo: 0,
+              value: String(detail.denominationValue ?? "0"),
+            };
+            denominations.set(key, entry);
+          }
+          return entry;
+        };
+        for (const detail of from.tonnage.details) {
+          const entry = denominationEntry(detail);
+          entry.dpFrom = Math.max(0, toInt(detail.quantityDp));
+          entry.rjFrom = Math.max(0, toInt(detail.quantityRj));
+        }
+        for (const detail of to.tonnage.details) {
+          const entry = denominationEntry(detail);
+          entry.dpTo = Math.max(0, toInt(detail.quantityDp));
+          entry.rjTo = Math.max(0, toInt(detail.quantityRj));
+        }
+        for (const load of loadsInTramo) {
+          for (const detail of load.details) {
+            denominationEntry(detail).loaded += Math.max(0, toInt(detail.quantity));
+          }
+        }
+        // Acumulado por moneda: salida del tramo y conteos de cada extremo (en unidades
+        // valorizadas; el conteo que SUBE deja la salida negativa y no se declara).
+        const byCurrencyOutflow = new Map<string, bigint>();
+        const byCurrencyFrom = new Map<string, bigint>();
+        const byCurrencyTo = new Map<string, bigint>();
+        const currencyIdByKey = new Map<string, number | null>();
+        for (const entry of denominations.values()) {
+          const key = entry.currencyId === null ? "none" : String(entry.currencyId);
+          currencyIdByKey.set(key, entry.currencyId);
+          const outflowUnits = entry.dpFrom + entry.loaded - entry.dpTo - Math.max(0, entry.rjTo - entry.rjFrom);
+          byCurrencyOutflow.set(key, (byCurrencyOutflow.get(key) ?? 0n) + unitsValueCents(entry.value, outflowUnits));
+          byCurrencyFrom.set(key, (byCurrencyFrom.get(key) ?? 0n) + unitsValueCents(entry.value, entry.dpFrom));
+          byCurrencyTo.set(key, (byCurrencyTo.get(key) ?? 0n) + unitsValueCents(entry.value, entry.dpTo));
+        }
+        // Pagos DENTRO del tramo, por diferencia de acumulados de la evidencia:
+        // desde(b_from) − desde(b_to) = dispensado en (b_from, b_to].
+        for (const [key, outflowCents] of byCurrencyOutflow) {
+          const boundaryEntry =
+            tramoEvidence?.byCurrency.find((row) => (row.currencyId === null ? "none" : String(row.currencyId)) === key) ?? null;
+          const cumulative = (atMs: number): bigint | null => {
+            const boundary = boundaryEntry?.dispensedSinceBoundaries.find(
+              (candidate) => candidate !== null && candidate.atMs === atMs,
+            );
+            return boundary === undefined || boundary === null ? null : decimalToCents(boundary.value);
+          };
+          const fromCumulative = cumulative(from.atMs);
+          const toCumulative = cumulative(to.atMs);
+          const paymentsCents = fromCumulative !== null && toCumulative !== null ? fromCumulative - toCumulative : null;
+          const sinPagoCents = paymentsCents === null ? null : outflowCents - paymentsCents;
+          // Sin medición de pagos NO se declara un «sin pago»: se declaran los conteos y la
+          // falta de medición. Con medición, sólo lo que supera la tolerancia es noticia.
+          const tol = tolerance(outflowCents > 0n ? outflowCents : 1n);
+          const declare = sinPagoCents !== null ? sinPagoCents > tol : outflowCents > tol;
+          if (!declare) {
+            continue;
+          }
+          const list = tramosByCurrency.get(key) ?? [];
+          list.push({
+            fromArqueo: { at: from.tonnage.dateCreated ?? null, id: from.tonnage.id ?? null },
+            toArqueo: { at: to.tonnage.dateCreated ?? null, id: to.tonnage.id ?? null },
+            fromValue: centsToDecimal(byCurrencyFrom.get(key) ?? 0n),
+            toValue: centsToDecimal(byCurrencyTo.get(key) ?? 0n),
+            outflow: centsToDecimal(outflowCents),
+            payments: paymentsCents === null ? null : centsToDecimal(paymentsCents),
+            sinPago: sinPagoCents === null ? null : centsToDecimal(sinPagoCents),
+          });
+          tramosByCurrency.set(key, list);
+        }
+      }
+    })();
+
     const currencies: DispensingReconciliationCurrencyRow[] = [...currencyKeys.entries()]
       .map(([key, currency]) => {
         const detailEntry = evidenceByCurrency.get(key) ?? null;
@@ -1172,6 +1355,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
           periodTotal,
           systemTotal,
           transactions: detailEntry?.payoutTransactions ?? 0,
+          tramos: fallbackRow ? [] : (tramosByCurrency.get(key) ?? []),
         } satisfies DispensingReconciliationCurrencyRow;
       })
       .sort((left, right) => (left.label ?? "").localeCompare(right.label ?? ""));
@@ -1299,6 +1483,10 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
         periodStartTonnage === null
           ? null
           : { at: periodStartTonnage.dateCreated ?? null, id: periodStartTonnage.id ?? null },
+      windowArqueo:
+        lastTonnage === null
+          ? null
+          : { at: lastTonnage.dateCreated ?? null, id: lastTonnage.id ?? null },
       returnAmountTotal: input.cashDispensedTotal ?? null,
       systemSource,
       systemSourceConflict,

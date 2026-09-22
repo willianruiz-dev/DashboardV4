@@ -51,6 +51,13 @@ export interface SystemDispensedCurrencyTotal {
    * compara con el cuadre físico de esa misma ventana. `null` = no se pidió la ventana.
    */
   dispensedSinceBase: { transactions: number; value: string } | null;
+  /**
+   * Dispensado DENTRO de cada frontera pedida `(frontera → ahora]`, alineado con
+   * `windows.sinceMs`. Por diferencia de acumulados se mide el tramo entre dos arqueos:
+   * `desde(b_i) − desde(b_j)` = pagos dentro de `(b_i, b_j]`. `null` = frontera no pedida
+   * o inválida (nunca se inventa la cifra).
+   */
+  dispensedSinceBoundaries: Array<{ atMs: number; transactions: number; value: string } | null>;
   /** Dispensado DENTRO de la ventana del último cargue `(último cargue → ahora]`. */
   dispensedSinceLastLoad: { transactions: number; value: string } | null;
   /** Unidades que los detalles muestran SALIENDO del dispensador (DP). */
@@ -116,6 +123,12 @@ export interface SystemDispensedEvidenceInput {
     baseAtMs?: number | null;
     /** Fecha del último cargue: ventana `(último cargue → ahora]`. */
     lastLoadAtMs?: number | null;
+    /**
+     * Fronteras adicionales (fechas de los arqueos del historial): acumulados
+     * `(frontera → ahora]` por moneda para auditar los tramos ENTRE arqueos consecutivos,
+     * que la ventana del arqueo base (el más reciente) no puede ver.
+     */
+    sinceMs?: readonly (number | null)[];
   } | null;
   /** Moneda declarada por el Pay+ (respaldo de etiqueta si el catálogo no responde). */
   machineCurrency?: { id: number; label: string | null } | null;
@@ -162,6 +175,8 @@ interface CurrencyAccumulator {
   /** Dispensado (y transacciones) DENTRO de la ventana del arqueo base. */
   sinceBase: bigint;
   sinceBaseTransactions: Set<number>;
+  /** Dispensado (y transacciones) DENTRO de cada frontera pedida `(frontera → ahora]`. */
+  sinceBoundaries: Array<{ cents: bigint; transactions: Set<number> }>;
   /** Dispensado (y transacciones) DENTRO de la ventana del último cargue. */
   sinceLastLoad: bigint;
   sinceLastLoadTransactions: Set<number>;
@@ -230,6 +245,7 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
       payoutTransactions: new Set<number>(),
       sinceBase: 0n,
       sinceBaseTransactions: new Set<number>(),
+      sinceBoundaries: sinceBoundariesMs.map(() => ({ cents: 0n, transactions: new Set<number>() })),
       sinceLastLoad: 0n,
       sinceLastLoadTransactions: new Set<number>(),
       units: 0,
@@ -243,6 +259,12 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
   const lastLoadAtMs = input.windows?.lastLoadAtMs ?? null;
   const hasBaseWindow = baseAtMs !== null && Number.isFinite(baseAtMs);
   const hasLastLoadWindow = lastLoadAtMs !== null && Number.isFinite(lastLoadAtMs);
+  // Fronteras de tramos: se conservan las POSICIONES del pedido (las inválidas quedan en
+  // `null`) y cada acumulado lleva su `atMs`, para que el consumidor alinee por fecha y no
+  // por orden de llegada.
+  const sinceBoundariesMs = (input.windows?.sinceMs ?? []).map((value) =>
+    value !== null && Number.isFinite(value) ? value : null,
+  );
 
   let acceptedTotal = 0n;
   let dispensedTotal = 0n;
@@ -275,6 +297,17 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
       accumulator.sinceLastLoad += value;
       accumulator.sinceLastLoadTransactions.add(transactionId);
       dispensedSinceLastLoadTotal += value;
+    }
+    for (let index = 0; index < sinceBoundariesMs.length; index += 1) {
+      const boundary = sinceBoundariesMs[index] ?? null;
+      if (boundary === null || at <= boundary) {
+        continue;
+      }
+      const bucket = accumulator.sinceBoundaries[index];
+      if (bucket) {
+        bucket.cents += value;
+        bucket.transactions.add(transactionId);
+      }
     }
   };
 
@@ -362,6 +395,15 @@ export function buildSystemDispensedEvidence(input: SystemDispensedEvidenceInput
       dispensedSinceBase: hasBaseWindow
         ? { transactions: entry.sinceBaseTransactions.size, value: centsToDecimal(entry.sinceBase) }
         : null,
+      dispensedSinceBoundaries: sinceBoundariesMs.map((atMs, index) => {
+        if (atMs === null) {
+          return null;
+        }
+        const bucket = entry.sinceBoundaries[index];
+        return bucket === undefined
+          ? null
+          : { atMs, transactions: bucket.transactions.size, value: centsToDecimal(bucket.cents) };
+      }),
       dispensedSinceLastLoad: hasLastLoadWindow
         ? { transactions: entry.sinceLastLoadTransactions.size, value: centsToDecimal(entry.sinceLastLoad) }
         : null,

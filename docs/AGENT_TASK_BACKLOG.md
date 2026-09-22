@@ -291,6 +291,34 @@
     —debe registrarse—; (2) el baúl reporta sólo lo cargado, sin el sobrante anterior, y entonces
     la lectura del baúl no sirve como inventario (revisar con el proveedor).
 
+20. **B-20 — PROPUESTA (pendiente de aprobación): registro de retiros por cargue.** No existe
+    API de retiros (bolsa/vaciamiento del baúl), así que el sobrante retirado al cargar sólo se
+    puede DECLARAR («salida sin pago») y no conciliar. Propuesta: tabla de retiros por cargue con
+    fecha, monto por denominación y quién lo retiró, para que el cuadre del siguiente período los
+    descuente y el veredicto pase de «retiro» a «periodo». Requiere definir el origen del dato
+    (¿lo registra el operador en el tablero o el backend?).
+
+21. **B-21 — RESUELTO: la tarjeta confundía el arqueo de la referencia con el que abre la
+    ventana, y no veía los tramos entre arqueos.** Tercera vuelta del caso Inder 1 (ID 70,
+    2026-09-22): con los datos reales, la tarjeta citaba «el baúl tenía $288.000 en el arqueo
+    #5680 del 19 de sept (referencia anterior al período)» y en la misma frase hablaba de
+    «pagos registrados desde ese arqueo: $0» — pero ESA ventana no arranca en el #5680 sino en
+    el arqueo MÁS RECIENTE (#5692, 13:59:54, 25 s antes del cargue): dos arqueos distintos que
+    el texto fundía en uno. Y el bajón real del día —**$124.000 entre los arqueos #5690 y
+    #5692** con sólo $1.000 de pagos— quedaba INVISIBLE, porque la ventana del arqueo base
+    abre después de ese tramo. Corrección: (a) `check.windowArqueo` publica el arqueo que abre
+    la ventana y la tarjeta lo nombra con id y fecha («ventana del arqueo #5692 del …»), igual
+    que ya hacía con la referencia del período; (b) nueva auditoría de **tramos entre arqueos
+    consecutivos** (`row.tramos`): salida contada por moneda (conteo inicial + cargues del
+    tramo − conteo final − rechazo nuevo) menos los pagos registrados DENTRO del tramo,
+    medidos por diferencia de acumulados de la evidencia (`dispensedSinceBoundaries`, fronteras
+    que el hook arma con las fechas de todos los arqueos); sólo con cobertura completa del
+    barrido (truncado = «sin medición», nunca un «sin pago» fabricado); se declara con ambos
+    conteos visibles y sólo cuando queda dinero sin pago más allá de la tolerancia. Fixtures
+    §11-bis rehechas con la forma real (#5680 sábado → #5690 mañana → #5692 base) y contrastes:
+    tramo explicado no se declara, barrido truncado declara «sin medición» (160/160). Sigue
+    pendiente B-20 (registro de retiros) para conciliar en vez de declarar.
+
 17. **B-18 — RESUELTO: el semáforo del inicio acusaba a las máquinas recién cargadas.**
     Caso real (Pay+ Inder 2, ID 71, 2026-09-22): el inicio mostraba «2 posibles atascos» en el
     100 y el 500 («No bajó en el arqueo (~49 entre arqueos) y conserva 100 unidad(es)») y el

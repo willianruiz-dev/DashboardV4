@@ -250,6 +250,13 @@ export function useDispensingMetrics(
       windows: {
         baseAtMs: baseAt === null ? null : Date.parse(baseAt),
         lastLoadAtMs: lastLoadAt === null ? null : Date.parse(lastLoadAt),
+        // Fronteras de TODOS los arqueos con fecha legible: el cuadre audita los tramos
+        // ENTRE arqueos consecutivos (bajones del baúl que la ventana del arqueo base,
+        // el más reciente, no puede ver). Las inválidas viajan como `null`.
+        sinceMs: sources.tonnages.map((tonnage) => {
+          const time = tonnage.dateCreated ? Date.parse(tonnage.dateCreated) : null;
+          return time !== null && Number.isFinite(time) ? time : null;
+        }),
       },
     });
   }, [args?.machineCurrency, denominationsQuery.data, paypadId, scan, sources.loads, sources.tonnages, storageQuery.data]);

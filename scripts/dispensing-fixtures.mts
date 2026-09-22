@@ -1294,10 +1294,18 @@ const inder1Storage = [
   storageRow("2000", 5, "290", { dispensingTotal: "580000", min: "5" }),
   storageRow("500", 6, "20", { dispensingTotal: "10000", min: "5" }),
 ];
-// Arqueo de referencia ANTERIOR al período (#5690): el baúl tenía 288.000 cuando terminó el día
-// anterior (dato real de la captura). No es el inventario de arranque de «Hoy», así que la resta
-// del período tampoco sirve para acusar: mide ventanas que no cubren los mismos pagos.
-const inder1PeriodStart = tonnage(5690, "2026-09-22T04:59:00.000Z", [
+// Arqueo de referencia ANTERIOR al período (#5680, sábado 19 sept, 12:56:44 p. m. COT): el
+// baúl tenía 288.000 (dato real de la captura del 2026-09-22). Puede ser de DÍAS atrás: no
+// representa el inventario de arranque de «Hoy» y la resta del período no puede acusar.
+const inder1PeriodStart = tonnage(5680, "2026-09-19T17:56:44.000Z", [
+  tonnageDetail("2000", 5, "130"),
+  tonnageDetail("500", 6, "56"),
+]);
+// Arqueo intermedio de la mañana (9:40 a. m. COT): SIGUE en 288.000 — nada movió el fin de
+// semana. Este conteo es el que expone el bajón del tramo: de aquí al #5692 el baúl bajó
+// 124.000 con 1.000 de pagos registrados, y la ventana del arqueo base (que abre en el
+// #5692) NO lo puede ver. Antes este tramo era invisible para la tarjeta.
+const inder1Mid = tonnage(5690, "2026-09-22T14:40:00.000Z", [
   tonnageDetail("2000", 5, "130"),
   tonnageDetail("500", 6, "56"),
 ]);
@@ -1311,25 +1319,30 @@ const inder1Load = load(77, "2026-09-22T19:00:19.000Z", [
   loadDetail(5, "2000", "290"),
   loadDetail(6, "500", "20"),
 ], "590000");
-// Pagos del día: 10 aprobadas con Σ devuelto 1.000, TODOS antes del arqueo base (mañana).
+// Pagos del día: 10 aprobadas con Σ devuelto 1.000, TODOS entre el arqueo intermedio #5690
+// (9:40 a. m.) y el base #5692 (1:59:54 p. m.): los 1.000 caen DENTRO del tramo del bajón.
 const inder1Transactions = [
-  transaction(800, "2026-09-22T14:10:00.000Z", [{ denominationId: 6, operation: "Entregado", operationId: 2, quantity: "1" }], {
+  transaction(800, "2026-09-22T15:10:00.000Z", [{ denominationId: 6, operation: "Entregado", operationId: 2, quantity: "1" }], {
     income: "20000",
     real: "19000",
     ret: "500",
   }),
-  transaction(801, "2026-09-22T15:20:00.000Z", [{ denominationId: 6, operation: "Entregado", operationId: 2, quantity: "1" }], {
+  transaction(801, "2026-09-22T16:20:00.000Z", [{ denominationId: 6, operation: "Entregado", operationId: 2, quantity: "1" }], {
     income: "20000",
     real: "19000",
     ret: "500",
   }),
 ];
+const inder1SinceMs = [inder1PeriodStart, inder1Mid, inder1Base].map((tonnageEntry) => {
+  const time = tonnageEntry.dateCreated ? Date.parse(tonnageEntry.dateCreated) : null;
+  return time !== null && Number.isFinite(time) ? time : null;
+});
 const inder1Evidence = buildSystemDispensedEvidence({
   denominations: inder1Denominations,
   machineCurrency: { id: COP, label: "COP" },
   scan: scan(inder1Transactions),
   storage: inder1Storage,
-  windows: { baseAtMs: Date.parse(inder1Base.dateCreated ?? ""), lastLoadAtMs: Date.parse(inder1Load.dateCreated ?? "") },
+  windows: { baseAtMs: Date.parse(inder1Base.dateCreated ?? ""), lastLoadAtMs: Date.parse(inder1Load.dateCreated ?? ""), sinceMs: inder1SinceMs },
 });
 
 function inder1Metrics(systemEvidence: ReturnType<typeof buildSystemDispensedEvidence>, loads = [inder1Load]) {
@@ -1345,7 +1358,7 @@ function inder1Metrics(systemEvidence: ReturnType<typeof buildSystemDispensedEvi
     rangeTo: new Date("2026-09-22T23:59:59.000Z"),
     storage: inder1Storage,
     systemEvidence,
-    tonnages: [inder1PeriodStart, inder1Base],
+    tonnages: [inder1PeriodStart, inder1Mid, inder1Base],
   });
 }
 
@@ -1353,16 +1366,34 @@ const inder1 = inder1Metrics(inder1Evidence);
 const inder1Check = inder1.reconciliationCheck;
 const inder1Row = inder1Check?.currencies[0] ?? null;
 console.log(
-  `  Inder 1 «Hoy»: período=${String(inder1Row?.periodTotal)} (exacto=${String(inder1Row?.periodExact)} · inventario de inicio=${String(inder1Row?.periodStartStockValue)}) · ventana del arqueo=${String(inder1Row?.arqueoTotal)} · pagos desde el arqueo=${String(inder1Row?.paymentsSinceBase)} · sin pago=${String(inder1Row?.outflowWithoutPayment)} · sistema del período=${String(inder1Row?.systemTotal)} · veredicto=${String(inder1Check?.best)}`,
+  `  Inder 1 «Hoy»: período=${String(inder1Row?.periodTotal)} (exacto=${String(inder1Row?.periodExact)} · inventario de inicio=${String(inder1Row?.periodStartStockValue)}) · ventana del arqueo=${String(inder1Row?.arqueoTotal)} · pagos desde el arqueo=${String(inder1Row?.paymentsSinceBase)} · sin pago=${String(inder1Row?.outflowWithoutPayment)} · sistema del período=${String(inder1Row?.systemTotal)} · tramos=${JSON.stringify((inder1Row?.tramos ?? []).map((tramo) => `#${tramo.fromArqueo.id}→#${tramo.toArqueo.id} salida ${tramo.outflow} sin pago ${tramo.sinPago ?? "sin medición"}`))} · veredicto=${String(inder1Check?.best)}`,
 );
 expect(
-  "el cuadre del período NO es exacto: el arqueo de referencia anterior al período tenía 288.000",
+  "el cuadre del período NO es exacto: el arqueo de referencia anterior al período (sábado) tenía 288.000",
   inder1Row?.periodExact === false &&
     inder1Row?.periodStartStockValue === "288000" &&
     inder1Row?.periodTotal === "0" &&
-    inder1Check?.periodStartArqueo?.id === 5690 &&
-    inder1Check?.periodStartArqueo?.at === "2026-09-22T04:59:00.000Z",
+    inder1Check?.periodStartArqueo?.id === 5680 &&
+    inder1Check?.periodStartArqueo?.at === "2026-09-19T17:56:44.000Z",
   JSON.stringify({ exacto: inder1Row?.periodExact, referencia: inder1Row?.periodStartStockValue, arqueo: inder1Check?.periodStartArqueo }),
+);
+expect(
+  "la ventana del arqueo abre en el arqueo MÁS RECIENTE (#5692, 25 s antes del cargue), no en la referencia del sábado",
+  inder1Check?.windowArqueo?.id === 5692 && inder1Check?.windowArqueo?.at === "2026-09-22T18:59:54.000Z",
+  JSON.stringify({ ventana: inder1Check?.windowArqueo, referencia: inder1Check?.periodStartArqueo }),
+);
+expect(
+  "tramo entre arqueos consecutivos: del #5690 al #5692 bajaron 124.000 y los pagos del tramo explican 1.000 → 123.000 sin pago registrado",
+  inder1Row?.tramos.length === 1 &&
+    inder1Row?.tramos[0]?.fromArqueo.id === 5690 &&
+    inder1Row?.tramos[0]?.fromArqueo.at === "2026-09-22T14:40:00.000Z" &&
+    inder1Row?.tramos[0]?.toArqueo.id === 5692 &&
+    inder1Row?.tramos[0]?.fromValue === "288000" &&
+    inder1Row?.tramos[0]?.toValue === "164000" &&
+    inder1Row?.tramos[0]?.outflow === "124000" &&
+    inder1Row?.tramos[0]?.payments === "1000" &&
+    inder1Row?.tramos[0]?.sinPago === "123000",
+  JSON.stringify(inder1Row?.tramos),
 );
 expect(
   "el lado del sistema se mide en LA MISMA ventana: 0 pagos después del arqueo (los 1.000 del día fueron antes)",
@@ -1415,9 +1446,9 @@ const inder1Missing = (() => {
       machineCurrency: { id: COP, label: "COP" },
       scan: scan(pagosDespues),
       storage: inder1Storage,
-      windows: { baseAtMs: Date.parse(inder1Base.dateCreated ?? ""), lastLoadAtMs: Date.parse(inder1Load.dateCreated ?? "") },
+      windows: { baseAtMs: Date.parse(inder1Base.dateCreated ?? ""), lastLoadAtMs: Date.parse(inder1Load.dateCreated ?? ""), sinceMs: inder1SinceMs },
     }),
-    tonnages: [inder1PeriodStart, inder1Base],
+    tonnages: [inder1PeriodStart, inder1Mid, inder1Base],
   });
 })();
 expect(
@@ -1451,7 +1482,7 @@ const inder1SinReemplazo = (() => {
     rangeTo: new Date("2026-09-22T23:59:59.000Z"),
     storage,
     systemEvidence: inder1Evidence,
-    tonnages: [inder1PeriodStart, inder1Base],
+    tonnages: [inder1PeriodStart, inder1Mid, inder1Base],
   });
 })();
 expect(
@@ -1470,6 +1501,79 @@ expect(
     inder1SinVentana.reconciliationCheck?.blocker?.code === "inventario-previo" &&
     inder1SinVentana.reconciliationCheck?.differences.periodo === "-1000",
   JSON.stringify({ best: inder1SinVentana.reconciliationCheck?.best, blocker: inder1SinVentana.reconciliationCheck?.blocker }),
+);
+
+// CONTRASTE: el bajón del tramo queda EXPLICADO por los pagos registrados DENTRO del tramo
+// (124.000 de salida contada, 124.000 de pagos): el tramo NO se declara — sólo es noticia
+// el dinero que ningún pago explica, no cualquier movimiento del baúl.
+const inder1TramoExplicado = (() => {
+  const pagosEnTramo = [
+    transaction(830, "2026-09-22T16:00:00.000Z", [{ denominationId: 5, operation: "Entregado", operationId: 2, quantity: "62" }], {
+      income: "150000",
+      real: "26000",
+      ret: "124000",
+    }),
+  ];
+  return computeDispensingMetrics({
+    byState: { Aprobada: { count: 10, total: "125000" } },
+    cashDispensedTotal: "124000",
+    denominations: inder1Denominations,
+    lastTonnage: inder1Base,
+    loads: [inder1Load],
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-22T20:45:00.000Z"),
+    rangeFrom: new Date("2026-09-22T05:00:00.000Z"),
+    rangeTo: new Date("2026-09-22T23:59:59.000Z"),
+    storage: inder1Storage,
+    systemEvidence: buildSystemDispensedEvidence({
+      denominations: inder1Denominations,
+      machineCurrency: { id: COP, label: "COP" },
+      scan: scan(pagosEnTramo),
+      storage: inder1Storage,
+      windows: { baseAtMs: Date.parse(inder1Base.dateCreated ?? ""), lastLoadAtMs: Date.parse(inder1Load.dateCreated ?? ""), sinceMs: inder1SinceMs },
+    }),
+    tonnages: [inder1PeriodStart, inder1Mid, inder1Base],
+  });
+})();
+expect(
+  "tramo explicado por los pagos registrados DENTRO del tramo: no se declara (sólo es noticia el dinero sin pago)",
+  inder1TramoExplicado.reconciliationCheck?.currencies[0]?.tramos.length === 0,
+  JSON.stringify(inder1TramoExplicado.reconciliationCheck?.currencies[0]?.tramos),
+);
+
+// CONTRASTE: barrido TRUNCADO. Los pagos del tramo no se pueden afirmar (la cobertura es
+// parcial): el tramo se declara con «sin medición» de pagos, nunca con un «sin pago»
+// fabricado con la parte del barrido que sí llegó. Es el mismo candado de paymentsSinceBase.
+const inder1TramoTruncado = (() => {
+  const pagosParciales = inder1Transactions.slice(0, 1);
+  return computeDispensingMetrics({
+    byState: { Aprobada: { count: 10, total: "10000" } },
+    cashDispensedTotal: "1000",
+    denominations: inder1Denominations,
+    lastTonnage: inder1Base,
+    loads: [inder1Load],
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-22T20:45:00.000Z"),
+    rangeFrom: new Date("2026-09-22T05:00:00.000Z"),
+    rangeTo: new Date("2026-09-22T23:59:59.000Z"),
+    storage: inder1Storage,
+    systemEvidence: buildSystemDispensedEvidence({
+      denominations: inder1Denominations,
+      machineCurrency: { id: COP, label: "COP" },
+      scan: scan(pagosParciales, { truncated: true }),
+      storage: inder1Storage,
+      windows: { baseAtMs: Date.parse(inder1Base.dateCreated ?? ""), lastLoadAtMs: Date.parse(inder1Load.dateCreated ?? ""), sinceMs: inder1SinceMs },
+    }),
+    tonnages: [inder1PeriodStart, inder1Mid, inder1Base],
+  });
+})();
+expect(
+  "barrido truncado: el tramo se declara con pagos «sin medición», sin fabricar un «sin pago» con cobertura parcial",
+  inder1TramoTruncado.reconciliationCheck?.currencies[0]?.tramos.length === 1 &&
+    inder1TramoTruncado.reconciliationCheck?.currencies[0]?.tramos[0]?.outflow === "124000" &&
+    inder1TramoTruncado.reconciliationCheck?.currencies[0]?.tramos[0]?.payments === null &&
+    inder1TramoTruncado.reconciliationCheck?.currencies[0]?.tramos[0]?.sinPago === null,
+  JSON.stringify(inder1TramoTruncado.reconciliationCheck?.currencies[0]?.tramos),
 );
 
 /* ------------------------------------------- 12) ODRB Rionegro (id 1288): AP ≠ DP y monedas mezcladas */
