@@ -1,22 +1,25 @@
 "use client";
 
-import { TriangleAlert } from "lucide-react";
+import { RefreshCw, TriangleAlert } from "lucide-react";
 import { Fragment } from "react";
 
 import { BackendStaticImage } from "@/components/shared/backend-static-image";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { CurrencyDenomination } from "@/features/denominations/schemas";
 import type {
+  DispensingArqueoHistory,
   DispensingBaseSelfCheck,
   DispensingCurrencyIdentity,
   DispensingCurrencyTotal,
   DispensingDenominationRow,
 } from "@/features/dispensing-control/dispensing-metrics";
-import { LOW_BALANCE_TOLERANCE } from "@/features/dispensing-control/dispensing-metrics";
+import { formatElapsed, LOW_BALANCE_TOLERANCE } from "@/features/dispensing-control/dispensing-metrics";
+import { DISPENSING_STORAGE_STALE_MS } from "@/features/dispensing-control/schemas";
 import { backendStaticFilePath } from "@/lib/files/backend-static-path";
 import { formatDashboardDateTime } from "@/lib/formatters/date";
 import { formatDashboardMoney } from "@/lib/formatters/money";
@@ -43,7 +46,13 @@ export function LowBalanceAlert({ balance, minDpQuantity }: LowBalanceAlertProps
 }
 
 interface DenominationTableProps {
-  /** Fecha del arqueo base (`null` = la máquina nunca se arqueó). */
+  /**
+   * Lo que se LLEYÓ del historial de arqueos (nº de arqueos, id del base, arqueos sin fecha).
+   * Sirve para que «arqueo base» sea verificable contra «Cargues y arqueos» en vez de un dato
+   * sin origen visible.
+   */
+  arqueoHistory?: DispensingArqueoHistory | null;
+  /** Fecha del arqueo base (`null` = sin arqueo base utilizable). */
   baseAt?: string | null;
   /** Totales valorizados del cuadre del período (por moneda cuando hay varias). */
   totals: { dispensed: string; loaded: string; rejected: string; storage: string };
@@ -61,6 +70,12 @@ interface DenominationTableProps {
   /** Fecha del último cargue (`null` = sin cargues: sin cuadre desde el cargue). */
   lastLoadAt?: string | null;
   loading?: boolean;
+  /** Reloj actual (ms epoch) para decir hace cuánto se leyó el baúl. */
+  nowMs?: number | null;
+  /** Refresca el snapshot del baúl (storage) sin recargar la página. */
+  onRefresh?: (() => void) | null;
+  /** Momento (ms epoch) en que el tablero leyó el baúl; `null` = lectura no disponible. */
+  snapshotReadAtMs?: number | null;
   rangeLabel: string;
   rows: readonly DispensingDenominationRow[];
   /** Inventario por moneda: sólo se usa para advertir que los totales no se suman. */
@@ -136,6 +151,7 @@ function loadsTraceCaption(row: DispensingDenominationRow): string | null {
 }
 
 export function DenominationTable({
+  arqueoHistory = null,
   baseAt = null,
   baseSelfCheck = null,
   denominations,
@@ -144,8 +160,11 @@ export function DenominationTable({
   identityByCurrency = [],
   lastLoadAt = null,
   loading = false,
+  nowMs = null,
+  onRefresh = null,
   rangeLabel,
   rows,
+  snapshotReadAtMs = null,
   totals,
   totalsByCurrency = [],
 }: DenominationTableProps) {
@@ -154,6 +173,18 @@ export function DenominationTable({
   const shortageRows = rows.filter((row) => row.shortage);
   // Máquina de cambio divisa: los importes de monedas distintas no se suman entre sí.
   const multiCurrency = rows.some((row) => row.currencyId !== (rows[0]?.currencyId ?? null));
+  // Frescura del snapshot: el cuadre entero (dispensado = cargado − en dispensadores −
+  // rechazado) sale de la misma lectura del baúl. Sin decirlo, dos pantallas que leen el
+  // mismo API en momentos distintos parecen contradecirse.
+  const snapshotElapsedMs =
+    snapshotReadAtMs === null || nowMs === null ? null : Math.max(0, nowMs - snapshotReadAtMs);
+  const snapshotStale = snapshotElapsedMs !== null && snapshotElapsedMs > DISPENSING_STORAGE_STALE_MS;
+  const snapshotText =
+    snapshotElapsedMs === null
+      ? null
+      : snapshotStale
+        ? `Lectura del baúl: hace ${formatElapsed(snapshotElapsedMs)} · puede no coincidir con la máquina (actualiza la lectura antes de arquear)`
+        : `Lectura del baúl: hace ${formatElapsed(snapshotElapsedMs)}`;
 
   return (
     <Card className="animate-rise overflow-hidden p-0">
@@ -163,9 +194,23 @@ export function DenominationTable({
             <h2 className="text-base font-semibold tracking-tight">Desglose por denominaciones</h2>
             <p className="text-sm text-muted-foreground">
               <span className="font-medium text-foreground">Cargado = dispensado + rechazado + en dispensadores</span>. El período ({rangeLabel})
-              manda el «Cargado»; «En dispensadores» es lo que la máquina reporta hoy y «Rechazado» lo que quedó en el baúl de rechazo
+              manda el «Cargado»; «En dispensadores» es lo que la máquina reportó en la última lectura del tablero y «Rechazado» lo que quedó en el
+              baúl de rechazo
               {lastLoadAt ? ` (último cargue: ${formatDashboardDateTime(lastLoadAt)})` : ""}.
-              {hasBase ? ` Arqueo de referencia: ${formatDashboardDateTime(baseAt)}.` : " Sin arqueo de apertura, el inventario previo no es auditable: registra un arqueo antes de cargar."}
+              {hasBase ? (
+                <>
+                  {" "}Arqueo base: {arqueoHistory?.baseId ? `#${arqueoHistory.baseId}` : "no identificado"} del {formatDashboardDateTime(baseAt)}
+                  {arqueoHistory && arqueoHistory.count > 0
+                    ? ` (${arqueoHistory.count} arqueo${arqueoHistory.count === 1 ? "" : "s"} del historial de esta máquina)`
+                    : ""}
+                  {arqueoHistory && arqueoHistory.withoutDate > 0
+                    ? `; ${arqueoHistory.withoutDate} sin fecha utilizable quedaron fuera`
+                    : ""}
+                  .
+                </>
+              ) : (
+                " Sin arqueo de apertura, el inventario previo no es auditable: registra un arqueo antes de cargar."
+              )}
               {multiCurrency ? " Cada baúl indica su moneda: los importes de monedas distintas no se suman." : ""}
             </p>
             {multiCurrency && totalsByCurrency.length > 1 ? (
@@ -196,7 +241,19 @@ export function DenominationTable({
               </p>
             ) : null}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {onRefresh ? (
+              <Button
+                onClick={onRefresh}
+                size="sm"
+                title="Vuelve a leer el baúl (dispensadores, aceptador y rechazo) en el API y rehace el cuadre."
+                type="button"
+                variant="ghost"
+              >
+                <RefreshCw aria-hidden="true" className="size-3.5" />
+                Actualizar lectura
+              </Button>
+            ) : null}
             {shortageRows.length > 0 ? (
               <Badge variant="destructive" className="gap-1.5" title="El conteo físico subió desde la base: posible cargue sin registrar o descuadre previo.">
                 <TriangleAlert aria-hidden="true" className="size-3.5" />
@@ -241,9 +298,12 @@ export function DenominationTable({
                 <p className="text-xs text-muted-foreground">Rechazado</p>
                 <p className="font-numeric font-semibold text-red-500 dark:text-red-400">{formatDashboardMoney(rejectedTotal)}</p>
               </div>
-              <div title="Saldo del dispensador que la máquina reporta HOY (api/PayPad/GetStorage, dpStored). Se refresca en cada consulta.">
-                <p className="text-xs text-muted-foreground">En dispensadores (virtual hoy)</p>
+              <div title="Saldo del dispensador que la máquina reportó en la última lectura (api/PayPad/GetStorage, dpStored). El mismo API que lee el diálogo «Realizar arqueo»: si allí aparecen otras unidades, esa lectura es de otro momento.">
+                <p className="text-xs text-muted-foreground">En dispensadores (reportado por la máquina)</p>
                 <p className="font-numeric font-semibold">{formatDashboardMoney(storageTotal)}</p>
+                {snapshotText ? (
+                  <p className={cn("text-xs", snapshotStale ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>{snapshotText}</p>
+                ) : null}
               </div>
               {multiCurrency && identityByCurrency.length > 0 ? (
                 /* Una máquina multimoneda no cierra en agregado: cierra POR MONEDA. */
@@ -291,7 +351,7 @@ export function DenominationTable({
                     <TableHead className="text-right" title={`Cargues dentro del período consultado (${rangeLabel}).`}>Cargado</TableHead>
                     <TableHead className="text-right" title="Dispensado = cargado − en dispensadores hoy − rechazado.">Dispensado</TableHead>
                     <TableHead className="text-right" title="Baúl de rechazo hoy y su cambio desde el arqueo.">Rechazado (RJ)</TableHead>
-                    <TableHead className="text-right" title="Saldo del dispensador que reporta la máquina hoy.">En dispensadores</TableHead>
+                    <TableHead className="text-right" title="Saldo del dispensador que la máquina reportó en la última lectura del tablero (dpStored).">En dispensadores</TableHead>
                     <TableHead>Estado</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -369,7 +429,7 @@ export function DenominationTable({
                             ) : null}
                           </TableCell>
                           <TableCell className={cn("text-right align-top", tinted)}>
-                            <span className="font-numeric font-semibold" title="Saldo del dispensador que reporta la máquina hoy (dpStored).">
+                            <span className="font-numeric font-semibold" title="Saldo del dispensador que reporta la máquina (dpStored) en la última lectura del tablero.">
                               {row.balance}
                             </span>
                             <span className="block text-xs text-muted-foreground">{formatDashboardMoney(row.balanceValue)}</span>

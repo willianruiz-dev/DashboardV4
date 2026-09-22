@@ -12,9 +12,11 @@ import { useTransactionSearch } from "@/features/transactions/hooks";
 import type { TransactionSearchRequest, TransactionStateBucket } from "@/features/transactions/schemas";
 import { localDateTimeToApiIso } from "@/lib/formatters/date";
 import type { JamScanPayload } from "./dispensing-jams";
+import { createDispensingMetricsInput } from "./dispensing-input";
 import { computeDispensingMetrics, type DispensingMetrics } from "./dispensing-metrics";
 import { buildSystemDispensedEvidence, type SystemDispensedEvidence } from "./system-dispensed";
 import {
+  DISPENSING_STORAGE_REFRESH_MS,
   JAM_SCAN_MAX_TRANSACTIONS,
   RETURN_ALERTS_REFRESH_MS,
   type DispensingRange,
@@ -118,6 +120,12 @@ export interface DispensingMetricsQuery {
   metrics: DispensingMetrics | null;
   now: Date;
   refetchAll: () => void;
+  /**
+   * Error de la lectura del historial de arqueos. NO es fatal (a diferencia de los demás):
+   * el panel puede mostrar el inventario y los cargues sin base física, y sobre todo no debe
+   * afirmar que la máquina nunca se ha arqueado cuando lo que falló fue la lectura.
+   */
+  tonnageError: Error | null;
   /** Datos crudos de las mismas queries, para el motor de atascos (sin refetch extra). */
   sources: DispensingMetricsSources;
   /**
@@ -141,7 +149,9 @@ export function useDispensingMetrics(
   options: { scan?: JamScanPayload | null } = {},
 ): DispensingMetricsQuery {
   const paypadId = args?.paypadId ?? null;
-  const storageQuery = usePaypadStorage(paypadId);
+  // El inventario en dispensadores es un snapshot del API: sin este refresco el cuadre compara
+  // las transacciones de ahora contra el baúl de cuando se abrió la página.
+  const storageQuery = usePaypadStorage(paypadId, { refetchInterval: paypadId === null ? undefined : DISPENSING_STORAGE_REFRESH_MS });
   const tonnagesQuery = usePaypadTonnages(paypadId);
   const loadsQuery = usePaypadLoads(paypadId);
   const denominationsQuery = useDenominations(paypadId !== null);
@@ -173,9 +183,11 @@ export function useDispensingMetrics(
 
   const searchQuery = useTransactionSearch(searchRequest);
 
+  const tonnageError = tonnagesQuery.error instanceof Error ? tonnagesQuery.error : null;
+  // Los arqueos NO entran en esta lista: el panel funciona sin base física y, además, su fallo
+  // tiene su propio aviso («no se pudo leer el historial»), no una pantalla de error completa.
   const errors: (unknown | null)[] = [
     storageQuery.error,
-    tonnagesQuery.error,
     loadsQuery.error,
     searchQuery.error,
     denominationsQuery.error,
@@ -211,47 +223,8 @@ export function useDispensingMetrics(
     [args?.machineCurrency, denominationsQuery.data, paypadId, scan, storageQuery.data],
   );
 
-  const metrics = useMemo<DispensingMetrics | null>(() => {
-    if (args === null || paypadId === null) {
-      return null;
-    }
-
-    const fromIso = localDateTimeToApiIso(args.from);
-    const toIso = localDateTimeToApiIso(args.to, { endOfMinute: true });
-    if (!fromIso || !toIso) {
-      return null;
-    }
-
-    const rangeFrom = new Date(fromIso);
-    const rangeTo = new Date(toIso);
-    const tonnages = tonnagesQuery.data ?? [];
-    const lastTonnage = tonnages.reduce<Tonnage | null>((best, tonnage) => {
-      const time = new Date(tonnage.dateCreated ?? "").getTime();
-      if (Number.isNaN(time)) {
-        return best;
-      }
-      if (best === null) {
-        return tonnage;
-      }
-      const bestTime = new Date(best.dateCreated ?? "").getTime();
-      return Number.isNaN(bestTime) || time > bestTime ? tonnage : best;
-    }, null);
-
-    return computeDispensingMetrics({
-      byState: searchQuery.data?.summary.byState ?? {},
-      cashDispensedTotal: searchQuery.data?.summary.cashDispensedTotal ?? null,
-      denominations: denominationsQuery.data ?? [],
-      lastTonnage,
-      loads: loadsQuery.data ?? [],
-      machineCurrency: args.machineCurrency ?? null,
-      now,
-      rangeFrom,
-      rangeTo,
-      systemEvidence,
-      storage: storageQuery.data ?? [],
-    });
-  }, [args, paypadId, searchQuery.data, storageQuery.data, tonnagesQuery.data, loadsQuery.data, denominationsQuery.data, now, systemEvidence]);
-
+  // Datos crudos de las mismas queries: alimentan el cuadre y el motor de atascos sin refetch
+  // extra. Se arman ANTES del cuadre porque son su insumo.
   const sources = useMemo<DispensingMetricsSources>(
     () =>
       paypadId === null
@@ -264,6 +237,36 @@ export function useDispensingMetrics(
           },
     [paypadId, searchQuery.data, loadsQuery.data, storageQuery.data, tonnagesQuery.data],
   );
+
+  const metrics = useMemo<DispensingMetrics | null>(() => {
+    if (args === null || paypadId === null) {
+      return null;
+    }
+
+    const fromIso = localDateTimeToApiIso(args.from);
+    const toIso = localDateTimeToApiIso(args.to, { endOfMinute: true });
+    if (!fromIso || !toIso) {
+      return null;
+    }
+
+    // El insumo se arma en un único lugar puro (`dispensing-input.ts`): así que el cuadre
+    // reciba TODOS los datos (arqueos incluidos) es una regresión cubierta por las fixtures.
+    return computeDispensingMetrics(
+      createDispensingMetricsInput({
+        arqueoHistoryError: tonnageError?.message ?? null,
+        cashDispensedTotal: searchQuery.data?.summary.cashDispensedTotal ?? null,
+        denominations: denominationsQuery.data ?? [],
+        machineCurrency: args.machineCurrency ?? null,
+        now,
+        rangeFrom: new Date(fromIso),
+        rangeTo: new Date(toIso),
+        sources,
+        // `dataUpdatedAt` es 0 antes de la primera respuesta: ese caso no es una lectura vieja.
+        storageReadAt: storageQuery.dataUpdatedAt > 0 ? storageQuery.dataUpdatedAt : null,
+        systemEvidence,
+      }),
+    );
+  }, [args, paypadId, searchQuery.data, denominationsQuery.data, now, sources, storageQuery.dataUpdatedAt, systemEvidence, tonnageError]);
 
   return {
     denominations: denominationsQuery.data ?? [],
@@ -283,6 +286,7 @@ export function useDispensingMetrics(
       }
     },
     sources,
+    tonnageError,
   };
 }
 

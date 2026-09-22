@@ -19,10 +19,15 @@
  *                     cargada − saldo, y el rechazo mostrado es el baúl actual (C10)
  *   alerta-atasco   – el semáforo del inicio: la máquina que sólo entrega 100 (caso Pay+
  *                     Inder 2) se avisa por arqueo; sin evidencia NO se avisa
+ *   arqueo-historial – lo que se LLEYÓ del historial de arqueos: «no pude leer» y «sin fecha»
+ *                     no son «esta máquina nunca se ha arqueado» (caso Pay+ Inder 2)
+ *   arqueo-insumo   – el insumo del cuadre incluye los arqueos: el rechazado del período es
+ *                     el CRECIMIENTO del baúl y hay referencia de inicio de período
  */
 import { summarizeMachineCurrencies } from "../src/features/dispensing-control/denomination-usage.ts";
 import { computeJamEarlyWarnings } from "../src/features/dispensing-control/jam-early-warning.ts";
 import { computeJamDiagnostics, type JamDiagnostics } from "../src/features/dispensing-control/dispensing-jams.ts";
+import { createDispensingMetricsInput } from "../src/features/dispensing-control/dispensing-input.ts";
 import { computeDispensingMetrics } from "../src/features/dispensing-control/dispensing-metrics.ts";
 import { buildSystemDispensedEvidence, isSystemEvidenceUsable } from "../src/features/dispensing-control/system-dispensed.ts";
 import { summarizeTransactionsByCurrency } from "../src/features/transactions/transaction-search.ts";
@@ -1458,6 +1463,129 @@ expect(
   "pero si salió dinero físico sin ninguna transacción, SÍ se acusa (dinero sin registro)",
   odrbQuietLeak.reconciliationCheck?.best === "ninguno" && odrbQuietLeak.reconciliationCheck?.blocker === null,
   JSON.stringify({ best: odrbQuietLeak.reconciliationCheck?.best, blocker: odrbQuietLeak.reconciliationCheck?.blocker }),
+);
+
+// ── Diagnóstico del historial de arqueos: «no pude leer» ≠ «nunca se ha arqueado» ────────
+// Caso reportado por el operador (Pay+ Inder 2): el panel decía «esta máquina nunca se ha
+// arqueado» mientras en «Cargues y arqueos» los arqueos estaban, normales, cada cuadre. El
+// diagnóstico ahora publica QUÉ se leyó para que la alerta no acuse a la máquina por un fallo
+// de lectura ni confunda un arqueo sin fecha con la ausencia de arqueos.
+function odrbHistoryCase(overrides: {
+  arqueoHistoryError?: string | null;
+  lastTonnage: ReturnType<typeof tonnage> | null;
+  storage?: ReturnType<typeof storageRow>[];
+  storageReadAt?: number | null;
+  tonnages: ReturnType<typeof tonnage>[];
+}) {
+  return computeDispensingMetrics({
+    arqueoHistoryError: overrides.arqueoHistoryError ?? null,
+    byState: {},
+    cashDispensedTotal: "0",
+    denominations: odrbDenominations,
+    lastTonnage: overrides.lastTonnage,
+    loads: odrbLoads,
+    machineCurrency: { id: COP, label: "COP" },
+    now: new Date("2026-09-21T02:00:00.000Z"),
+    rangeFrom: new Date("2026-09-20T12:00:00.000Z"),
+    rangeTo: new Date("2026-09-21T02:00:00.000Z"),
+    storage: overrides.storage ?? odrbQuietStorage,
+    storageReadAt: overrides.storageReadAt ?? null,
+    tonnages: overrides.tonnages,
+  });
+}
+
+const odrbHistoryReadAt = Date.parse("2026-09-21T01:58:00.000Z");
+const odrbHistory = odrbHistoryCase({
+  lastTonnage: odrbQuietBase,
+  storageReadAt: odrbHistoryReadAt,
+  tonnages: [
+    odrbQuietBase,
+    tonnage(51, "2026-09-18T10:00:00.000Z", [tonnageDetail("50000", 1, "4")]),
+    // Arqueo sin fecha: el API lo devolvió, pero no puede ser base del cuadre.
+    tonnage(50, "", [tonnageDetail("50000", 1, "4")]),
+  ],
+});
+expect(
+  "el historial declara la base elegida y cuántos arqueos leyó (con los sin fecha aparte)",
+  odrbHistory.reconciliation.arqueoHistory.baseId === 52 &&
+    odrbHistory.reconciliation.arqueoHistory.count === 3 &&
+    odrbHistory.reconciliation.arqueoHistory.withoutDate === 1 &&
+    odrbHistory.reconciliation.arqueoHistory.lastAt === "2026-09-19T10:00:00.000Z" &&
+    odrbHistory.reconciliation.arqueoHistory.errorMessage === null,
+  JSON.stringify(odrbHistory.reconciliation.arqueoHistory),
+);
+expect(
+  "la frescura de la lectura del baúl sale tal cual la midió el tablero",
+  odrbHistory.storageSnapshot.readAtMs === odrbHistoryReadAt,
+  String(odrbHistory.storageSnapshot.readAtMs),
+);
+
+const odrbHistoryFailed = odrbHistoryCase({
+  arqueoHistoryError: "Timeout del API",
+  lastTonnage: null,
+  storageReadAt: odrbHistoryReadAt,
+  tonnages: [],
+});
+expect(
+  "una lectura fallida NO se disfraza de «nunca se ha arqueado»: sin base, pero con el error publicado",
+  !odrbHistoryFailed.reconciliation.hasBase &&
+    odrbHistoryFailed.reconciliation.arqueoHistory.errorMessage === "Timeout del API" &&
+    odrbHistoryFailed.reconciliation.arqueoHistory.count === 0 &&
+    odrbHistoryFailed.reconciliation.arqueoHistory.lastAt === null,
+  JSON.stringify(odrbHistoryFailed.reconciliation.arqueoHistory),
+);
+
+const odrbHistoryNoDate = odrbHistoryCase({
+  lastTonnage: null,
+  tonnages: [tonnage(50, "", [tonnageDetail("50000", 1, "4")])],
+});
+expect(
+  "arqueos devueltos sin fecha se distinguen de «no hay arqueos» (y no hay mensaje de error)",
+  !odrbHistoryNoDate.reconciliation.hasBase &&
+    odrbHistoryNoDate.reconciliation.arqueoHistory.count === 1 &&
+    odrbHistoryNoDate.reconciliation.arqueoHistory.withoutDate === 1 &&
+    odrbHistoryNoDate.reconciliation.arqueoHistory.errorMessage === null &&
+    odrbHistoryNoDate.reconciliation.arqueoHistory.lastAt === null,
+  JSON.stringify(odrbHistoryNoDate.reconciliation.arqueoHistory),
+);
+
+// ── Insumo del cuadre: el historial de arqueos TIENE que llegar ──────────────────────────
+// Bug real de cableado: la pantalla no pasaba `tonnages` al cálculo, así que el módulo creía
+// que el período empezaba con los baúles vacíos: el «rechazado del período» se tomaba como el
+// baúl COMPLETO (no su crecimiento) y el dispensado salía más bajo en esas unidades, con la
+// referencia de inicio de período siempre ausente. El insumo ahora se arma en un solo lugar
+// puro y estas comprobaciones lo cubren.
+const wiringStorage = [
+  storageRow("50000", 1, "130", { dispensingTotal: "6500000", min: "5" }),
+  storageRow("1000", 5, "93", { dispensingTotal: "93000", min: "5", rejected: "5", rejectedTotal: "5000" }),
+];
+const wiringInput = createDispensingMetricsInput({
+  cashDispensedTotal: "0",
+  denominations: odrbDenominations,
+  machineCurrency: { id: COP, label: "COP" },
+  now: new Date("2026-09-21T02:00:00.000Z"),
+  rangeFrom: new Date("2026-09-20T12:00:00.000Z"),
+  rangeTo: new Date("2026-09-21T02:00:00.000Z"),
+  sources: { byState: {}, loads: odrbLoads, storage: wiringStorage, tonnages: [odrbQuietBase] },
+  storageReadAt: null,
+  systemEvidence: null,
+});
+expect(
+  "el insumo del cuadre incluye TODOS los arqueos y elige la base con fecha utilizable",
+  wiringInput.tonnages?.length === 1 && wiringInput.lastTonnage?.id === odrbQuietBase.id,
+  JSON.stringify({ lastTonnage: wiringInput.lastTonnage?.id, tonnages: wiringInput.tonnages?.length }),
+);
+const wiringMetrics = computeDispensingMetrics(wiringInput);
+expect(
+  "el rechazado del período es el CRECIMIENTO del baúl (5 − 2 de la base), no el baúl entero",
+  wiringMetrics.rows.find((row) => row.denominationValue === "1000")?.rejectedInPeriod === 3,
+  String(wiringMetrics.rows.find((row) => row.denominationValue === "1000")?.rejectedInPeriod),
+);
+const wiringSinArqueos = computeDispensingMetrics({ ...wiringInput, tonnages: undefined });
+expect(
+  "sin el historial el mismo cuadre contaría el baúl completo (5): por eso el insumo no puede olvidarlo",
+  wiringSinArqueos.rows.find((row) => row.denominationValue === "1000")?.rejectedInPeriod === 5,
+  String(wiringSinArqueos.rows.find((row) => row.denominationValue === "1000")?.rejectedInPeriod),
 );
 
 // ── Máquina de UNA moneda con detalle: el comportamiento validado no cambia ────────────

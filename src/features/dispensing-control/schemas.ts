@@ -195,3 +195,18 @@ export type ReturnAlertsResponse = z.infer<typeof returnAlertsResponseSchema>;
 
 /** Cadencia del sondeo de la alerta del inicio (no hay WebSocket: ver B-01). */
 export const RETURN_ALERTS_REFRESH_MS = 30_000;
+
+/**
+ * Cadencia del snapshot del baúl en el control de dispensado. El backend cachea
+ * `PayPad/GetStorage` un minuto, así que refrescar cada minuto es el mínimo intervalo útil:
+ * el cuadre (dispensado = cargado − en dispensadores − rechazado) y la columna «En
+ * dispensadores» dejan de envejecer respecto al arqueo que el operador abre en paralelo.
+ */
+export const DISPENSING_STORAGE_REFRESH_MS = 60_000;
+
+/**
+ * Antigüedad a partir de la cual el snapshot del baúl se marca en ámbar: con más de cinco
+ * minutos, el inventario que muestra el panel puede ya no ser el de la máquina y el cuadre
+ * (y cualquier arqueo que se abra en paralelo) parte de otro número.
+ */
+export const DISPENSING_STORAGE_STALE_MS = 5 * 60_000;

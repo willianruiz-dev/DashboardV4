@@ -1,13 +1,15 @@
 "use client";
 
-import { CircleCheck, PackageOpen, TimerReset, TriangleAlert, XCircle } from "lucide-react";
+import { CircleCheck, PackageOpen, RefreshCw, TimerReset, TriangleAlert, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
 import { usePaypads } from "@/features/paypads/hooks";
+import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
 import { isSuperAdminRole } from "@/lib/roles/super-admin";
 import { currencyShortLabel } from "@/features/dispensing-control/denomination-currency";
 import {
@@ -145,7 +147,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
   const currencyTotals = metrics?.storageTotalsByCurrency ?? [];
   const storageByCurrencyNote =
     currencyTotals.length > 1
-      ? `Virtual hoy por moneda: ${currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")}`
+      ? `En dispensadores por moneda (lectura del baúl): ${currencyTotals.map((entry) => `${entry.label ?? "Moneda no declarada"} ${formatDashboardMoney(entry.total)}`).join(" · ")}`
       : "";
   // Cuadre del período: cargado = dispensado + rechazado + en dispensadores.
   const loadedTotal = metrics?.dp.loadedTotal ?? "0";
@@ -164,6 +166,24 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
   const mixedCurrencyNote = multiCurrency ? " · suma monedas distintas (no comparable)" : "";
   const hasArqueoBase = metrics?.reconciliation.hasBase ?? false;
   const lastLoadElapsed = metrics?.lastLoad.elapsedMs ?? null;
+  // Diagnóstico del historial de arqueos: distingue «nunca se ha arqueado» de «no se pudo
+  // leer» y de «los arqueos vienen sin fecha». Sin esto, un fallo de lectura del API se
+  // presentaba como una acusación sobre la máquina.
+  const arqueoHistory = metrics?.reconciliation.arqueoHistory ?? null;
+  const tonnageError = metricsQuery.tonnageError;
+  // Frescura de la lectura del baúl: el cuadre entero (dispensado = cargado − en
+  // dispensadores − rechazado) y la columna «En dispensadores» salen de ese snapshot.
+  const snapshotReadAtMs = metrics?.storageSnapshot.readAtMs ?? null;
+  const snapshotElapsedMs = snapshotReadAtMs === null ? null : Math.max(0, metricsQuery.now.getTime() - snapshotReadAtMs);
+  const machineIdentity =
+    selectedPaypad === null
+      ? null
+      : [
+          getPaypadDisplayName(selectedPaypad),
+          `ID ${selectedPaypad.id}`,
+          selectedPaypad.description?.trim() || null,
+          selectedPaypad.office?.trim() || null,
+        ].filter((part): part is string => part !== null && part !== "");
   // El cuadre físico NO depende del filtro: va del arqueo base a hoy. Cuando el período
   // elegido empieza después del arqueo base, las columnas físicas abarcan más tiempo que
   // AP/RJ — el caso real «Desde último cargue» posterior al arqueo, que hace ver una
@@ -256,6 +276,28 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
           />
         ) : (
           <>
+            {/* Identidad y frescura: con varias máquinas homónimas (o dos pantallas abiertas en
+                momentos distintos) el operador necesita saber DE QUÉ Pay+ y DE CUÁNDO son las
+                cifras antes de compararlas con un arqueo. */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+              <p>
+                Máquina: <span className="font-medium text-foreground">{machineIdentity?.join(" · ") ?? "—"}</span>
+                {snapshotElapsedMs === null
+                  ? null
+                  : ` · Baúl leído hace ${formatElapsed(snapshotElapsedMs)}`}
+                {tonnageError
+                  ? " · Historial de arqueos: lectura fallida"
+                  : arqueoHistory
+                    ? arqueoHistory.count === 0
+                      ? " · Sin arqueos en el historial del API"
+                      : ` · ${arqueoHistory.count} arqueo${arqueoHistory.count === 1 ? "" : "s"} en el historial`
+                    : ""}
+              </p>
+              <Button onClick={metricsQuery.refetchAll} size="sm" type="button" variant="outline">
+                <RefreshCw aria-hidden="true" className="size-3.5" />
+                Actualizar lecturas
+              </Button>
+            </div>
             {multiCurrency ? (
               <Alert variant="warning">
                 <TriangleAlert aria-hidden="true" className="size-4" />
@@ -309,14 +351,54 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               </Alert>
             ) : null}
             {!hasArqueoBase && metrics && !metricsQuery.isLoading ? (
-              <Alert variant="warning">
-                <TriangleAlert aria-hidden="true" className="size-4" />
-                <AlertTitle>Sin arqueo base</AlertTitle>
-                <AlertDescription>
-                  Esta máquina nunca se ha arqueado: la salida física (DP) no es calculable y la tabla muestra el inventario actual como
-                  referencia. Registra un arqueo en Pay+ → Arquear para activar el cuadre completo.
-                </AlertDescription>
-              </Alert>
+              tonnageError ? (
+                <Alert variant="warning">
+                  <TriangleAlert aria-hidden="true" className="size-4" />
+                  <AlertTitle>No se pudo leer el historial de arqueos</AlertTitle>
+                  <AlertDescription>
+                    La lectura de arqueos de esta máquina falló ({tonnageError.message}). Sin ella no hay base física, pero eso NO significa
+                    que la máquina nunca se haya arqueado: reintenta la lectura y, si sigue fallando, revisa «Cargues y arqueos» en la ficha
+                    del Pay+.
+                  </AlertDescription>
+                  <Button className="mt-2" onClick={metricsQuery.refetchAll} size="sm" type="button" variant="outline">
+                    <RefreshCw aria-hidden="true" className="size-3.5" />
+                    Reintentar lecturas
+                  </Button>
+                </Alert>
+              ) : (arqueoHistory?.count ?? 0) > 0 ? (
+                <Alert variant="warning">
+                  <TriangleAlert aria-hidden="true" className="size-4" />
+                  <AlertTitle>Los arqueos leídos no sirven como base</AlertTitle>
+                  <AlertDescription>
+                    El API devolvió {arqueoHistory?.count} arqueo{arqueoHistory?.count === 1 ? "" : "s"} para esta máquina, pero{" "}
+                    {arqueoHistory?.withoutDate === arqueoHistory?.count
+                      ? "ninguno trae fecha utilizable"
+                      : `${arqueoHistory?.withoutDate} sin fecha utilizable`}
+                    : el cuadre físico no puede partir de ellos y la tabla muestra el inventario actual como referencia. Compáralo en
+                    «Cargues y arqueos»: un arqueo sin fecha no permite calcular la salida física (DP).
+                  </AlertDescription>
+                  <Button className="mt-2" onClick={metricsQuery.refetchAll} size="sm" type="button" variant="outline">
+                    <RefreshCw aria-hidden="true" className="size-3.5" />
+                    Reintentar lecturas
+                  </Button>
+                </Alert>
+              ) : (
+                <Alert variant="warning">
+                  <TriangleAlert aria-hidden="true" className="size-4" />
+                  <AlertTitle>Sin arqueo base</AlertTitle>
+                  <AlertDescription>
+                    El historial de arqueos que consulta el panel (api/Tonnage/GetByPaypad) no devolvió registros para esta máquina
+                    {machineIdentity ? ` (${machineIdentity.join(" · ")})` : ""}: con lo que hay, la salida física (DP) no es calculable y la
+                    tabla muestra el inventario actual como referencia. Si en «Cargues y arqueos» sí aparecen arqueos, el problema es de
+                    lectura del API, no del cuadre: reintenta y repórtalo. Si de verdad no hay ninguno, registra un arqueo en Pay+ → Arquear
+                    para activar el cuadre completo.
+                  </AlertDescription>
+                  <Button className="mt-2" onClick={metricsQuery.refetchAll} size="sm" type="button" variant="outline">
+                    <RefreshCw aria-hidden="true" className="size-3.5" />
+                    Reintentar lecturas
+                  </Button>
+                </Alert>
+              )
             ) : null}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard
@@ -375,6 +457,7 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
             {/* Orden pedido por operación: primero el desglose por denominaciones
                 (inicial/cargada/entregada/rechazo/saldo) y debajo la detección de atascos. */}
             <DenominationTable
+              arqueoHistory={arqueoHistory}
               baseAt={metrics?.reconciliation.baseAt ?? null}
               baseSelfCheck={metrics?.reconciliation.baseSelfCheck ?? null}
               denominations={metricsQuery.denominations}
@@ -383,7 +466,10 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               identityByCurrency={metrics?.identityByCurrency ?? []}
               lastLoadAt={metrics?.lastLoad.at ?? null}
               loading={metricsQuery.isLoading && metrics === null}
+              nowMs={metricsQuery.now.getTime()}
+              onRefresh={metricsQuery.refetchAll}
               rangeLabel={rangeLabel}
+              snapshotReadAtMs={snapshotReadAtMs}
               totals={{ dispensed: dispensedTotal ?? "0", loaded: loadedTotal, rejected: rejectedTotal, storage: storageTotal }}
               rows={metrics?.rows ?? []}
               totalsByCurrency={metrics?.storageTotalsByCurrency ?? []}

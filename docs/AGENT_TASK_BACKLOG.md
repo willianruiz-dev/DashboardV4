@@ -205,6 +205,34 @@
     al dispensado (`odrbQuietDrained`). Evidencia: `npm run fixtures:dispensing` 127/127, `npm run
     check`, `npm run lint` y `npx tsc --noEmit` limpios.
 
+11. **B-12 — RESUELTO: «esta máquina nunca se ha arqueado» sobre un historial que sí existe.** Caso
+    real (Pay+ Inder 2, 2026-09-22): el operador veía la alerta «Sin arqueo base — esta máquina nunca
+    se ha arqueado» mientras en «Cargues y arqueos» los arqueos estaban, normales, cada cuadre. La
+    frase juntaba tres situaciones distintas. Ahora `reconciliation.arqueoHistory` publica QUÉ se leyó
+    (`count`, `baseId`, `lastAt`, `withoutDate`, `errorMessage`) y en pantalla hay tres avisos con
+    reintento: «no se pudo leer el historial» (con el mensaje del API), «los arqueos leídos no sirven
+    como base» (sin fecha utilizable) y «sin arqueo base» (lectura vacía, con la máquina consultada y
+    la indicación de contrastar con «Cargues y arqueos»). El error de arqueos dejó de tumbar el panel
+    completo: es no fatal y sólo afecta al cuadre físico. Evidencia: `arqueo-historial` en las
+    fixtures (134/134).
+
+12. **B-13 — RESUELTO: la lectura del baúl envejecía sin decirlo.** El operador comparó el diálogo
+    «Realizar arqueo» (77 billetes de 2.000 en el dispensador) contra el control de dispensado (50) y
+    no le cuadró. Las dos pantallas leen el MISMO endpoint (`api/PayPad/GetStorage`, `dpStored`), de
+    modo que sólo pueden diferir por el momento de la lectura; el panel no decía cuándo había leído y
+    no refrescaba. Ahora la columna se llama «En dispensadores (reportado por la máquina)», muestra
+    hace cuánto se leyó (ámbar pasados 5 min), se refresca cada 60 s, tiene «Actualizar lecturas» y el
+    panel declara la máquina exacta (`nombre · ID · descripción · sucursal`) y cuántos arqueos leyó,
+    para que una cifra no se atribuya al Pay+ equivocado.
+
+13. **B-14 — RESUELTO: el cuadre no recibía el historial de arqueos.** `computeDispensingMetrics`
+    recibe la referencia del inicio de período en `input.tonnages` y la pantalla no lo pasaba: el
+    módulo asumía baúles vacíos al inicio, contaba el baúl de rechazo COMPLETO como rechazado del
+    período (en vez de su crecimiento) y el dispensado salía más bajo en esas unidades; tampoco podía
+    declarar el inventario previo (`stockAtPeriodStart`). El insumo del cuadre se arma ahora en un
+    único lugar puro (`dispensing-input.ts`), cubierto por las fixtures `arqueo-insumo` (con la base
+    en 2 unidades y 5 hoy, el rechazado del período es 3; sin el historial sería 5).
+
 ## SUPUESTOS Y BLOQUEOS
 
 1. **B-01 — Eventos realtime:** no se encontró un contrato WebSocket/SignalR ni una implementación de Hub en el backend legado. No se inventó una conexión ni payload; la alerta de errores de devuelta del inicio usa **sondeo del navegador cada 30 s** con caché corta en el BFF (§9 de `docs/DISPENSING_JAM_DETECTION.md`), no un canal servidor→navegador.

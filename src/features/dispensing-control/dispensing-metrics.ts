@@ -65,6 +65,36 @@ export interface DispensingMetricsInput {
    */
   systemEvidence?: SystemDispensedEvidence | null;
   storage: readonly PayPadStorage[];
+  /**
+   * Mensaje del error al leer el historial de arqueos (`api/Tonnage/GetByPaypad`). Sin este
+   * dato, un historial VACÍO y una lectura FALLIDA se veían igual y el panel terminaba
+   * afirmando que la máquina nunca se ha arqueado. `null` = la lectura respondió.
+   */
+  arqueoHistoryError?: string | null;
+  /**
+   * Momento (ms epoch) en que el tablero leyó el baúl (`dpStored`) que alimenta el cuadre.
+   * El inventario en dispensadores es un snapshot: si nadie lo refresca, el cuadre entero
+   * compara el sistema de hoy contra un inventario de hace horas.
+   */
+  storageReadAt?: number | null;
+}
+
+/**
+ * Lo que el panel LLEYÓ del historial de arqueos. Existe para no confundir tres cosas muy
+ * distintas: «la máquina nunca se ha arqueado», «el API no devolvió registros» y «los arqueos
+ * vienen sin fecha utilizable». El texto de la alerta depende de cuál de las tres es.
+ */
+export interface DispensingArqueoHistory {
+  /** Id del arqueo usado como base (`null` = ninguno utilizable). */
+  baseId: number | null;
+  /** Arqueos que devolvió el historial para esta máquina (0 = la lectura vino vacía). */
+  count: number;
+  /** Mensaje del error de lectura (`null` = la lectura respondió). */
+  errorMessage: string | null;
+  /** Fecha del arqueo base (`null` = ninguno con fecha utilizable). */
+  lastAt: string | null;
+  /** Arqueos del historial sin fecha utilizable: no sirven como base del cuadre. */
+  withoutDate: number;
 }
 
 export interface DispensingDenominationRow {
@@ -332,6 +362,12 @@ export interface DispensingMetrics {
   /** Verificación del cuadre físico contra `Σ returnAmount` (lo que el sistema registró). */
   reconciliationCheck: DispensingReconciliationCheck | null;
   /**
+   * Frescura de la lectura del baúl (`dpStored`) que alimenta el cuadre y las columnas
+   * «Dispensado»/«En dispensadores». El operador la necesita para saber si las cifras que ve
+   * son las de la máquina ahora o las de la última vez que el tablero consultó.
+   */
+  storageSnapshot: { readAtMs: number | null };
+  /**
    * Ventana del cuadre físico: del arqueo base hasta hoy (o del período UI si no hay
    * base). `baseSelfCheck` valida que el arqueo base cuadre consigo mismo; `null` cuando
    * no es comparable (sin base, sin detalles, cantidades firmadas legacy o varias monedas).
@@ -345,6 +381,12 @@ export interface DispensingMetrics {
     /** Cargues desde el último cargue (incluido él): base del cuadre operativo. */
     loadsSinceLastLoadCount: number;
     loadsSinceLastLoadTotal: string;
+    /**
+     * Lo que se LLEYÓ del historial de arqueos. Permite decir en pantalla si la máquina
+     * nunca se ha arqueado, si el API no devolvió registros o si los arqueos vienen sin
+     * fecha, en vez de culpar a la máquina por un fallo de lectura.
+     */
+    arqueoHistory: DispensingArqueoHistory;
   };
   rj: { count: number; currentTotal: string; physicalTotal: string | null; total: string };
   /** Etiquetas de las monedas que la máquina trabaja hoy (p. ej. `["COP","USD"]`). */
@@ -390,7 +432,7 @@ function toInt(value: string | number | null | undefined, fallback = 0): number 
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function toMillis(value: string | null | undefined): number {
+export function toMillis(value: string | null | undefined): number {
   if (!value) {
     return Number.NaN;
   }
@@ -539,6 +581,16 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
   // período UI como referencia y la salida física queda indeterminada.
   const baseTime = toMillis(lastTonnage?.dateCreated ?? null);
   const hasBase = lastTonnage !== null && !Number.isNaN(baseTime);
+  // Diagnóstico del historial: qué se LLEYÓ (no qué se supone). `tonnages` puede venir vacío
+  // cuando nadie lo pasa; en ese caso el único arqueo conocido es la base ya elegida.
+  const arqueoHistoryList = input.tonnages ?? (lastTonnage ? [lastTonnage] : []);
+  const arqueoHistory: DispensingArqueoHistory = {
+    baseId: lastTonnage?.id ?? null,
+    count: arqueoHistoryList.length,
+    errorMessage: input.arqueoHistoryError ?? null,
+    lastAt: lastTonnage?.dateCreated ?? null,
+    withoutDate: arqueoHistoryList.filter((tonnage) => Number.isNaN(toMillis(tonnage.dateCreated ?? null))).length,
+  };
   const loadsSinceBase = hasBase
     ? loads.filter((load) => {
         const time = toMillis(load.dateCreated);
@@ -1186,6 +1238,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       total: lastLoadInRange ? (lastLoad?.totalLoaded ?? null) : rangeLoadsTotal === "0" ? null : rangeLoadsTotal,
     },
     reconciliationCheck,
+    storageSnapshot: { readAtMs: input.storageReadAt ?? null },
     reconciliation: {
       baseAt: lastTonnage?.dateCreated ?? null,
       baseSelfCheck,
@@ -1194,6 +1247,7 @@ export function computeDispensingMetrics(input: DispensingMetricsInput): Dispens
       loadsSinceBaseTotal,
       loadsSinceLastLoadCount: loadsSinceLastLoad.length,
       loadsSinceLastLoadTotal,
+      arqueoHistory,
     },
     rj: {
       count: byState[RETURNED_ERROR_STATE]?.count ?? 0,

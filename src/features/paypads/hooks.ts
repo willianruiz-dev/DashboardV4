@@ -50,7 +50,7 @@ export function usePaypad(id: number | null) {
   });
 }
 
-export function usePaypadStorage(id: number | null) {
+export function usePaypadStorage(id: number | null, options: { refetchInterval?: number } = {}) {
   return useQuery({
     enabled: id !== null,
     queryFn: () => {
@@ -60,6 +60,9 @@ export function usePaypadStorage(id: number | null) {
       return getPaypadStorage(id);
     },
     queryKey: id === null ? ["paypads", "storage", "none"] : paypadQueryKeys.storage(id),
+    // Sólo el control de dispensado lo pide: su cuadre sale del snapshot del baúl y no puede
+    // quedarse mostrando un inventario viejo mientras un arqueo lee otro.
+    refetchInterval: options.refetchInterval,
   });
 }
 

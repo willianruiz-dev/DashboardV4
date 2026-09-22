@@ -158,6 +158,36 @@ El código distingue «no se puede comparar» (neutro) de «no coincide» (adver
 mezcla. `systemSource` dice qué cifra se usó (`"detalles"` o `"returnAmount"`), `currencies[]` trae
 la comparación por moneda (con lo aceptado aparte) y `note` explica la salvedad del origen.
 
+### «Sin arqueo base» decía tres cosas distintas con la misma frase
+
+> Caso real reportado por el operador (Pay+ Inder 2, 2026-09-22): el panel decía «esta máquina nunca
+> se ha arqueado» y, en «Cargues y arqueos», los arqueos estaban ahí, normales, cada cuadre.
+
+La alerta se dispara cuando `reconciliation.hasBase` es falso, y eso ocurre por tres motivos muy
+distintos que antes compartían texto (una acusación sobre la máquina):
+
+| Lo que pasó | Qué dice ahora el panel | Datos que lo distinguen |
+| --- | --- | --- |
+| La lectura del historial falló | «No se pudo leer el historial de arqueos» + el mensaje del API + reintento. **No** afirma nada sobre la máquina | `reconciliation.arqueoHistory.errorMessage ≠ null` (el error de arqueos es **no fatal**: el panel sigue mostrando inventario y cargues) |
+| El API devolvió arqueos, pero ninguno trae fecha utilizable | «Los arqueos leídos no sirven como base» + cuántos quedaron fuera | `arqueoHistory.count > 0` y `withoutDate === count` |
+| El historial vino vacío | «Sin arqueo base» + la máquina consultada + que, si en «Cargues y arqueos» aparecen, el problema es de lectura del API | `arqueoHistory.count === 0` y `errorMessage === null` |
+
+`reconciliation.arqueoHistory` publica `count`, `baseId`, `lastAt`, `withoutDate` y `errorMessage`.
+Cuando sí hay base, la tabla escribe cuál es (`arqueo #id del <fecha>`, «N arqueos del historial de
+esta máquina», «M sin fecha utilizable quedaron fuera») para que la base sea verificable contra
+«Cargues y arqueos» en vez de un dato sin origen visible.
+
+### El insumo del cuadre (un bug de cableado, no de fórmula)
+
+`computeDispensingMetrics` no puede adivinar qué baúles estaban cargados al inicio del período: lo
+recibe en `input.tonnages`. La pantalla **no lo estaba pasando**, así que el módulo creía que el
+período empezaba con los baúles vacíos y tomaba el **baúl de rechazo completo** como «rechazado del
+período» (en vez de su crecimiento desde la base), bajando el dispensado en esas unidades y sin
+poder declarar qué había en los dispensadores al inicio de la ventana. El insumo se arma ahora en un
+único lugar puro (`dispensing-input.ts`, `createDispensingMetricsInput`) y las regresiones lo cubren:
+con la base declarando 2 unidades en el baúl y 5 hoy, `rejectedInPeriod = 3` (y 5 si el historial no
+llega — el número equivocado que se veía antes).
+
 ## 4. La tabla (IMPLEMENTADA)
 
 | Billete | Cargado | Dispensado | Rechazado (RJ) | En dispensadores | Estado |
@@ -194,7 +224,12 @@ dashboard viejo).
 ## 6. Decisiones cerradas y pendientes menores
 
 - **D1 — «Virtual» (= «En dispensadores»):** es `dpStored`, el saldo del dispensador que reporta la
-  máquina (Pay+ → Almacenamiento → Dispensadores). No existe ningún campo `virtual` en el API.
+  máquina (Pay+ → Almacenamiento → Dispensadores). No existe ningún campo `virtual` en el API. Es la
+  MISMA lectura que muestra el diálogo «Realizar arqueo» (`api/PayPad/GetStorage`), así que dos
+  pantallas sólo pueden diferir por el MOMENTO de la lectura: por eso la columna se rotula «En
+  dispensadores (reportado por la máquina)», muestra hace cuánto se leyó, se refresca cada 60 s
+  (`DISPENSING_STORAGE_REFRESH_MS`) y ofrece «Actualizar lectura» (ámbar si pasa de
+  `DISPENSING_STORAGE_STALE_MS` = 5 min). No es un dato «virtual» que el tablero invente.
 - **D2 — Saldo de apertura:** **cerrado: el cargue abre el cuadre del período** (decisión del
   operador, 2026-09-21). El inventario previo del arqueo queda como auditoría, no en la suma.
 - **D4 — Origen de la cifra del sistema (cerrado 2026-09-21, caso ODRB Rionegro id 1288):** la
