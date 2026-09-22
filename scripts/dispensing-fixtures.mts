@@ -23,6 +23,8 @@
  *                     no son «esta máquina nunca se ha arqueado» (caso Pay+ Inder 2)
  *   arqueo-insumo   – el insumo del cuadre incluye los arqueos: el rechazado del período es
  *                     el CRECIMIENTO del baúl y hay referencia de inicio de período
+ *   alerta-recargada – el semáforo del inicio descuenta los CARGUES: una máquina recargada no se
+ *                     acusa por «no bajar» en el arqueo si el neto explica el movimiento
  *   esperado-real   – conciliación por denominación: valor exacto = correcto, faltante con
  *                     saldo = revisar el módulo, faltante sin saldo = agotamiento (no atasco)
  */
@@ -1090,6 +1092,7 @@ const earlyPayouts = Array.from({ length: 12 }, (_, index) => ({
 
 const inderEarly = computeJamEarlyWarnings({
   from: "2026-09-21T05:00:00.000Z",
+  loads: [],
   storage: earlyStorage,
   to: "2026-09-21T23:59:59.999Z",
   tonnages: [
@@ -1110,6 +1113,7 @@ expect("el 2.000 no se avisa: ningún pago de 1.500 alcanzaba su valor", inderEa
 // Contraprueba: los mismos pagos, pero el arqueo muestra que el 500 SÍ bajó → no hay aviso.
 const inderHealthy = computeJamEarlyWarnings({
   from: "2026-09-21T05:00:00.000Z",
+  loads: [],
   storage: earlyStorage,
   to: "2026-09-21T23:59:59.999Z",
   tonnages: [
@@ -1123,6 +1127,7 @@ expect("si el 500 bajó en el arqueo no se avisa (no es un falso positivo)", ind
 // Contraprueba: pagos de 400 (el 500 no cabía) → demanda insuficiente, no se avisa.
 const inderSmallPayouts = computeJamEarlyWarnings({
   from: "2026-09-21T05:00:00.000Z",
+  loads: [],
   storage: earlyStorage,
   to: "2026-09-21T23:59:59.999Z",
   tonnages: [
@@ -1136,6 +1141,7 @@ expect("con pagos de 400 el 500 no tiene demanda y no se avisa", inderSmallPayou
 // Contraprueba: sin pagos suficientes el semáforo se declara, no se inventa.
 const inderQuiet = computeJamEarlyWarnings({
   from: "2026-09-21T05:00:00.000Z",
+  loads: [],
   storage: earlyStorage,
   to: "2026-09-21T23:59:59.999Z",
   tonnages: [
@@ -1149,12 +1155,113 @@ expect("con menos de 3 pagos el semáforo no concluye", inderQuiet.warnings.leng
 // Contraprueba: sin arqueos comparables no hay aviso (se declara el motivo).
 const inderNoArqueo = computeJamEarlyWarnings({
   from: "2026-09-21T05:00:00.000Z",
+  loads: [],
   storage: earlyStorage,
   to: "2026-09-21T23:59:59.999Z",
   tonnages: [earlyWarningTonnage("2026-09-21T21:30:00.000Z", { "100": "120", "500": "34" })],
   transactions: earlyPayouts,
 });
 expect("sin dos arqueos comparables no hay aviso", inderNoArqueo.warnings.length === 0 && (inderNoArqueo.note ?? "").includes("arqueos"), String(inderNoArqueo.note));
+
+// Caso real reportado en el inicio (2026-09-22): «No me cuadra esta alerta, esa máquina fue
+// cargada hace poco». El semáforo comparaba `base − actual` entre dos arqueos SIN descontar los
+// cargues, así que una máquina recargada aparecía como «no bajó» aunque hubiera entregado. El
+// movimiento válido es el NETO (`base + cargues − actual`), la misma regla del motor completo.
+const reloadBase = earlyWarningTonnage("2026-09-21T11:30:47.000Z", { "100": "51", "500": "34", "2000": "139" });
+const reloadCurrent = earlyWarningTonnage("2026-09-22T10:21:56.000Z", { "100": "100", "500": "34", "2000": "98" });
+const reloadLoads = [
+  {
+    dateCreated: "2026-09-22T09:00:00.000Z",
+    details: [
+      { denominationValue: "100", quantity: "49" },
+      { denominationValue: "2000", quantity: "0" },
+    ],
+  },
+];
+/** Pagos posteriores al cargue: la demanda que sí es evidencia contra el módulo. */
+const reloadPayoutsAfterLoad = Array.from({ length: 12 }, (_, index) => ({
+  dateCreated: `2026-09-22T${String(10 + index).padStart(2, "0")}:05:00.000Z`,
+  returnAmount: "1500",
+  stateTransaction: "Aprobada",
+}));
+
+const reloadedSilent = computeJamEarlyWarnings({
+  from: "2026-09-22T05:00:00.000Z",
+  loads: reloadLoads,
+  storage: earlyStorage,
+  to: "2026-09-22T23:59:59.999Z",
+  tonnages: [reloadBase, reloadCurrent],
+  transactions: reloadPayoutsAfterLoad,
+});
+const reloadedRow = reloadedSilent.warnings.find((warning) => warning.denominationValue === "100") ?? null;
+expect(
+  "máquina recargada: el aviso declara el cargue y el movimiento NETO, no el −49 bruto",
+  reloadedRow?.grossMovement === -49 && reloadedRow?.loadedUnits === 49 && reloadedRow?.netMovement === 0,
+  JSON.stringify(reloadedRow),
+);
+expect(
+  "y sólo cuenta la demanda POSTERIOR al cargue (12 pagos después de las 9:00)",
+  reloadedRow?.demand === 12 && reloadedRow?.demandFrom === "2026-09-22T09:00:00.000Z",
+  JSON.stringify({ demand: reloadedRow?.demand, from: reloadedRow?.demandFrom }),
+);
+expect(
+  "el 2.000 que sí bajó (139 → 98) es el compensador: entregó 41 unidades NETAS",
+  reloadedRow?.compensators[0]?.denominationValue === "2000" && reloadedRow?.compensators[0]?.movement === 41,
+  JSON.stringify(reloadedRow?.compensators),
+);
+
+// La demanda que NO puede atribuirse al módulo: si los pagos fueron ANTES del cargue, no hay
+// evidencia (el módulo pudo estar vacío entonces) y el aviso desaparece.
+const reloadedDemandBeforeLoad = computeJamEarlyWarnings({
+  from: "2026-09-22T05:00:00.000Z",
+  loads: reloadLoads,
+  storage: earlyStorage,
+  to: "2026-09-22T23:59:59.999Z",
+  tonnages: [reloadBase, reloadCurrent],
+  transactions: reloadPayoutsAfterLoad.map((payout, index) => ({
+    ...payout,
+    dateCreated: `2026-09-22T0${index % 8}:05:00.000Z`,
+  })),
+});
+expect(
+  "si los pagos fueron antes del cargue, no se acusa al módulo (el falso positivo reportado)",
+  reloadedDemandBeforeLoad.warnings.every((warning) => warning.denominationValue !== "100"),
+  JSON.stringify(reloadedDemandBeforeLoad.warnings),
+);
+
+// Un módulo que se recargó Y entregó: el movimiento neto es positivo ⇒ no es sospechoso.
+const reloadedDelivered = computeJamEarlyWarnings({
+  from: "2026-09-22T05:00:00.000Z",
+  loads: reloadLoads,
+  storage: earlyStorage,
+  to: "2026-09-22T23:59:59.999Z",
+  tonnages: [reloadBase, earlyWarningTonnage("2026-09-22T10:21:56.000Z", { "100": "10", "500": "34", "2000": "98" })],
+  transactions: reloadPayoutsAfterLoad,
+});
+expect(
+  "la recargada que SÍ entregó se reporta como compensadora (neto 90), no como sospechosa",
+  reloadedDelivered.warnings.every((warning) => warning.denominationValue !== "100") &&
+    reloadedDelivered.warnings[0]?.compensators.some((entry) => entry.denominationValue === "100" && entry.movement === 90),
+  JSON.stringify(reloadedDelivered.warnings),
+);
+
+// Sin cargues legibles NO se evalúa un módulo que creció o se mantuvo: se declara y se pide.
+const reloadedUnknownLoads = computeJamEarlyWarnings({
+  from: "2026-09-22T05:00:00.000Z",
+  loads: null,
+  storage: earlyStorage,
+  to: "2026-09-22T23:59:59.999Z",
+  tonnages: [reloadBase, reloadCurrent],
+  transactions: reloadPayoutsAfterLoad,
+});
+expect(
+  "sin historial de cargues no se acusa y se declara qué módulos quedaron sin evaluar",
+  reloadedUnknownLoads.loadsKnown === false &&
+    reloadedUnknownLoads.warnings.length === 0 &&
+    reloadedUnknownLoads.suppressedByMissingLoads.includes("100") &&
+    (reloadedUnknownLoads.note ?? "").includes("cargues"),
+  JSON.stringify(reloadedUnknownLoads),
+);
 
 /* ------------------------------------------- 12) ODRB Rionegro (id 1288): AP ≠ DP y monedas mezcladas */
 

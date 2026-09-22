@@ -54,6 +54,22 @@ export interface JamEarlyWarningTonnage {
   details: readonly JamEarlyWarningTonnageDetail[];
 }
 
+/**
+ * Cargue de la máquina (denominación → unidades). Es imprescindible para medir el movimiento
+ * físico: si entre los dos arqueos el baúl se RECARGÓ, `base − actual` puede ser ≤ 0 aunque el
+ * módulo haya entregado (caso real: «esa máquina fue cargada hace poco»). El movimiento válido
+ * es el NETO: `base + cargado − actual`, la misma regla que usa el motor de atascos.
+ */
+export interface JamEarlyWarningLoadDetail {
+  denominationValue: string;
+  quantity: string;
+}
+
+export interface JamEarlyWarningLoad {
+  dateCreated: string | null;
+  details: readonly JamEarlyWarningLoadDetail[];
+}
+
 export interface JamEarlyWarningTransaction {
   dateCreated: string | null;
   returnAmount: string;
@@ -61,15 +77,30 @@ export interface JamEarlyWarningTransaction {
 }
 
 export interface JamEarlyWarning {
-  /** Módulos que sí bajaron en el arqueo: por ahí está saliendo el cambio. */
+  /** Módulos que sí entregaron (movimiento NETO, descontados los cargues). */
   compensators: { denominationValue: string; movement: number }[];
   /** `null` = no se consultó el baúl (sólo se consulta cuando ya hay sospecha). */
   configuredForDispensing: boolean | null;
   /** Pagos del intervalo cuyo importe devuelto alcanzaba para esta denominación. */
   demand: number;
+  /**
+   * Desde cuándo se cuentan esos pagos: después del arqueo base y, si hubo cargue, después del
+   * ÚLTIMO cargue de la denominación. Antes de una recarga no se puede afirmar que el módulo
+   * tuviera unidades, así que esos pagos no son evidencia.
+   */
+  demandFrom: string | null;
   denominationValue: string;
-  /** Cuánto bajó el módulo entre los dos arqueos (≤ 0 = no entregó). */
-  movement: number;
+  /** Caída BRUTA entre arqueos (`base − actual`), sin descontar cargues. */
+  grossMovement: number;
+  /** Unidades cargadas a esta denominación entre los dos arqueos. */
+  loadedUnits: number;
+  /** Unidades cargadas DESPUÉS del último arqueo: el saldo mostrado las incluye. */
+  loadedAfterArqueo: number;
+  /**
+   * Caída NETA = `base + cargues − actual`. Es el número con el que se decide: `≤ 0` significa
+   * que el módulo no entregó unidades ni contando lo que se le cargó.
+   */
+  netMovement: number;
   /** Unidades en el baúl (si se consultó) o en el arqueo base. */
   stock: number;
 }
@@ -77,14 +108,27 @@ export interface JamEarlyWarning {
 export interface JamEarlyWarningScreen {
   arqueoFrom: string | null;
   arqueoTo: string | null;
+  /**
+   * `false` = no se pudo leer el historial de cargues. En ese caso NO se evalúan los módulos que
+   * crecieron o se mantuvieron en el arqueo (no se puede saber si fue un cargue) y se declara.
+   */
+  loadsKnown: boolean;
   /** Motivo por el que el semáforo no aplica (sin arqueos, pocos pagos, multimoneda…). */
   note: string | null;
   payouts: number;
+  /**
+   * Módulos que NO se evaluaron por no poder leer los cargues: crecieron o se mantuvieron en el
+   * arqueo y sin el historial de cargues no se puede saber si entregaron. El servidor usa esta
+   * lista para decidir si vale la pena pedir los cargues antes de concluir.
+   */
+  suppressedByMissingLoads: string[];
   warnings: JamEarlyWarning[];
 }
 
 export interface JamEarlyWarningInput {
   from: string;
+  /** Cargues de la máquina. `null`/`undefined` = lectura no disponible (se declara). */
+  loads?: readonly JamEarlyWarningLoad[] | null;
   storage?: readonly JamEarlyWarningStorageRow[] | null;
   to: string;
   tonnages: readonly JamEarlyWarningTonnage[];
@@ -113,8 +157,55 @@ function quantityByDenomination(tonnage: JamEarlyWarningTonnage | null): Map<str
   return quantities;
 }
 
-function emptyScreen(note: string): JamEarlyWarningScreen {
-  return { arqueoFrom: null, arqueoTo: null, note, payouts: 0, warnings: [] };
+function emptyScreen(note: string, loadsKnown = true): JamEarlyWarningScreen {
+  return { arqueoFrom: null, arqueoTo: null, loadsKnown, note, payouts: 0, suppressedByMissingLoads: [], warnings: [] };
+}
+
+interface LoadTimeline {
+  /** Cargues de una denominación dentro de `(fromMs, toMs]`. */
+  between: Map<string, number>;
+  /** Último cargue de una denominación hasta `toMs` (ms), para saber desde cuándo había unidades. */
+  lastAt: Map<string, number>;
+  /** Cargues de una denominación posteriores a `afterMs` (explican el saldo vivo del baúl). */
+  after: Map<string, number>;
+}
+
+/**
+ * Cronología de cargues por denominación. Sin ella el movimiento del arqueo no es interpretable:
+ * una máquina recargada entre dos arqueos aparece como «no bajó» aunque haya entregado.
+ */
+function buildLoadTimeline(
+  loads: readonly JamEarlyWarningLoad[] | null | undefined,
+  fromMs: number,
+  toMs: number,
+  afterMs: number,
+): LoadTimeline {
+  const timeline: LoadTimeline = { after: new Map(), between: new Map(), lastAt: new Map() };
+  for (const load of loads ?? []) {
+    const at = toMillis(load.dateCreated);
+    if (Number.isNaN(at)) {
+      continue;
+    }
+    for (const detail of load.details) {
+      const units = Math.abs(toInt(detail.quantity));
+      if (units === 0) {
+        continue;
+      }
+      if (at > fromMs && at <= toMs) {
+        timeline.between.set(detail.denominationValue, (timeline.between.get(detail.denominationValue) ?? 0) + units);
+      }
+      if (at <= toMs) {
+        const previous = timeline.lastAt.get(detail.denominationValue) ?? Number.NEGATIVE_INFINITY;
+        if (at > previous) {
+          timeline.lastAt.set(detail.denominationValue, at);
+        }
+      }
+      if (at > afterMs) {
+        timeline.after.set(detail.denominationValue, (timeline.after.get(detail.denominationValue) ?? 0) + units);
+      }
+    }
+  }
+  return timeline;
 }
 
 export function computeJamEarlyWarnings(input: JamEarlyWarningInput): JamEarlyWarningScreen {
@@ -149,19 +240,28 @@ export function computeJamEarlyWarnings(input: JamEarlyWarningInput): JamEarlyWa
     const at = toMillis(transaction.dateCreated);
     return !Number.isNaN(at) && at > before.at && at <= toMs;
   });
+  // Cargues: sin esta lectura, `base − actual` miente en cualquier máquina recargada.
+  const loadsKnown = Array.isArray(input.loads);
+  const timeline = buildLoadTimeline(input.loads ?? null, before.at, current.at, current.at);
+
   if (payouts.length < JAM_EARLY_WARNING_THRESHOLDS.minimumPayouts) {
     return {
       arqueoFrom: before.tonnage.dateCreated ?? null,
       arqueoTo: current.tonnage.dateCreated ?? null,
+      loadsKnown,
       note: `Menos de ${JAM_EARLY_WARNING_THRESHOLDS.minimumPayouts} pagos con devolución después del arqueo base: no hay evidencia suficiente para el semáforo.`,
       payouts: payouts.length,
+      suppressedByMissingLoads: [],
       warnings: [],
     };
   }
 
   const baseQuantities = quantityByDenomination(before.tonnage);
   const currentQuantities = quantityByDenomination(current.tonnage);
-  const movements = new Map<string, number>();
+  // Movimiento BRUTO (`base − actual`) y NETO (`base + cargues − actual`). El neto es el que
+  // decide: una máquina que se recargó entre los dos arqueos tiene movimiento bruto ≤ 0 aunque
+  // haya entregado, y acusarla sería un falso positivo («esa máquina fue cargada hace poco»).
+  const movements = new Map<string, { gross: number; loaded: number; net: number }>();
   const stockAtBase = new Map<string, number>();
   for (const [denominationValue, baseQuantity] of baseQuantities) {
     const currentQuantity = currentQuantities.get(denominationValue);
@@ -169,31 +269,43 @@ export function computeJamEarlyWarnings(input: JamEarlyWarningInput): JamEarlyWa
       // El módulo no aparece en el arqueo actual: sin dato comparable, no se acusa.
       continue;
     }
+    const loaded = timeline.between.get(denominationValue) ?? 0;
+    const gross = baseQuantity - currentQuantity;
     stockAtBase.set(denominationValue, baseQuantity);
-    movements.set(denominationValue, baseQuantity - currentQuantity);
+    movements.set(denominationValue, { gross, loaded, net: gross + loaded });
   }
 
   const compensators = [...movements.entries()]
-    .filter(([, movement]) => movement > 0)
-    .sort((left, right) => right[1] - left[1])
-    .map(([denominationValue, movement]) => ({ denominationValue, movement }))
+    .filter(([, movement]) => movement.net > 0)
+    .sort((left, right) => right[1].net - left[1].net)
+    .map(([denominationValue, movement]) => ({ denominationValue, movement: movement.net }))
     .slice(0, 3);
   if (compensators.length === 0) {
     return {
       arqueoFrom: before.tonnage.dateCreated ?? null,
       arqueoTo: current.tonnage.dateCreated ?? null,
-      note: "Ningún módulo bajó en el arqueo del intervalo: no se puede atribuir el cambio a una denominación concreta.",
+      loadsKnown,
+      note: "Ningún módulo entregó unidades netas en el intervalo (descontados los cargues): no se puede atribuir el cambio a una denominación concreta.",
       payouts: payouts.length,
+      suppressedByMissingLoads: [],
       warnings: [],
     };
   }
 
   const storageByValue = new Map((input.storage ?? []).map((row) => [row.denominationValue, row]));
   const warnings: JamEarlyWarning[] = [];
+  const suppressed: string[] = [];
   for (const [denominationValue, movement] of movements) {
-    if (movement > 0) {
+    if (movement.net > 0) {
       continue;
     }
+    // Sin cargues legibles NO se evalúa un módulo que se mantuvo o creció en el arqueo: el
+    // movimiento que falta puede ser exactamente un cargue (caso real: máquina recién cargada).
+    if (!loadsKnown && movement.gross <= 0) {
+      suppressed.push(denominationValue);
+      continue;
+    }
+
     const baseStock = stockAtBase.get(denominationValue) ?? 0;
     if (baseStock < JAM_EARLY_WARNING_THRESHOLDS.minimumBaseStock) {
       continue;
@@ -202,8 +314,18 @@ export function computeJamEarlyWarnings(input: JamEarlyWarningInput): JamEarlyWa
     if (valueCents <= 0n) {
       continue;
     }
-    const demand = payouts.filter((transaction) => decimalToCents(transaction.returnAmount) >= valueCents).length;
-    if (demand < JAM_EARLY_WARNING_THRESHOLDS.minimumDemand) {
+
+    // La demanda se cuenta desde el ÚLTIMO cargue (o desde el arqueo base si no se recargó):
+    // antes de una recarga no se puede afirmar que el módulo tuviera unidades, así que esos
+    // pagos no son evidencia contra él.
+    const demandFromMs = timeline.lastAt.get(denominationValue) ?? before.at;
+    const demandPayouts = payouts.filter(
+      (transaction) =>
+        decimalToCents(transaction.returnAmount) >= valueCents &&
+        !Number.isNaN(toMillis(transaction.dateCreated)) &&
+        toMillis(transaction.dateCreated) > demandFromMs,
+    );
+    if (demandPayouts.length < JAM_EARLY_WARNING_THRESHOLDS.minimumDemand) {
       continue;
     }
 
@@ -211,9 +333,13 @@ export function computeJamEarlyWarnings(input: JamEarlyWarningInput): JamEarlyWa
     warnings.push({
       compensators,
       configuredForDispensing: storageRow?.isDispensing ?? null,
-      demand,
+      demand: demandPayouts.length,
+      demandFrom: Number.isFinite(demandFromMs) ? new Date(demandFromMs).toISOString() : null,
       denominationValue,
-      movement,
+      grossMovement: movement.gross,
+      loadedAfterArqueo: timeline.after.get(denominationValue) ?? 0,
+      loadedUnits: movement.loaded,
+      netMovement: movement.net,
       stock: storageRow ? Math.abs(toInt(storageRow.dpStored)) : baseStock,
     });
   }
@@ -222,8 +348,15 @@ export function computeJamEarlyWarnings(input: JamEarlyWarningInput): JamEarlyWa
   return {
     arqueoFrom: before.tonnage.dateCreated ?? null,
     arqueoTo: current.tonnage.dateCreated ?? null,
-    note: warnings.length === 0 ? "Ningún módulo con saldo quedó sin participar en el cambio del intervalo." : null,
+    loadsKnown,
+    note:
+      warnings.length > 0
+        ? null
+        : suppressed.length > 0
+          ? `No se pudo leer el historial de cargues: ${suppressed.length} módulo(s) se mantuvieron o crecieron en el arqueo y no se evalúan sin poder descontar lo cargado.`
+          : "Ningún módulo con saldo quedó sin participar en el cambio del intervalo.",
     payouts: payouts.length,
+    suppressedByMissingLoads: suppressed,
     warnings,
   };
 }

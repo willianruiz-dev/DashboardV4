@@ -4,11 +4,12 @@ import { z } from "zod";
 
 import {
   computeJamEarlyWarnings,
+  type JamEarlyWarningLoad,
   type JamEarlyWarningScreen,
   type JamEarlyWarningStorageRow,
   type JamEarlyWarningTonnage,
 } from "@/features/dispensing-control/jam-early-warning";
-import { paypadStorageSchema, tonnageHistoryEnvelopeSchema } from "@/features/paypads/schemas";
+import { loadHistoryEnvelopeSchema, paypadStorageSchema, tonnageHistoryEnvelopeSchema } from "@/features/paypads/schemas";
 import type { DashboardTransaction } from "@/features/transactions/schemas";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
 import { getDenominationCatalog } from "@/lib/server/paypad-currencies";
@@ -33,10 +34,18 @@ import { httpEnvelopeSchema } from "@/schemas/http";
 const TONNAGE_CACHE_TTL_MS = 60_000;
 /** Vigencia del baúl consultado sólo para máquinas sospechosas. */
 const STORAGE_CACHE_TTL_MS = 60_000;
+/** Vigencia de los cargues (cambian poco: 5 min, igual que en el veredicto del motor). */
+const LOAD_CACHE_TTL_MS = 5 * 60 * 1000;
 /** Tope de consultas de arqueo por vuelta del sondeo. */
 export const MAX_JAM_SCREEN_LOOKUPS = 12;
 /** Tope de consultas de baúl (enriquecimiento) por vuelta del sondeo. */
 const MAX_JAM_STORAGE_LOOKUPS = 4;
+/**
+ * Tope de consultas de CARGUES por vuelta. Sólo se piden para máquinas que ya dieron sospecha:
+ * sin los cargues, una máquina recargada entre dos arqueos parece «no haber bajado» y genera un
+ * falso positivo (caso real reportado: «esa máquina fue cargada hace poco»).
+ */
+const MAX_JAM_LOAD_LOOKUPS = 4;
 
 interface CacheEntry<TValue> {
   at: number;
@@ -44,6 +53,7 @@ interface CacheEntry<TValue> {
 }
 
 const tonnageCache = new Map<number, CacheEntry<JamEarlyWarningTonnage[]>>();
+const loadCache = new Map<number, CacheEntry<JamEarlyWarningLoad[]>>();
 const storageCache = new Map<number, CacheEntry<JamEarlyWarningStorageRow[]>>();
 
 function readCache<TValue>(cache: Map<number, CacheEntry<TValue>>, key: number, ttlMs: number): TValue | null {
@@ -128,13 +138,50 @@ async function getStorageRows(paypadId: number, token: string): Promise<JamEarly
   }
 }
 
+/**
+ * Cargues de la máquina (`Load/GetByPaypad`), cacheados 5 min. Se piden SÓLO cuando el semáforo
+ * ya dio sospecha: son la diferencia entre «no bajó porque no entregó» y «no bajó porque se
+ * recargó», que es exactamente el falso positivo reportado.
+ */
+async function getLoads(paypadId: number, token: string): Promise<JamEarlyWarningLoad[]> {
+  const cached = readCache(loadCache, paypadId, LOAD_CACHE_TTL_MS);
+  if (cached) {
+    return cached;
+  }
+
+  try {
+    const envelope = await requestBackend(
+      ["api", "Load", "GetByPaypad", String(paypadId)],
+      loadHistoryEnvelopeSchema,
+      { token },
+    );
+    const loads: JamEarlyWarningLoad[] = envelope.response.map((load) => ({
+      dateCreated: load.dateCreated ?? null,
+      details: load.details.map((detail) => ({ denominationValue: detail.denominationValue, quantity: detail.quantity })),
+    }));
+    writeCache(loadCache, paypadId, loads, 200);
+    return loads;
+  } catch (error) {
+    if (error instanceof BackendApiError && error.status === 404) {
+      writeCache(loadCache, paypadId, [], 200);
+      return [];
+    }
+    throw error;
+  }
+}
+
 export interface JamScreenBudget {
+  remainingLoadLookups: number;
   remainingStorageLookups: number;
   remainingTonnageLookups: number;
 }
 
 export function createJamScreenBudget(): JamScreenBudget {
-  return { remainingStorageLookups: MAX_JAM_STORAGE_LOOKUPS, remainingTonnageLookups: MAX_JAM_SCREEN_LOOKUPS };
+  return {
+    remainingLoadLookups: MAX_JAM_LOAD_LOOKUPS,
+    remainingStorageLookups: MAX_JAM_STORAGE_LOOKUPS,
+    remainingTonnageLookups: MAX_JAM_SCREEN_LOOKUPS,
+  };
 }
 
 /** ¿La máquina usa más de una moneda? Entonces los importes no son comparables entre sí. */
@@ -199,8 +246,10 @@ export async function screenMachineJams(input: ScreenMachineJamsInput): Promise<
     return {
       arqueoFrom: null,
       arqueoTo: null,
+      loadsKnown: true,
       note: "La máquina opera más de una moneda: los importes del día no son atribuibles a una sola denominación.",
       payouts: 0,
+      suppressedByMissingLoads: [],
       warnings: [],
     };
   }
@@ -216,23 +265,42 @@ export async function screenMachineJams(input: ScreenMachineJamsInput): Promise<
     })),
   };
 
-  // Primera pasada sin baúl (una petición menos). Sólo si hay sospecha se consulta el baúl
-  // para mostrar el saldo real y si la configuración marca el módulo como «No dispensa».
+  // Primera pasada sin baúl ni cargues (una petición menos). Sólo si hay sospecha se consultan
+  // los cargues —para descontar lo cargado del movimiento del arqueo— y el baúl (saldo real y si
+  // la configuración marca «No dispensa»).
   let screen: JamEarlyWarningScreen;
   try {
-    screen = computeJamEarlyWarnings({ ...base, storage: null });
+    // Sin cargues (`loads: null`) el cálculo no acusa a los módulos que crecieron o se mantuvieron
+    // en el arqueo: se usa sólo para decidir si vale la pena pedir los cargues.
+    screen = computeJamEarlyWarnings({ ...base, loads: null, storage: null });
   } catch {
     return null;
   }
-  if (screen.warnings.length === 0 || input.budget.remainingStorageLookups <= 0) {
+  if (screen.warnings.length === 0 && screen.suppressedByMissingLoads.length === 0) {
     return screen;
+  }
+
+  // Los cargues pueden tumbar la sospecha (la máquina se recargó), así que se piden incluso
+  // cuando la primera pasada no llegó a concluir por no poder descartarlos.
+  let loads: JamEarlyWarningLoad[] | null = null;
+  if (input.budget.remainingLoadLookups > 0) {
+    try {
+      input.budget.remainingLoadLookups -= 1;
+      loads = await getLoads(input.paypadId, input.token);
+    } catch {
+      loads = null;
+    }
+  }
+
+  if (input.budget.remainingStorageLookups <= 0) {
+    return loads === null ? screen : computeJamEarlyWarnings({ ...base, loads, storage: null });
   }
 
   try {
     input.budget.remainingStorageLookups -= 1;
     const storage = await getStorageRows(input.paypadId, input.token);
-    return computeJamEarlyWarnings({ ...base, storage });
+    return computeJamEarlyWarnings({ ...base, loads, storage });
   } catch {
-    return screen;
+    return loads === null ? screen : computeJamEarlyWarnings({ ...base, loads, storage: null });
   }
 }

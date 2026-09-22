@@ -100,15 +100,27 @@ export type ReturnAlertsRequest = z.infer<typeof returnAlertsRequestSchema>;
  * temprana — la confirmación por denominación la da el análisis completo con detalle.
  */
 export const jamEarlyWarningSchema = z.object({
-  /** Módulos que sí bajaron en el arqueo: por ahí está saliendo el cambio. */
+  /** Módulos que sí entregaron (movimiento NETO, descontados los cargues). */
   compensators: z
     .array(z.object({ denominationValue: z.string(), movement: z.number().int() }))
     .default([]),
   /** `null` = no se consultó el baúl (sólo se consulta cuando ya hay sospecha). */
   configuredForDispensing: z.boolean().nullable().default(null),
   demand: z.number().int().nonnegative(),
+  /** Desde cuándo se cuentan los pagos de la demanda (último cargue o arqueo base). */
+  demandFrom: z.string().nullable().default(null),
   denominationValue: z.string(),
-  movement: z.number().int(),
+  /** Caída bruta entre arqueos (`base − actual`), sin descontar cargues. */
+  grossMovement: z.number().int(),
+  /** Unidades cargadas entre los dos arqueos. */
+  loadedUnits: z.number().int().nonnegative().default(0),
+  /** Unidades cargadas después del último arqueo: el saldo mostrado las incluye. */
+  loadedAfterArqueo: z.number().int().nonnegative().default(0),
+  /**
+   * Caída NETA = base + cargues − actual. Es la cifra que decide: `≤ 0` ⇒ el módulo no entregó
+   * unidades ni contando lo que se le cargó.
+   */
+  netMovement: z.number().int(),
   stock: z.number().int().nonnegative(),
 });
 export type JamEarlyWarningPayload = z.infer<typeof jamEarlyWarningSchema>;
@@ -116,6 +128,10 @@ export type JamEarlyWarningPayload = z.infer<typeof jamEarlyWarningSchema>;
 export const jamEarlyWarningScreenSchema = z.object({
   arqueoFrom: z.string().nullable().default(null),
   arqueoTo: z.string().nullable().default(null),
+  /** `false` = no se pudo leer el historial de cargues (los módulos que crecieron no se evalúan). */
+  loadsKnown: z.boolean().default(true),
+  /** Módulos no evaluados por falta de cargues (ver el módulo puro). */
+  suppressedByMissingLoads: z.array(z.string()).default([]),
   /** Motivo por el que el semáforo no aplica (sin arqueos, pocos pagos, multimoneda…). */
   note: z.string().nullable().default(null),
   payouts: z.number().int().nonnegative().default(0),

@@ -329,8 +329,76 @@ function MachineVerdictCard({ machine, nowMs }: { machine: ReturnAlertMachine; n
 }
 
 /**
- * Semáforo de atasco: por denominación, el módulo que conserva saldo, no bajó en el arqueo y
- * podía usarse en los pagos del día, mientras el cambio salió por otras denominaciones.
+ * Ventana de arqueos legible. Con sólo la hora, un intervalo que cruza de medianoche se ve
+ * invertido («11:30:47 a. m. → 10:21:56 a. m.»); con la fecha por delante se lee correcto.
+ */
+function formatArqueoWindow(fromIso: string, toIso: string): string {
+  const from = new Date(fromIso);
+  const to = new Date(toIso);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    return `${fromIso} → ${toIso}`;
+  }
+
+  const sameDay =
+    from.getFullYear() === to.getFullYear() && from.getMonth() === to.getMonth() && from.getDate() === to.getDate();
+  if (sameDay) {
+    return `${from.toLocaleTimeString("es-CO")} → ${to.toLocaleTimeString("es-CO")}`;
+  }
+
+  const compact = new Intl.DateTimeFormat("es-CO", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "2-digit",
+    second: "2-digit",
+  });
+  return `${compact.format(from)} → ${compact.format(to)}`;
+}
+
+/**
+ * Explicación del movimiento de un módulo. El número que importa es el NETO (descontados los
+ * cargues): si la máquina se recargó entre los dos arqueos, la caída bruta puede ser ≤ 0 aunque
+ * el módulo haya entregado, y decir sólo «no bajó en el arqueo» produce falsos positivos en las
+ * máquinas recién cargadas.
+ */
+function warningDescription(warning: {
+  demand: number;
+  grossMovement: number;
+  loadedAfterArqueo: number;
+  loadedUnits: number;
+  netMovement: number;
+}): string {
+  const units = (value: number) => new Intl.NumberFormat("es-CO").format(value);
+  const parts: string[] = [];
+
+  if (warning.loadedUnits > 0) {
+    // Una máquina recargada entre los dos arqueos tiene movimiento bruto ≤ 0 aunque haya
+    // entregado: lo que decide es el NETO. El texto muestra ambos para que el operador pueda
+    // verificarlo contra «Cargues y arqueos» sin tener que confiar en la conclusión.
+    parts.push(
+      `Se le cargaron ${units(warning.loadedUnits)} unidad(es) entre los arqueos (movimiento bruto ${
+        warning.grossMovement > 0 ? "+" : "−"
+      }${units(Math.abs(warning.grossMovement))}); con el cargue descontado la caída neta es ${units(warning.netMovement)}, o sea que no entregó ninguna`,
+    );
+  } else if (warning.grossMovement === 0) {
+    parts.push("El baúl quedó igual entre los dos arqueos: no entregó ninguna");
+  } else {
+    parts.push(`El baúl creció ${units(Math.abs(warning.grossMovement))} unidad(es) entre los arqueos sin cargue registrado: no entregó ninguna`);
+  }
+
+  if (warning.loadedAfterArqueo > 0) {
+    parts.push(
+      `además se le cargaron ${units(warning.loadedAfterArqueo)} unidad(es) después del último arqueo (el saldo mostrado las incluye)`,
+    );
+  }
+
+  return `${parts.join("; ")}.`;
+}
+
+/**
+ * Semáforo de atasco: por denominación, el módulo que conserva saldo, no entregó unidades netas
+ * en el arqueo (descontados los cargues) y podía usarse en los pagos posteriores al último
+ * cargue, mientras el cambio salió por otras denominaciones.
  */
 function MachineJamCard({ machine }: { machine: ReturnAlertMachine }) {
   const screen = machine.jamScreen;
@@ -339,10 +407,14 @@ function MachineJamCard({ machine }: { machine: ReturnAlertMachine }) {
   }
 
   const href = `/dashboard/transactions/dispensing-control?paypad=${machine.paypadId}`;
+  // Con sólo la hora, un intervalo que cruza de día se lee al revés («11:30 a. m. → 10:21 a. m.»):
+  // cuando los dos arqueos no son del mismo día se muestra la fecha completa.
   const arqueo =
     screen.arqueoFrom === null || screen.arqueoTo === null
       ? null
-      : `Arqueos ${new Date(screen.arqueoFrom).toLocaleTimeString("es-CO")} → ${new Date(screen.arqueoTo).toLocaleTimeString("es-CO")} · ${screen.payouts} pago(s) con devolución`;
+      : `Arqueos ${formatArqueoWindow(screen.arqueoFrom, screen.arqueoTo)} · ${screen.payouts} pago(s) con devolución${
+          screen.loadsKnown ? "" : " · cargues no legibles"
+        }`;
 
   return (
     <Link
@@ -367,13 +439,14 @@ function MachineJamCard({ machine }: { machine: ReturnAlertMachine }) {
               Denominación {warning.denominationValue}
             </p>
             <p className="text-xs text-muted-foreground">
-              No bajó en el arqueo ({warning.movement} entre arqueos) y conserva {warning.stock} unidad(es); {warning.demand}{" "}
-              pago(s) de hoy podían usarla.
+              {warningDescription(warning)}{" "}
+              {warning.demand} pago(s) {warning.loadedUnits > 0 ? "posteriores a ese cargue" : "del período"} podían usarla y el baúl conserva{" "}
+              {warning.stock} unidad(es).
               {warning.configuredForDispensing === false ? " Configuración: «No dispensa»." : ""}
             </p>
             <p className="text-xs text-muted-foreground">
               El cambio está saliendo con{" "}
-              {warning.compensators.map((compensator) => `${compensator.denominationValue} (${compensator.movement} u.)`).join(", ")}.
+              {warning.compensators.map((compensator) => `${compensator.denominationValue} (${compensator.movement} u. netas)`).join(", ")}.
             </p>
           </div>
         ))}

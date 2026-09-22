@@ -255,6 +255,23 @@
     y publica la limitación en pantalla; falta el dato (columna en `CurrencyDenomination` o
     `extraDataJson` por Pay+). Sin él, el panel NO supone tipos: lo declara.
 
+17. **B-18 — RESUELTO: el semáforo del inicio acusaba a las máquinas recién cargadas.**
+    Caso real (Pay+ Inder 2, ID 71, 2026-09-22): el inicio mostraba «2 posibles atascos» en el
+    100 y el 500 («No bajó en el arqueo (~49 entre arqueos) y conserva 100 unidad(es)») y el
+    operador respondió que esa máquina había sido cargada hacía poco. El semáforo comparaba
+    `arqueo base − arqueo actual` **sin descontar los cargues**, así que un módulo recargado
+    aparecía con movimiento ≤ 0 aunque hubiera entregado: falso positivo estructural, no un
+    caso raro. Corrección en `jam-early-warning.ts`: (a) el movimiento que decide es el **NETO**
+    (`base + cargues − actual`); (b) los cargues se leen por máquina (`Load/GetByPaypad`, caché
+    5 min) **sólo para las máquinas que ya dieron sospecha** (tope 4 por vuelta, para no gastar
+    peticiones); (c) la demanda se cuenta **sólo desde el último cargue del módulo** (los pagos
+    anteriores al cargue no son evidencia: el módulo pudo estar vacío entonces); (d) si el
+    historial de cargues no se puede leer, los módulos que se mantuvieron o crecieron **no se
+    evalúan** — se declaran en `suppressedByMissingLoads` en vez de acusar; (e) la tarjeta
+    muestra el cargue, el movimiento bruto y el neto, y la ventana de arqueos incluye la fecha
+    cuando los dos arqueos son de días distintos (antes «11:30:47 a. m. → 10:21:56 a. m.», que
+    se leía invertido). Evidencia: escenario `alerta-recargada` en las fixtures (148/148).
+
 16. **B-17 — BLOQUEADO POR DATOS: plan de devolución y estado del dispositivo.** El kiosco no
     publica el plan que intentó (qué pidió a cada DP) ni el estado que reportó cada dispositivo
     (vacío, atasco, sin respuesta): el panel reconstruye el plan con la combinación canónica y
