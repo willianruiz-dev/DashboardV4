@@ -19,6 +19,7 @@
  *                     cargada − saldo, y el rechazo mostrado es el baúl actual (C10)
  *   alerta-atasco   – el semáforo del inicio: la máquina que sólo entrega 100 (caso Pay+
  *                     Inder 2) se avisa por arqueo; sin evidencia NO se avisa
+<<<<<<< HEAD
  *   arqueo-historial – lo que se LLEYÓ del historial de arqueos: «no pude leer» y «sin fecha»
  *                     no son «esta máquina nunca se ha arqueado» (caso Pay+ Inder 2)
  *   arqueo-insumo   – el insumo del cuadre incluye los arqueos: el rechazado del período es
@@ -27,6 +28,10 @@
  *                     acusa por «no bajar» en el arqueo si el neto explica el movimiento
  *   esperado-real   – conciliación por denominación: valor exacto = correcto, faltante con
  *                     saldo = revisar el módulo, faltante sin saldo = agotamiento (no atasco)
+=======
+ *   colores-estado  – cada estado de transacción tiene su color: canceladas rojo, aprobadas
+ *                     verde, iniciadas azul, error devuelta amarillo, sin notificar blanco
+>>>>>>> 2169f6241217d004df355e8d8a39274a57ed9189
  */
 import { summarizeMachineCurrencies } from "../src/features/dispensing-control/denomination-usage.ts";
 import { computeJamEarlyWarnings } from "../src/features/dispensing-control/jam-early-warning.ts";
@@ -36,6 +41,7 @@ import { computeDispensingMetrics } from "../src/features/dispensing-control/dis
 import { buildPayoutReconciliation } from "../src/features/dispensing-control/dispensing-payout-reconciliation.ts";
 import { buildSystemDispensedEvidence, isSystemEvidenceUsable } from "../src/features/dispensing-control/system-dispensed.ts";
 import { summarizeTransactionsByCurrency } from "../src/features/transactions/transaction-search.ts";
+import { getTransactionStateTone, transactionAmountToneClasses } from "../src/features/transactions/transaction-state-tone.ts";
 
 /* ------------------------------------------------------------------ utilidades */
 
@@ -1174,6 +1180,7 @@ const inderNoArqueo = computeJamEarlyWarnings({
 });
 expect("sin dos arqueos comparables no hay aviso", inderNoArqueo.warnings.length === 0 && (inderNoArqueo.note ?? "").includes("arqueos"), String(inderNoArqueo.note));
 
+<<<<<<< HEAD
 // Caso real reportado en el inicio (2026-09-22): «No me cuadra esta alerta, esa máquina fue
 // cargada hace poco». El semáforo comparaba `base − actual` entre dos arqueos SIN descontar los
 // cargues, así que una máquina recargada aparecía como «no bajó» aunque hubiera entregado. El
@@ -2161,6 +2168,43 @@ expect(
     inderConDetalle.reconciliationCheck?.systemSourceConflict === false &&
     inderConDetalle.reconciliationCheck?.systemTotal === "248000",
   JSON.stringify(inderConDetalle.reconciliationCheck),
+=======
+/* ------------------------------------------------------------------ 13) transacciones: color por estado */
+
+console.log("\n[colores-estado] cada estado de transacción tiene su propio color");
+
+// Nombres tal como los entrega el maestro de estados (el legado escribe «Aprovada», con v).
+const stateToneCases = [
+  ["Cancelada", "cancelled", "red"],
+  ["Cancelada Error Devuelta", "cancelled", "red"],
+  ["Aprobada", "approved", "emerald"],
+  ["Iniciada", "initiated", "blue"],
+  ["Aprobada Error Devuelta", "returnError", "yellow"],
+  ["Aprovada Sin Notificar", "pendingNotification", "white"],
+  ["Pendiente de notificación", "pendingNotification", "white"],
+] as const;
+
+for (const [state, tone, color] of stateToneCases) {
+  const actual = getTransactionStateTone(state);
+  expect(`«${state}» → ${color}`, actual === tone && transactionAmountToneClasses[actual].includes(color), actual);
+}
+
+expect(
+  "iniciadas y error devuelta ya no comparten el azul",
+  getTransactionStateTone("Iniciada") !== getTransactionStateTone("Aprobada Error Devuelta") &&
+    !transactionAmountToneClasses[getTransactionStateTone("Aprobada Error Devuelta")].includes("blue"),
+);
+expect(
+  "mayúsculas, tildes y espacios de más no cambian el color",
+  getTransactionStateTone("  aprobada   ERROR devuelta ") === "returnError" &&
+    getTransactionStateTone("PENDIENTE DE NOTIFICACION") === "pendingNotification",
+);
+expect(
+  "un estado desconocido o vacío queda en gris, sin confundirse con iniciadas",
+  getTransactionStateTone("Error Servicio de Tercero") === "neutral" &&
+    getTransactionStateTone(null) === "neutral" &&
+    getTransactionStateTone("") === "neutral",
+>>>>>>> 2169f6241217d004df355e8d8a39274a57ed9189
 );
 
 /* ------------------------------------------------------------------ resumen */

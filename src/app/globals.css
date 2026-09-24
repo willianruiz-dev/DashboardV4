@@ -115,7 +115,9 @@
 /* =========================================================
    PASTEL 2026 — semántica de estados y superficies suaves
    #10b981 emerald (aprobadas) · #ef4444 red (canceladas)
-   #3b82f6 blue (totales / generales) · #9ca3af gray (secundario)
+   #3b82f6 blue (iniciadas, totales / generales)
+   #eab308 yellow (aprobada error devuelta) · #ffffff blanco (pendientes de notificación)
+   #9ca3af gray (secundario, estados sin clasificar)
    ========================================================= */
 :root {
   color-scheme: light;

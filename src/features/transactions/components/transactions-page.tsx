@@ -30,7 +30,7 @@ function text(value: string | null | undefined, fallback = "—"): string {
   return value?.trim() || fallback;
 }
 
-/** Colores por estado: aprobadas → verde, canceladas → rojo, resto → azul. */
+/** Colores por estado (ver `transaction-state-tone.ts`): canceladas → rojo, aprobadas → verde, iniciadas → azul, error de devuelta → amarillo, pendientes de notificación → blanco. */
 function moneyCell(transaction: DashboardTransaction, value: string): ReactNode {
   const tone = transactionAmountToneClasses[getTransactionStateTone(transaction.stateTransaction)];
   return <span className={cn("font-numeric font-medium", tone)}>{formatDashboardMoney(value)}</span>;
