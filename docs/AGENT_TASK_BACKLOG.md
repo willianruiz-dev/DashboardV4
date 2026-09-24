@@ -380,10 +380,12 @@
   «Verificación» falló. El commit `2c92fe4` los quitó quedándose con un solo lado: borró 959
   líneas de pruebas del control de dispensado (61 comprobaciones: máquina recargada, Pay+ Inder 1
   id 70, ODRB Rionegro id 1288 y conciliación esperado/real) y dejó cuatro importaciones sin uso,
-  así que `eslint --max-warnings=0` siguió fallando en `main`.
-- **Reparación.** La rama `arena/01a0d523-dashboardv4` fusionó `main` conservando los dos lados
-  (ignorando espacios, `2c92fe4` sólo borraba líneas) y vuelve a `main` por PR: 190/190
-  comprobaciones, typecheck, lint y build en verde. No se reescribió la historia ni se forzó `main`.
+  así que `eslint --max-warnings=0` siguió fallando en `main`. La fusión `a4f1ef8` repitió esa
+  resolución (trajo la sección `[orden-tx]`, pero 129/129 en vez de 190/190 y lint en rojo).
+- **Reparación.** La rama `arena/01a0d523-dashboardv4` fusionó `main` (`2c92fe4` y `a4f1ef8`)
+  conservando los dos lados (ignorando espacios, esas versiones sólo borraban líneas) y vuelve a
+  `main` por el PR #5: 190/190 comprobaciones, typecheck, lint y build en verde. No se reescribió
+  la historia ni se forzó `main`.
 - **Próxima fusión con conflicto en la suite:** aceptar **ambos** lados (cada rama agrega
   secciones independientes), buscar marcadores con `git grep -n -E '^(<<<<<<<|>>>>>>>)'` y
   ejecutar `npm run check` antes del push.
