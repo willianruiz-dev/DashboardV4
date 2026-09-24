@@ -1,9 +1,18 @@
+import { createHash } from "node:crypto";
+
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getPaypadMachineName } from "@/features/paypads/paypad-display";
 import { paypadSchema, type PayPad } from "@/features/paypads/schemas";
-import { transactionSchema, transactionSearchRequestSchema, transactionSearchResponseSchema, type DashboardTransaction } from "@/features/transactions/schemas";
+import { createPeriodSnapshotCache } from "@/features/transactions/period-snapshot-cache";
+import {
+  transactionSchema,
+  transactionSearchRequestSchema,
+  transactionSearchResponseSchema,
+  type DashboardTransaction,
+  type TransactionSearchRequest,
+} from "@/features/transactions/schemas";
 import { matchesTransactionPaymentType, sortTransactions, summarizeTransactionsByCurrency } from "@/features/transactions/transaction-search";
 import { subtractMoneyStrings, sumMoneyStrings } from "@/lib/formatters/money";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
@@ -67,6 +76,57 @@ async function getPaypads(token: string): Promise<PayPad[]> {
   }
 }
 
+interface PeriodSnapshot {
+  paypads: PayPad[];
+  transactions: DashboardTransaction[];
+}
+
+/**
+ * Período ya descargado de una consulta explícita, para que ordenar, paginar o filtrar por
+ * producto no vuelvan a leer el API legado (ver `period-snapshot-cache.ts`). Se comparte entre
+ * solicitudes: nada de lo que sigue muta estos arreglos (filter/sort sobre copia/slice/map).
+ */
+const periodSnapshots = createPeriodSnapshotCache<PeriodSnapshot>({
+  maxEntries: 30,
+  maxTotalRows: 60_000,
+  ttlMs: 5 * 60_000,
+});
+
+function periodSnapshotKey(search: TransactionSearchRequest, token: string): string | null {
+  if (!search.searchId) {
+    return null;
+  }
+
+  // El token no se guarda tal cual: su hash aísla las instantáneas de cada sesión.
+  const session = createHash("sha256").update(token).digest("hex");
+  return [session, search.searchId, search.paypadId ?? "all", search.from, search.to].join("|");
+}
+
+async function loadPeriod(search: TransactionSearchRequest, token: string): Promise<PeriodSnapshot> {
+  const cacheKey = periodSnapshotKey(search, token);
+  const cached = cacheKey ? periodSnapshots.get(cacheKey) : undefined;
+  if (cached) {
+    return cached;
+  }
+
+  const paypads = await getPaypads(token);
+  const selectedPaypad = search.paypadId === null ? undefined : paypads.find((paypad) => paypad.id === search.paypadId);
+  const searchPaypads = search.paypadId === null
+    ? paypads.map(toTransactionSearchPaypad)
+    : [{
+        id: search.paypadId,
+        paypadUsername: selectedPaypad ? getPaypadMachineName(selectedPaypad) : null,
+      }];
+  const resultSets = await Promise.all(searchPaypads.map((paypad) => getTransactions(paypad, search.from, search.to, token)));
+  const snapshot: PeriodSnapshot = { paypads, transactions: resultSets.flat() };
+
+  if (cacheKey) {
+    periodSnapshots.set(cacheKey, snapshot, snapshot.transactions.length);
+  }
+
+  return snapshot;
+}
+
 function createSummary(transactions: readonly DashboardTransaction[]) {
   const approved = transactions.filter((transaction) => text(transaction.stateTransaction).includes("Aprobada"));
   const approvedExact = transactions.filter((transaction) => transaction.stateTransaction === "Aprobada");
@@ -105,16 +165,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body: unknown = await request.json().catch(() => undefined);
     const search = transactionSearchRequestSchema.parse(body);
     const token = await requireDashboardToken();
-    const paypads = await getPaypads(token);
-    const selectedPaypad = search.paypadId === null ? undefined : paypads.find((paypad) => paypad.id === search.paypadId);
-    const searchPaypads = search.paypadId === null
-      ? paypads.map(toTransactionSearchPaypad)
-      : [{
-          id: search.paypadId,
-          paypadUsername: selectedPaypad ? getPaypadMachineName(selectedPaypad) : null,
-        }];
-    const resultSets = await Promise.all(searchPaypads.map((paypad) => getTransactions(paypad, search.from, search.to, token)));
-    const allTransactions = resultSets.flat();
+    const { paypads, transactions: allTransactions } = await loadPeriod(search, token);
     const paymentFilteredTransactions = allTransactions.filter((transaction) => matchesTransactionPaymentType(transaction, search.paymentType));
     const products = [...new Set(paymentFilteredTransactions.flatMap((transaction) => transaction.product?.trim() ? [transaction.product] : []))]
       .sort((left, right) => left.localeCompare(right));
