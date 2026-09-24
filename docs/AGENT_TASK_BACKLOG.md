@@ -373,6 +373,21 @@
   antiguos. Purgarlos exigiría `git filter-repo` + forzar `main` y que todo el equipo vuelva a
   clonar: decisión aparte, no tomada aquí.
 
+## HIGIENE DEL REPOSITORIO (2026-09-24)
+
+- **Marcadores de conflicto en `main`.** La fusión `0144894` (colores por estado sobre el control
+  de dispensado) subió `scripts/dispensing-fixtures.mts` con `<<<<<<<`/`>>>>>>>` y la
+  «Verificación» falló. El commit `2c92fe4` los quitó quedándose con un solo lado: borró 959
+  líneas de pruebas del control de dispensado (61 comprobaciones: máquina recargada, Pay+ Inder 1
+  id 70, ODRB Rionegro id 1288 y conciliación esperado/real) y dejó cuatro importaciones sin uso,
+  así que `eslint --max-warnings=0` siguió fallando en `main`.
+- **Reparación.** La rama `arena/01a0d523-dashboardv4` fusionó `main` conservando los dos lados
+  (ignorando espacios, `2c92fe4` sólo borraba líneas) y vuelve a `main` por PR: 190/190
+  comprobaciones, typecheck, lint y build en verde. No se reescribió la historia ni se forzó `main`.
+- **Próxima fusión con conflicto en la suite:** aceptar **ambos** lados (cada rama agrega
+  secciones independientes), buscar marcadores con `git grep -n -E '^(<<<<<<<|>>>>>>>)'` y
+  ejecutar `npm run check` antes del push.
+
 ## ESTADO DEL BACKLOG
 
 No se declara la migración terminada. La evidencia autenticada permitió corregir una diferencia concreta: los detalles históricos de Prueba1 contienen cantidades negativas y el dashboard antiguo las muestra, por lo que el reader de sólo lectura ya conserva su signo. También se restauró el formato de tabla, responsable, detalle expandible y filtros funcionales en desktop, manteniendo cards móviles. La revisión de Excel aisló y corrigió un 403 reproducible antes del upstream: el guard del relay confundía el listener interno `0.0.0.0` con el origen del navegador; ahora conserva la protección CSRF y admite el host público correcto. Sin embargo, todavía faltan una captura E2E posterior de Cargues/Arqueos de Prueba1 y una descarga Excel autenticada contra producción. El error `VALIDATE_PERIPHERALS` de Configuración sigue visible como fallo SQL upstream independiente. Restan esas pruebas, billetes/denominaciones, vídeo y controles visibles antes de declarar paridad funcional completa. La entrega ya no depende de un comando manual: cada push verifica tipos, estilo, suite y compilación, y publica una imagen en GHCR lista para levantar en el servidor (B-10).
