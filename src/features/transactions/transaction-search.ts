@@ -32,40 +32,41 @@ export function matchesTransactionPaymentType(
   return paymentType === null || text(transaction.typePayment) === paymentType;
 }
 
+function compareBySortKey(left: DashboardTransaction, right: DashboardTransaction, sortKey: TransactionSearchRequest["sortKey"]): number {
+  switch (sortKey) {
+    case "id":
+      return left.id - right.id;
+    case "totalAmount":
+      return compareMoneyStrings(left.totalAmount, right.totalAmount);
+    case "product":
+      return textCollator.compare(text(left.product), text(right.product));
+    case "stateTransaction":
+      return textCollator.compare(text(left.stateTransaction), text(right.stateTransaction));
+    case "typePayment":
+      return textCollator.compare(text(left.typePayment), text(right.typePayment));
+    case "typeTransaction":
+      return textCollator.compare(text(left.typeTransaction), text(right.typeTransaction));
+    case "dateCreated":
+      return compareDateTime(left.dateCreated, right.dateCreated);
+  }
+}
+
+/**
+ * Orden completo y determinista: el campo elegido, luego la fecha y por último el ID. La
+ * dirección se aplica a TODA la comparación, así que «Descendente» es exactamente «Ascendente»
+ * al revés. Antes el desempate por ID era siempre ascendente: en los campos con valores
+ * repetidos (Trámite, Medio de pago, Estado, Producto) las dos direcciones mostraban la misma
+ * lista y el selector «Dirección» parecía no hacer nada.
+ */
 export function compareTransactions(
   left: DashboardTransaction,
   right: DashboardTransaction,
   search: Pick<TransactionSearchRequest, "sortDirection" | "sortKey">,
 ): number {
-  let result: number;
-
-  switch (search.sortKey) {
-    case "id":
-      result = left.id - right.id;
-      break;
-    case "totalAmount":
-      result = compareMoneyStrings(left.totalAmount, right.totalAmount);
-      break;
-    case "product":
-      result = textCollator.compare(text(left.product), text(right.product));
-      break;
-    case "stateTransaction":
-      result = textCollator.compare(text(left.stateTransaction), text(right.stateTransaction));
-      break;
-    case "typePayment":
-      result = textCollator.compare(text(left.typePayment), text(right.typePayment));
-      break;
-    case "typeTransaction":
-      result = textCollator.compare(text(left.typeTransaction), text(right.typeTransaction));
-      break;
-    case "dateCreated":
-      result = compareDateTime(left.dateCreated, right.dateCreated);
-      break;
-  }
-
-  if (result === 0) {
-    return left.id - right.id;
-  }
+  const result =
+    compareBySortKey(left, right, search.sortKey) ||
+    compareDateTime(left.dateCreated, right.dateCreated) ||
+    left.id - right.id;
 
   return search.sortDirection === "asc" ? result : -result;
 }
@@ -75,6 +76,37 @@ export function sortTransactions(
   search: Pick<TransactionSearchRequest, "sortDirection" | "sortKey">,
 ): DashboardTransaction[] {
   return [...transactions].sort((left, right) => compareTransactions(left, right, search));
+}
+
+/**
+ * Identificador de una consulta explícita («Consultar»). No usa `crypto.randomUUID`: el panel
+ * también se sirve por HTTP en una IP (docs/DEPLOY.md) y allí esa API no existe.
+ */
+export function createTransactionSearchId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * `true` cuando `next` sólo cambia cómo se muestra la misma consulta explícita: orden, dirección,
+ * página, tamaño de página o producto. Entonces la tabla actual puede seguir visible mientras
+ * llega el nuevo orden. Sin `searchId` (p. ej. el control de dispensado) nunca se considera la
+ * misma consulta, y una consulta nueva jamás muestra resultados de otra máquina o período.
+ */
+export function isSameTransactionSearch(
+  previous: TransactionSearchRequest | null | undefined,
+  next: TransactionSearchRequest | null | undefined,
+): boolean {
+  if (!previous?.searchId || !next?.searchId) {
+    return false;
+  }
+
+  return (
+    previous.searchId === next.searchId &&
+    previous.paypadId === next.paypadId &&
+    previous.from === next.from &&
+    previous.to === next.to &&
+    previous.paymentType === next.paymentType
+  );
 }
 
 /** Moneda de una máquina dentro del resumen de Transacciones/Reportes. */

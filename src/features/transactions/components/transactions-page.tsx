@@ -17,8 +17,10 @@ import { TransactionDetailDialog } from "@/features/transactions/components/tran
 import { TransactionFilters, type TransactionFiltersValues } from "@/features/transactions/components/transaction-filters";
 import { TransactionStateBadge } from "@/features/transactions/components/transaction-state-badge";
 import { TransactionSummaryCards } from "@/features/transactions/components/transaction-summary";
+import { TransactionsRefreshingStatus } from "@/features/transactions/components/transactions-refreshing-status";
 import { useTransactionSearch } from "@/features/transactions/hooks";
 import type { DashboardTransaction, TransactionSearchRequest, TransactionSortKey } from "@/features/transactions/schemas";
+import { createTransactionSearchId } from "@/features/transactions/transaction-search";
 import { getTransactionStateTone, transactionAmountToneClasses } from "@/features/transactions/transaction-state-tone";
 import { createTodayDateRange, dateForFileName, formatDashboardDateTime } from "@/lib/formatters/date";
 import { formatDashboardMoney } from "@/lib/formatters/money";
@@ -46,6 +48,8 @@ export function TransactionsPage() {
   const [selectedTransaction, setSelectedTransaction] = useState<DashboardTransaction | null>(null);
   const transactionsQuery = useTransactionSearch(search);
   const data = transactionsQuery.data;
+  // Resultados anteriores de la misma consulta mientras llega el nuevo orden o la nueva página.
+  const isRefreshing = transactionsQuery.isPlaceholderData;
   const selectedPaypad = search?.paypadId ? paypadsQuery.data?.find((item) => item.id === search.paypadId) : undefined;
   const excelFileName = search && search.paypadId
     ? `Reporte_${selectedPaypad ? getPaypadDisplayName(selectedPaypad).replaceAll(" ", "") : search.paypadId}_${dateForFileName(search.from)}_a_${dateForFileName(search.to)}.xlsx`
@@ -63,6 +67,7 @@ export function TransactionsPage() {
       paymentType: values.paymentType,
       paypadId: values.paypadId,
       product: null,
+      searchId: createTransactionSearchId(),
       sortDirection: "desc",
       sortKey: "dateCreated",
       to: values.to,
@@ -143,9 +148,12 @@ export function TransactionsPage() {
           <TransactionSummaryCards summary={data.summary} />
           <Card>
             <CardContent className="grid gap-4 p-5">
-              <p className="text-sm text-muted-foreground">
-                {data.total} resultado{data.total === 1 ? "" : "s"} encontrado{data.total === 1 ? "" : "s"}. {search.paymentType ? `Filtro activo: ${search.paymentType}. ` : ""}El Excel incluye todos los resultados de esta consulta, no sólo la página visible.
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                <p className="text-sm text-muted-foreground">
+                  {data.total} resultado{data.total === 1 ? "" : "s"} encontrado{data.total === 1 ? "" : "s"}. {search.paymentType ? `Filtro activo: ${search.paymentType}. ` : ""}El Excel incluye todos los resultados de esta consulta, no sólo la página visible.
+                </p>
+                <TransactionsRefreshingStatus active={isRefreshing} />
+              </div>
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="grid gap-2">
                   <span className="text-sm font-medium">Ordenar por</span>
@@ -184,25 +192,27 @@ export function TransactionsPage() {
               </div>
             </CardContent>
           </Card>
-          {data.items.length === 0 ? (
-            <EmptyState description="No se encontraron transacciones con los parámetros indicados." title="Resultados no encontrados" />
-          ) : (
-            <ResponsiveDataTable
-              columns={columns}
-              data={data.items}
-              getCardDescription={(transaction) => `${text(transaction.typeTransaction)} · ${formatDashboardDateTime(transaction.dateCreated)}`}
-              getCardTitle={(transaction) => `Transacción ${transaction.id}`}
-              getRowId={(transaction) => String(transaction.id)}
-              label="Resultados de transacciones"
-            />
-          )}
-          {data.total > 0 ? (
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <Button disabled={search.page === 1} onClick={() => updateSearch({ page: search.page - 1 })} type="button" variant="outline">Anterior</Button>
-              <span className="text-sm text-muted-foreground">Página {search.page} de {Math.max(1, Math.ceil(data.total / search.pageSize))}</span>
-              <Button disabled={search.page * search.pageSize >= data.total} onClick={() => updateSearch({ page: search.page + 1 })} type="button" variant="outline">Siguiente</Button>
-            </div>
-          ) : null}
+          <div aria-busy={isRefreshing} className={cn("grid gap-6 transition-opacity duration-300", isRefreshing && "opacity-60")}>
+            {data.items.length === 0 ? (
+              <EmptyState description="No se encontraron transacciones con los parámetros indicados." title="Resultados no encontrados" />
+            ) : (
+              <ResponsiveDataTable
+                columns={columns}
+                data={data.items}
+                getCardDescription={(transaction) => `${text(transaction.typeTransaction)} · ${formatDashboardDateTime(transaction.dateCreated)}`}
+                getCardTitle={(transaction) => `Transacción ${transaction.id}`}
+                getRowId={(transaction) => String(transaction.id)}
+                label="Resultados de transacciones"
+              />
+            )}
+            {data.total > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <Button disabled={search.page === 1} onClick={() => updateSearch({ page: search.page - 1 })} type="button" variant="outline">Anterior</Button>
+                <span className="text-sm text-muted-foreground">Página {search.page} de {Math.max(1, Math.ceil(data.total / search.pageSize))}</span>
+                <Button disabled={search.page * search.pageSize >= data.total} onClick={() => updateSearch({ page: search.page + 1 })} type="button" variant="outline">Siguiente</Button>
+              </div>
+            ) : null}
+          </div>
         </>
       ) : null}
       <TransactionDetailDialog

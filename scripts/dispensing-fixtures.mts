@@ -29,6 +29,8 @@
  *                     saldo = revisar el módulo, faltante sin saldo = agotamiento (no atasco)
  *   colores-estado  – cada estado de transacción tiene su color: canceladas rojo, aprobadas
  *                     verde, iniciadas azul, error devuelta amarillo, sin notificar blanco
+ *   orden-tx        – «Ordenar por»/«Dirección»: descendente es ascendente al revés aunque el
+ *                     campo repita valores, y reordenar reutiliza el período ya descargado
  */
 import { summarizeMachineCurrencies } from "../src/features/dispensing-control/denomination-usage.ts";
 import { computeJamEarlyWarnings } from "../src/features/dispensing-control/jam-early-warning.ts";
@@ -37,7 +39,14 @@ import { createDispensingMetricsInput } from "../src/features/dispensing-control
 import { computeDispensingMetrics } from "../src/features/dispensing-control/dispensing-metrics.ts";
 import { buildPayoutReconciliation } from "../src/features/dispensing-control/dispensing-payout-reconciliation.ts";
 import { buildSystemDispensedEvidence, isSystemEvidenceUsable } from "../src/features/dispensing-control/system-dispensed.ts";
-import { summarizeTransactionsByCurrency } from "../src/features/transactions/transaction-search.ts";
+import { createPeriodSnapshotCache } from "../src/features/transactions/period-snapshot-cache.ts";
+import type { TransactionSearchRequest, TransactionSortKey } from "../src/features/transactions/schemas.ts";
+import {
+  createTransactionSearchId,
+  isSameTransactionSearch,
+  sortTransactions,
+  summarizeTransactionsByCurrency,
+} from "../src/features/transactions/transaction-search.ts";
 import { getTransactionStateTone, transactionAmountToneClasses } from "../src/features/transactions/transaction-state-tone.ts";
 
 /* ------------------------------------------------------------------ utilidades */
@@ -2202,6 +2211,109 @@ expect(
     getTransactionStateTone(null) === "neutral" &&
     getTransactionStateTone("") === "neutral",
 );
+
+/* ------------------------------------------------------------------ 14) transacciones: «Ordenar por» y «Dirección» */
+
+console.log("\n[orden-tx] «Ordenar por» y «Dirección» aplican el orden elegido");
+
+// Como los datos reales de una máquina en un día: IDs que crecen con la hora, un solo trámite,
+// casi todo en efectivo y aprobado, importes que se repiten.
+const sortRow = (id: number, minute: number, typePayment: string, state: string, total: string, product: string) => ({
+  dateCreated: `2026-09-24T${String(6 + Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00`,
+  id,
+  idPayPad: 71,
+  incomeAmount: total,
+  product,
+  realAmount: total,
+  returnAmount: "0",
+  stateTransaction: state,
+  totalAmount: total,
+  typePayment,
+  typeTransaction: "Pago de factura",
+});
+const sortRows = [
+  sortRow(9001, 0, "Efectivo", "Aprobada", "12000", "Agua"),
+  sortRow(9002, 25, "Tarjeta", "Aprobada", "45000", "Energía"),
+  sortRow(9003, 50, "Efectivo", "Cancelada", "12000", "Agua"),
+  sortRow(9004, 75, "Efectivo", "Aprobada", "8000", "Energía"),
+  sortRow(9005, 100, "Tarjeta", "Aprobada Error Devuelta", "45000", "Agua"),
+  sortRow(9006, 125, "Efectivo", "Aprobada", "30000", "Energía"),
+];
+const sortIds = (sortKey: TransactionSortKey, sortDirection: "asc" | "desc") =>
+  sortTransactions(sortRows, { sortDirection, sortKey }).map((transaction) => transaction.id).join(" ");
+
+for (const sortKey of ["dateCreated", "id", "totalAmount", "typeTransaction", "typePayment", "stateTransaction", "product"] as const) {
+  const ascending = sortIds(sortKey, "asc");
+  const descending = sortIds(sortKey, "desc");
+  expect(`«${sortKey}»: Descendente es exactamente Ascendente al revés`, descending === ascending.split(" ").reverse().join(" "), `asc=${ascending} desc=${descending}`);
+}
+expect(
+  "con todos los trámites iguales la dirección SÍ cambia la lista (antes ambas daban la misma)",
+  sortIds("typeTransaction", "asc") === "9001 9002 9003 9004 9005 9006" && sortIds("typeTransaction", "desc") === "9006 9005 9004 9003 9002 9001",
+  `asc=${sortIds("typeTransaction", "asc")} desc=${sortIds("typeTransaction", "desc")}`,
+);
+expect(
+  "Medio de pago descendente: primero Tarjeta y, dentro de cada medio, lo más reciente primero",
+  sortIds("typePayment", "desc") === "9005 9002 9006 9004 9003 9001",
+  sortIds("typePayment", "desc"),
+);
+expect(
+  "importes repetidos se desempatan por fecha en la dirección elegida",
+  sortIds("totalAmount", "desc") === "9005 9002 9006 9003 9001 9004",
+  sortIds("totalAmount", "desc"),
+);
+
+const baseSearch: TransactionSearchRequest = {
+  from: "2026-09-24T05:00:00.000Z",
+  page: 1,
+  pageSize: 10,
+  paymentType: null,
+  paypadId: 71,
+  product: null,
+  searchId: "consulta-1",
+  sortDirection: "desc",
+  sortKey: "dateCreated",
+  to: "2026-09-25T04:59:59.999Z",
+};
+expect(
+  "cambiar orden, dirección, página o producto es la MISMA consulta (la tabla sigue visible)",
+  isSameTransactionSearch(baseSearch, { ...baseSearch, page: 2, pageSize: 25, product: "Agua", sortDirection: "asc", sortKey: "totalAmount" }),
+);
+expect(
+  "pulsar «Consultar» otra vez es una consulta nueva (nunca muestra la anterior)",
+  !isSameTransactionSearch(baseSearch, { ...baseSearch, searchId: "consulta-2" }),
+);
+expect(
+  "otra máquina o período con el mismo identificador no se toma como la misma consulta",
+  !isSameTransactionSearch(baseSearch, { ...baseSearch, paypadId: 72 }) && !isSameTransactionSearch(baseSearch, { ...baseSearch, to: "2026-09-26T04:59:59.999Z" }),
+);
+expect(
+  "sin searchId (control de dispensado) nunca se reutiliza nada",
+  !isSameTransactionSearch({ ...baseSearch, searchId: undefined }, { ...baseSearch, searchId: undefined }),
+);
+const searchIdA = createTransactionSearchId();
+const searchIdB = createTransactionSearchId();
+expect("cada «Consultar» genera un identificador distinto y válido (1–64 caracteres)", searchIdA !== searchIdB && searchIdA.length > 0 && searchIdA.length <= 64, `${searchIdA} / ${searchIdB}`);
+
+let fakeNow = 1_000_000;
+const snapshots = createPeriodSnapshotCache<string>({ maxEntries: 2, maxTotalRows: 100, now: () => fakeNow, ttlMs: 60_000 });
+snapshots.set("a", "período A", 10);
+expect("reordenar reutiliza el período ya descargado", snapshots.get("a") === "período A" && snapshots.get("otra-clave") === undefined);
+fakeNow += 60_001;
+expect("pasada la vigencia se vuelve a leer el API", snapshots.get("a") === undefined && snapshots.size === 0);
+snapshots.set("a", "A", 10);
+snapshots.set("b", "B", 10);
+snapshots.set("c", "C", 10);
+expect("con el tope de instantáneas se descarta la más antigua", snapshots.get("a") === undefined && snapshots.get("b") === "B" && snapshots.get("c") === "C");
+// b sale por el tope de instantáneas; c (10 filas) sale porque 10 + 95 superaría las 100 filas.
+snapshots.set("grande", "G", 95);
+expect(
+  "el tope total de filas descarta las más antiguas para hacer espacio",
+  snapshots.get("grande") === "G" && snapshots.get("b") === undefined && snapshots.get("c") === undefined && snapshots.totalRows === 95,
+  `filas=${snapshots.totalRows}`,
+);
+snapshots.set("enorme", "E", 101);
+expect("un período mayor que el tope no se guarda (y no desplaza a los demás)", snapshots.get("enorme") === undefined && snapshots.get("grande") === "G");
 
 /* ------------------------------------------------------------------ resumen */
 

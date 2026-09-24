@@ -181,6 +181,7 @@
 | Descarga Excel y vídeo reales | **PENDIENTE E2E** |
 | Estados skeleton / vacío / error-reintento / sin permisos | **PENDIENTE E2E** en todas las vistas |
 | Confirmaciones destructivas/financieras | **PENDIENTE E2E** |
+| «Ordenar por» y «Dirección» en Transacciones/Reportes | **PASA (fixture local + navegador contra API simulado)** — con datos como los reales (IDs que crecen con la hora, un solo trámite, casi todo efectivo) «Dirección» no hacía nada: el desempate por ID era siempre ascendente. Ahora el orden es campo → fecha → ID y la dirección se aplica a todo (`compareTransactions`: descendente = ascendente al revés, 7 campos en `fixtures:dispensing`). Cada cambio de orden, página o producto volvía a leer el API legado y reemplazaba resultados y selectores por un esqueleto: ahora la tabla sigue visible (atenuada, «Actualizando resultados…») y el BFF reutiliza el período de la misma consulta (`searchId` por «Consultar», instantánea de 5 min aislada por sesión, topes de 30 consultas y 60.000 filas; ver `period-snapshot-cache.ts`). Medido con latencia simulada de 4 s: reordenar pasó de ~4 s a ~40 ms sin llamadas al API; «Consultar» siempre relee. «ID» y «Fecha» coinciden porque los IDs son secuenciales. |
 
 9. **B-09 — RESUELTO con decisión del negocio (separar por moneda).** El resumen de Transacciones
    ya no publica un único «Total recaudado» cuando el período abarca varias monedas: el BFF añade

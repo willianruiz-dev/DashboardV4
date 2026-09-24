@@ -66,6 +66,13 @@ export const transactionSearchRequestSchema = z.object({
   paymentType: transactionPaymentTypeSchema.nullable().default(null),
   paypadId: z.number().int().positive().nullable(),
   product: z.string().nullable(),
+  /**
+   * Identifica una consulta explícita («Consultar»). Ordenar, cambiar la dirección, paginar o
+   * filtrar por producto conservan el mismo `searchId`: el BFF reutiliza el período ya descargado
+   * y la interfaz mantiene la tabla visible mientras se reordena. Sin `searchId` (p. ej. el
+   * control de dispensado) cada solicitud vuelve a leer el API legado, como siempre.
+   */
+  searchId: z.string().trim().min(1).max(64).optional(),
   sortDirection: z.enum(["asc", "desc"]),
   sortKey: transactionSortKeySchema,
   to: z.string().datetime({ offset: true }),
