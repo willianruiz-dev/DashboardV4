@@ -117,7 +117,7 @@ export function TransactionsPage() {
       : current);
   }
 
-  function updateSearch(update: Partial<Pick<TransactionSearchRequest, "page" | "pageSize">>): void {
+  function updateSearch(update: Partial<Pick<TransactionSearchRequest, "page" | "pageSize" | "sortDirection" | "sortKey">>): void {
     setSearch((current) => current ? { ...current, ...update } : current);
   }
 
@@ -202,7 +202,7 @@ export function TransactionsPage() {
                 </p>
                 <TransactionsRefreshingStatus active={isRefreshing} />
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-3">
                 <div className="grid gap-2">
                   <span className="text-sm font-medium">Filtro de fecha</span>
                   <Button
@@ -225,6 +225,16 @@ export function TransactionsPage() {
                           ? `Último cargue: ${formatDashboardDateTime(latestLoad?.dateCreated)}`
                           : "Este Pay+ no tiene cargues registrados."}
                   </p>
+                </div>
+                <div className="grid gap-2">
+                  <span className="text-sm font-medium">Dirección</span>
+                  <Select onValueChange={(value) => updateSearch({ page: 1, sortDirection: value as "asc" | "desc" })} value={search.sortDirection}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="desc">Descendente</SelectItem>
+                      <SelectItem value="asc">Ascendente</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="grid gap-2">
                   <span className="text-sm font-medium">Resultados por página</span>
