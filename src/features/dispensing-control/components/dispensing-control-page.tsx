@@ -244,6 +244,15 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
   const dpValue = multiCurrency && (metrics?.dispensedTotalsByCurrency.length ?? 0) > 1
     ? byCurrencyText(metrics?.dispensedTotalsByCurrency ?? [])
     : (dispensedTotal === null ? "—" : formatDashboardMoney(dispensedTotal));
+  // RJ tiene dos lecturas distintas y ambas deben estar rotuladas: el estado de la
+  // transacción (`Aprobada Error Devuelta`) y el dinero que el detalle/baúl puso en rechazo.
+  const detailRejectedValue = jamScanRequest === null
+    ? "sin análisis"
+    : jamScanQuery.isPending
+      ? "analizando…"
+      : jamScanQuery.isError
+        ? "no disponible"
+        : formatDashboardMoney(payoutReconciliation.rejectedTotal);
 
   return (
     <div className="grid gap-6">
@@ -449,9 +458,9 @@ export function DispensingControlPage({ initialPaypadId = null }: DispensingCont
               />
               <MetricCard
                 icon={XCircle}
-                label="RJ · Aprobada Error Devuelta"
+                label="RJ lógico · Aprobada Error Devuelta"
                 loading={metricsQuery.isLoading && metrics === null}
-                subtitle={`${metrics?.rj.count ?? 0} transacción${(metrics?.rj.count ?? 0) === 1 ? "" : "es"} · Baúl rechazo hoy: ${metrics ? formatDashboardMoney(metrics.rj.currentTotal) : "—"}${metrics?.rj.physicalTotal ? ` (base: ${formatDashboardMoney(metrics.rj.physicalTotal)})` : ""}${mixedCurrencyNote}${rejectionByCurrencyNote}`}
+                subtitle={`${metrics?.rj.count ?? 0} transacción${(metrics?.rj.count ?? 0) === 1 ? "" : "es"} · Estado: ${metrics ? formatDashboardMoney(metrics.rj.total) : "—"} · Reject en detalle: ${detailRejectedValue} · Baúl RJ hoy: ${metrics ? formatDashboardMoney(metrics.rj.currentTotal) : "—"}${metrics?.rj.physicalTotal ? ` (base: ${formatDashboardMoney(metrics.rj.physicalTotal)})` : ""}${mixedCurrencyNote}${rejectionByCurrencyNote}`}
                 tone="cancelled"
                 value={metrics ? formatDashboardMoney(metrics.rj.total) : "—"}
               />
