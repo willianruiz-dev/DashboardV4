@@ -492,7 +492,56 @@ expect(
   (ccCentroMetrics.excludedRows.find((row) => row.currencyLabel === "USD")?.excludedReason ?? "").includes("Su moneda (USD)"),
 );
 
-/* ------------------------------------------------------------------ 7) divisa: COP ⇄ USD sin mezclas */
+/* ------------------------------------------------------------------ 7) Reject en RJ: contexto auditable, no atasco por sí solo */
+
+console.log("\n[reject-rj] un Reject queda en RJ sin generar una falsa alerta de atasco");
+
+const rejectRjStorage = [
+  storageRow("10000", 21, "24", { min: "5", rejected: "1", rejectedTotal: "10000" }),
+  storageRow("2000", 22, "34", { min: "5", rejected: "1", rejectedTotal: "2000" }),
+];
+const rejectRjTransactions = [
+  transaction(
+    320,
+    "2026-09-17T18:05:00.000Z",
+    [
+      { denominationId: 21, operation: "Reject", operationId: 3, quantity: "1" },
+      { denominationId: 21, operation: "Dispensar", operationId: 2, quantity: "1" },
+    ],
+    { income: "15000", real: "5000", ret: "10000" },
+  ),
+  transaction(
+    321,
+    "2026-09-17T18:10:00.000Z",
+    [
+      { denominationId: 22, operation: "Reject", operationId: 3, quantity: "1" },
+      { denominationId: 22, operation: "Dispensar", operationId: 2, quantity: "1" },
+    ],
+    { income: "7000", real: "5000", ret: "2000" },
+  ),
+];
+const rejectRj = computeJamDiagnostics({
+  byState: { Aprobada: { count: 2, total: "10000" } },
+  loads: [],
+  scan: scan(rejectRjTransactions),
+  storage: rejectRjStorage,
+  tonnages: [],
+  ...RANGE,
+});
+
+console.log(`  headline: ${rejectRj.headline}`);
+expect("Reject no genera incidentes por sí solo", rejectRj.incidents.length === 0, incidentTitles(rejectRj));
+expect(
+  "Reject queda visible como contexto RJ",
+  rejectRj.rows.every((row) => row.rejectedUnits === 1 && row.level === "sin_evidencia" && row.signals.some((signal) => signal.code === "rechazo_con_unidades")),
+  JSON.stringify(rejectRj.rows.map((row) => ({ level: row.level, rejected: row.rejectedUnits, signals: row.signals.map((signal) => signal.code) }))),
+);
+expect(
+  "el contexto RJ no suma al score de atasco",
+  rejectRj.rows.every((row) => row.signals.find((signal) => signal.code === "rechazo_con_unidades")?.weight === 0),
+);
+
+/* ------------------------------------------------------------------ 8) divisa: COP ⇄ USD sin mezclas */
 
 console.log("\n[divisa] máquina de cambio divisa: cada moneda por separado (C8)");
 

@@ -283,7 +283,7 @@ BD). El motor no lo asume:
 | `rafaga_salida` | 2 | ≥ 3 `Aprobada Error Devuelta` en el período (nivel máquina) |
 | `sustitucion_no_configurada` | 3 | Igual, pero la denominación está marcada «No dispensa»: posible atasco **o** configuración desactualizada |
 | `inactiva_con_saldo` | 2 (1 si el arqueo está fuera del período) | Fue **requerida** por los pagos (hubo sustitución), no se movió en el intervalo de arqueo y conserva saldo; la máquina sí movió otras denominaciones |
-| `rechazo_con_unidades` | 1 | El baúl de rechazo tiene unidades y hubo rechazos/intentos fallidos |
+| `rechazo_con_unidades` | 0 | `Reject` terminó en el baúl RJ: queda visible como contexto auditable, pero no prueba un atasco por sí solo |
 | `config_inconsistente` | 1 | Marcada «No dispensa», pero el arqueo muestra movimiento real del baúl |
 | `compensando_entrega` | 0 | Entregó más que su parte canónica (≥ 2 unidades, ≥ 2 pagos): **suprime el resto de señales de esa denominación** |
 | `descuadre_inventario` | 0 | `caidaFisica(d) < 0` (informativo; invalida la caída como evidencia) |
@@ -292,6 +292,13 @@ Niveles: `sin_evidencia` → `sospecha` (score ≥ 1) → `probable` (≥ 3) →
 (≥ 6 con ≥ 2 señales, una señal núcleo **y una evidencia independiente**: física
 —`sin_caida_fisica`, `caida_*`— o fallo explícito de entrega —`devuelto_con_saldo`—).
 Una denominación **compensadora nunca recibe nivel de atasco**: está entregando, no fallando.
+
+`Reject`/`Rechazo` tiene una semántica física distinta de un fallo de dispensado: la unidad
+terminó en el baúl RJ y no llegó al cliente. Por eso se conserva en la conciliación y en la
+fila de la denominación, pero un rechazo aislado no eleva el score ni crea una alerta de
+atasco. Para alertar se necesita otra evidencia del período o de una ventana de arqueos
+cubierta, por ejemplo fallos repetidos con saldo, sustitución repetida o una caída física
+válida.
 
 ### Regla de oro de la temporización
 

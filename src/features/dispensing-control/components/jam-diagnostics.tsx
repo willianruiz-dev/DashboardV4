@@ -66,6 +66,11 @@ export function JamDiagnosticsSection({
   rangeLabel,
 }: JamDiagnosticsSectionProps) {
   const rowsWithEvidence = diagnostics.rows.filter((row) => row.level !== "sin_evidencia");
+  // La tarjeta superior ya resume el incidente principal; no lo repitas en la lista
+  // para que dos incidentes no parezcan tres advertencias al operador.
+  const additionalIncidents = diagnostics.primary === null
+    ? diagnostics.incidents
+    : diagnostics.incidents.filter((incident) => incident !== diagnostics.primary);
 
   return (
     <Card className="animate-rise overflow-hidden p-0">
@@ -163,9 +168,9 @@ export function JamDiagnosticsSection({
           </div>
         ) : null}
 
-        {diagnostics.incidents.length > 0 ? (
+        {additionalIncidents.length > 0 ? (
           <div className="grid gap-3">
-            {diagnostics.incidents.slice(0, 4).map((incident) => (
+            {additionalIncidents.slice(0, 4).map((incident) => (
               <Alert key={`${incident.kind}-${incident.denominationId ?? "salida"}`} variant={levelAlertTone[incident.level]} role="alert">
                 <TriangleAlert aria-hidden="true" className="size-4" />
                 <AlertTitle className="flex flex-wrap items-center gap-2">

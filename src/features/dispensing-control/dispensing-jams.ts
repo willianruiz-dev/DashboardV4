@@ -64,6 +64,8 @@ import { DENOMINATION_NOT_IN_USE_REASON, isDenominationInUse } from "./denominat
  *  - caida_insuficiente (1)   : el arqueo bajó menos que lo entregado registrado.
  *  - caida_sin_registro (1)   : el arqueo bajó más de lo registrado (extracción manual).
  *  - rafaga_salida (2, máquina): muchas `Aprobada Error Devuelta` en el período.
+ *  - rechazo_con_unidades (0, contexto): `Reject` terminó en RJ; se audita, pero no
+ *                               prueba un atasco por sí solo.
  *  - descuadre_inventario (0, informativo): el conteo subió (cargue no registrado).
  *
  * Niveles: sin_evidencia → sospecha → probable (score ≥ 3) → confirmado (score ≥ 6
@@ -173,7 +175,8 @@ export const jamSignalWeights: Record<JamSignalCode, number> = {
   inactiva_con_saldo: 2,
   participacion_perdida: 0,
   rafaga_salida: 2,
-  rechazo_con_unidades: 1,
+  // Reject es RJ físico auditable, no evidencia de atasco por sí solo.
+  rechazo_con_unidades: 0,
   sin_caida_fisica: 3,
   sin_participacion: 2,
   sustitucion: 3,
@@ -191,7 +194,7 @@ export const jamSignalLabels: Record<JamSignalCode, string> = {
   inactiva_con_saldo: "No participó con saldo (arqueo)",
   participacion_perdida: "No participó en la ventana reciente",
   rafaga_salida: "Ráfaga de error devuelta",
-  rechazo_con_unidades: "Baúl de rechazo con unidades",
+  rechazo_con_unidades: "Reject registrado en RJ (contexto)",
   sin_caida_fisica: "El arqueo no bajó nada",
   sin_participacion: "No participó teniendo saldo",
   sustitucion: "Se sustituyó por denominación menor",
@@ -1444,7 +1447,7 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
       if (!compensating && rejectionStock > 0 && (aggregate.failedUnits >= thresholds.minimumFailedUnits || aggregate.rejectedUnits > 0)) {
         signals.push({
           code: "rechazo_con_unidades",
-          detail: `El baúl de rechazo tiene ${rejectionStock} unidad(es) y hubo ${aggregate.failedUnits + aggregate.rejectedUnits} unidad(es) rechazada(s)/no entregada(s).`,
+          detail: `El baúl de rechazo tiene ${rejectionStock} unidad(es) y el detalle registra ${aggregate.failedUnits + aggregate.rejectedUnits} unidad(es) en RJ: quedaron auditadas como rechazo y no llegaron al cliente. Esta señal es contexto, no evidencia de atasco por sí sola.`,
           weight: jamSignalWeights.rechazo_con_unidades,
         });
       }
@@ -1524,7 +1527,7 @@ export function computeJamDiagnostics(input: JamDiagnosticsInput): JamDiagnostic
           cause,
           aggregate.failedUnits,
           aggregate.dispensedUnits,
-          physicalDrop,
+          coveredByScan ? physicalDrop : null,
           aggregate.substitutionEvents + aggregate.unconfiguredSubstitutionEvents,
         ),
       } satisfies JamDenominationRow;
