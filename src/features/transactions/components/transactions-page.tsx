@@ -1,7 +1,8 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
-import { useState, type ReactNode } from "react";
+import { CalendarClock } from "lucide-react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
 import { PageHeader } from "@/components/shared/page-header";
@@ -10,8 +11,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { hasPermission, useDashboardSession } from "@/features/auth/session-context";
-import { usePaypads } from "@/features/paypads/hooks";
+import { usePaypadLoads, usePaypads } from "@/features/paypads/hooks";
 import { getPaypadDisplayName } from "@/features/paypads/paypad-display";
+import type { Load } from "@/features/paypads/schemas";
 import { ExcelExportButton } from "@/features/transactions/components/excel-export-button";
 import { TransactionDetailDialog } from "@/features/transactions/components/transaction-detail-dialog";
 import { TransactionFilters, type TransactionFiltersValues } from "@/features/transactions/components/transaction-filters";
@@ -19,7 +21,7 @@ import { TransactionStateBadge } from "@/features/transactions/components/transa
 import { TransactionSummaryCards } from "@/features/transactions/components/transaction-summary";
 import { TransactionsRefreshingStatus } from "@/features/transactions/components/transactions-refreshing-status";
 import { useTransactionSearch } from "@/features/transactions/hooks";
-import type { DashboardTransaction, TransactionSearchRequest, TransactionSortKey } from "@/features/transactions/schemas";
+import type { DashboardTransaction, TransactionSearchRequest } from "@/features/transactions/schemas";
 import { createTransactionSearchId } from "@/features/transactions/transaction-search";
 import { getTransactionStateTone, transactionAmountToneClasses } from "@/features/transactions/transaction-state-tone";
 import { createTodayDateRange, dateForFileName, formatDashboardDateTime } from "@/lib/formatters/date";
@@ -48,8 +50,31 @@ export function TransactionsPage() {
   const [selectedTransaction, setSelectedTransaction] = useState<DashboardTransaction | null>(null);
   const transactionsQuery = useTransactionSearch(search);
   const data = transactionsQuery.data;
-  // Resultados anteriores de la misma consulta mientras llega el nuevo orden o la nueva página.
+  const loadsQuery = usePaypadLoads(search?.paypadId ?? null);
+  // Resultados anteriores de la misma consulta mientras llega la nueva página.
   const isRefreshing = transactionsQuery.isPlaceholderData;
+  const latestLoad = useMemo(() => {
+    let latest: Load | null = null;
+    let latestTime = Number.NEGATIVE_INFINITY;
+
+    for (const load of loadsQuery.data ?? []) {
+      const time = Date.parse(load.dateCreated ?? "");
+      if (!Number.isNaN(time) && time > latestTime) {
+        latest = load;
+        latestTime = time;
+      }
+    }
+
+    return latest;
+  }, [loadsQuery.data]);
+  const lastLoadFrom = useMemo(() => {
+    if (!latestLoad?.dateCreated) {
+      return null;
+    }
+
+    const date = new Date(latestLoad.dateCreated);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }, [latestLoad]);
   const selectedPaypad = search?.paypadId ? paypadsQuery.data?.find((item) => item.id === search.paypadId) : undefined;
   const excelFileName = search && search.paypadId
     ? `Reporte_${selectedPaypad ? getPaypadDisplayName(selectedPaypad).replaceAll(" ", "") : search.paypadId}_${dateForFileName(search.from)}_a_${dateForFileName(search.to)}.xlsx`
@@ -74,7 +99,25 @@ export function TransactionsPage() {
     });
   }
 
-  function updateSearch(update: Partial<Pick<TransactionSearchRequest, "page" | "pageSize" | "sortDirection" | "sortKey">>): void {
+  function applyLastLoadRange(): void {
+    if (!lastLoadFrom) {
+      return;
+    }
+
+    const to = new Date();
+    to.setSeconds(59, 999);
+    setSearch((current) => current
+      ? {
+          ...current,
+          from: lastLoadFrom,
+          page: 1,
+          searchId: createTransactionSearchId(),
+          to: to.toISOString(),
+        }
+      : current);
+  }
+
+  function updateSearch(update: Partial<Pick<TransactionSearchRequest, "page" | "pageSize">>): void {
     setSearch((current) => current ? { ...current, ...update } : current);
   }
 
@@ -133,7 +176,12 @@ export function TransactionsPage() {
         <EmptyState description="No hay equipos Pay+ disponibles para consultar transacciones." title="No hay Pay+" />
       ) : null}
       {canReadPaypads && !paypadsQuery.isPending && !paypadsQuery.isError && (paypadsQuery.data?.length ?? 0) > 0 ? (
-        <TransactionFilters defaultRange={defaultRange} onSearch={submitSearch} paypads={paypadsQuery.data ?? []} />
+        <TransactionFilters
+          appliedRange={search ? { from: search.from, to: search.to } : undefined}
+          defaultRange={defaultRange}
+          onSearch={submitSearch}
+          paypads={paypadsQuery.data ?? []}
+        />
       ) : null}
 
       {search && transactionsQuery.isPending ? <ListSkeleton rows={5} /> : null}
@@ -154,31 +202,29 @@ export function TransactionsPage() {
                 </p>
                 <TransactionsRefreshingStatus active={isRefreshing} />
               </div>
-              <div className="grid gap-3 md:grid-cols-3">
+              <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-2">
-                  <span className="text-sm font-medium">Ordenar por</span>
-                  <Select onValueChange={(value) => updateSearch({ page: 1, sortKey: value as TransactionSortKey })} value={search.sortKey}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="dateCreated">Fecha</SelectItem>
-                      <SelectItem value="id">ID</SelectItem>
-                      <SelectItem value="totalAmount">Total</SelectItem>
-                      <SelectItem value="typeTransaction">Trámite</SelectItem>
-                      <SelectItem value="typePayment">Medio de pago</SelectItem>
-                      <SelectItem value="stateTransaction">Estado</SelectItem>
-                      <SelectItem value="product">Producto</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <span className="text-sm font-medium">Dirección</span>
-                  <Select onValueChange={(value) => updateSearch({ page: 1, sortDirection: value as "asc" | "desc" })} value={search.sortDirection}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="desc">Descendente</SelectItem>
-                      <SelectItem value="asc">Ascendente</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <span className="text-sm font-medium">Filtro de fecha</span>
+                  <Button
+                    className="justify-start"
+                    disabled={loadsQuery.isPending || lastLoadFrom === null || transactionsQuery.isFetching}
+                    onClick={applyLastLoadRange}
+                    title={lastLoadFrom ? `Último cargue: ${formatDashboardDateTime(latestLoad?.dateCreated)}` : "No hay un cargue registrado para este Pay+"}
+                    type="button"
+                    variant="outline"
+                  >
+                    <CalendarClock aria-hidden="true" className="size-4" />
+                    Desde último cargue a la fecha
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    {loadsQuery.isPending
+                      ? "Consultando el último cargue…"
+                      : loadsQuery.isError
+                        ? "No fue posible consultar el historial de cargues."
+                        : lastLoadFrom
+                          ? `Último cargue: ${formatDashboardDateTime(latestLoad?.dateCreated)}`
+                          : "Este Pay+ no tiene cargues registrados."}
+                  </p>
                 </div>
                 <div className="grid gap-2">
                   <span className="text-sm font-medium">Resultados por página</span>

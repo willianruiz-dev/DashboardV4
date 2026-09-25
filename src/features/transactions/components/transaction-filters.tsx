@@ -2,6 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Search } from "lucide-react";
+import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 
 import { Button } from "@/components/ui/button";
@@ -28,17 +29,45 @@ export interface TransactionFiltersValues {
 
 interface TransactionFiltersProps {
   allowAllPaypads?: boolean;
+  /** Rango actualmente aplicado en la consulta, en ISO 8601. */
+  appliedRange?: { from: string; to: string };
   defaultRange: { from: string; to: string };
   disabled?: boolean;
   onSearch: (values: TransactionFiltersValues) => void;
   paypads: readonly PayPad[];
 }
 
-export function TransactionFilters({ allowAllPaypads = false, defaultRange, disabled = false, onSearch, paypads }: TransactionFiltersProps) {
+function apiIsoToLocalInputValue(value: string): string | null {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const pad = (part: number): string => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function TransactionFilters({ allowAllPaypads = false, appliedRange, defaultRange, disabled = false, onSearch, paypads }: TransactionFiltersProps) {
   const form = useForm<TransactionSearchFormValues>({
     defaultValues: { from: defaultRange.from, paymentType: "all", paypadId: "", to: defaultRange.to },
     resolver: zodResolver(transactionSearchFormSchema),
   });
+
+  const appliedFrom = appliedRange?.from;
+  const appliedTo = appliedRange?.to;
+
+  useEffect(() => {
+    if (!appliedFrom || !appliedTo) {
+      return;
+    }
+
+    const from = apiIsoToLocalInputValue(appliedFrom);
+    const to = apiIsoToLocalInputValue(appliedTo);
+    if (from && to) {
+      form.setValue("from", from);
+      form.setValue("to", to);
+    }
+  }, [appliedFrom, appliedTo, form]);
 
   function submit(values: TransactionSearchFormValues): void {
     if (!allowAllPaypads && values.paypadId === "all") {
