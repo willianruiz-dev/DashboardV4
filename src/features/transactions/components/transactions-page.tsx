@@ -1,7 +1,6 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
-import { CalendarClock } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 
 import { EmptyState, ErrorState, ForbiddenState, ListSkeleton } from "@/components/shared/query-states";
@@ -205,26 +204,23 @@ export function TransactionsPage() {
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="grid gap-2">
                   <span className="text-sm font-medium">Filtro de fecha</span>
-                  <Button
-                    className="justify-start"
+                  <Select
                     disabled={loadsQuery.isPending || lastLoadFrom === null || transactionsQuery.isFetching}
-                    onClick={applyLastLoadRange}
-                    title={lastLoadFrom ? `Último cargue: ${formatDashboardDateTime(latestLoad?.dateCreated)}` : "No hay un cargue registrado para este Pay+"}
-                    type="button"
-                    variant="outline"
+                    onValueChange={(value) => {
+                      if (value === "last-load") {
+                        applyLastLoadRange();
+                      }
+                    }}
+                    value={lastLoadFrom && Date.parse(search.from) === Date.parse(lastLoadFrom) ? "last-load" : "current"}
                   >
-                    <CalendarClock aria-hidden="true" className="size-4" />
-                    Desde último cargue a la fecha
-                  </Button>
-                  <p className="text-xs text-muted-foreground">
-                    {loadsQuery.isPending
-                      ? "Consultando el último cargue…"
-                      : loadsQuery.isError
-                        ? "No fue posible consultar el historial de cargues."
-                        : lastLoadFrom
-                          ? `Último cargue: ${formatDashboardDateTime(latestLoad?.dateCreated)}`
-                          : "Este Pay+ no tiene cargues registrados."}
-                  </p>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="current">Rango actual</SelectItem>
+                      <SelectItem value="last-load">Desde último cargue a la fecha</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="grid gap-2">
                   <span className="text-sm font-medium">Dirección</span>
