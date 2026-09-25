@@ -22,7 +22,7 @@ export default async function LoginPage() {
         <div className="grid gap-3 text-center">
           <Image
             alt="E-city Software"
-            className="mx-auto h-auto w-52 rounded-md border bg-card p-1 shadow-sm"
+            className="mx-auto h-auto w-52 rounded-lg border shadow-sm"
             height={182}
             priority
             sizes="(max-width: 640px) 13rem, 13rem"

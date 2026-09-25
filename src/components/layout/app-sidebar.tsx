@@ -132,7 +132,7 @@ export function AppSidebar({ navigation, onNavigate }: AppSidebarProps) {
       <Link aria-label="E-city Software: ir al inicio" className="flex min-h-11 items-center rounded-lg px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="/dashboard" onClick={onNavigate}>
         <Image
           alt=""
-          className="h-auto w-40 rounded-sm border bg-card p-1"
+          className="h-auto w-40 rounded-lg border"
           height={182}
           priority
           sizes="10rem"
