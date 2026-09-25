@@ -56,6 +56,7 @@ export function ReturnAlertsHomeSection() {
     (machine) => (machine.jamVerdict?.incidents.length ?? 0) === 0 && (machine.jamScreen?.warnings.length ?? 0) > 0,
   );
   const totalJams = withJams.reduce((total, machine) => total + (machine.jamScreen?.warnings.length ?? 0), 0);
+  const hasJamAlerts = verdictCount > 0 || totalJams > 0;
   const previousCounts = useRef<Map<number, number> | null>(null);
   // Valor: las denominaciones ya avisadas por máquina («|» = separador), para no repetir el aviso.
   const previousJams = useRef<Map<number, string> | null>(null);
@@ -81,7 +82,7 @@ export function ReturnAlertsHomeSection() {
           ? `importe en varias monedas${machine.currencyLabels.length > 0 ? ` (${machine.currencyLabels.join(", ")})` : ""}`
           : formatDashboardMoney(machine.errorTotal);
         toast.warning(`${machine.paypadName}: ${difference} error(es) de devuelta`, {
-          description: `${machine.errorCount} en total hoy · ${amount}. Revisa el control de dispensado.`,
+          description: `${machine.errorCount} en total hoy · valor neto del estado: ${amount}. No es el valor físico del baúl RJ.`,
           duration: 10_000,
         });
       }
@@ -148,11 +149,12 @@ export function ReturnAlertsHomeSection() {
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight">
               <BellRing aria-hidden="true" className="size-4 text-amber-600 dark:text-amber-400" />
-              Alertas de hoy · errores de devuelta ({RETURNED_ERROR_STATE}) y posible atasco
+              Alertas de hoy · errores de devuelta ({RETURNED_ERROR_STATE}){hasJamAlerts ? " y posible atasco" : ""}
             </h2>
             <p className="text-sm text-muted-foreground">
               Se actualiza solo cada {Math.round(RETURN_ALERTS_REFRESH_MS / 1000)} s (solo con esta pestaña visible) y muestra
-              únicamente la fecha actual.
+              únicamente la fecha actual. Los valores de estas tarjetas son transaccionales; el RJ físico se verifica en Control de
+              dispensado.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -173,7 +175,7 @@ export function ReturnAlertsHomeSection() {
             {totalErrors > 0 ? (
               <Badge className="gap-1.5" variant="warning">
                 <TriangleAlert aria-hidden="true" className="size-3.5" />
-                {totalErrors} en {withErrors.length} máquina{withErrors.length === 1 ? "" : "s"}
+                {totalErrors} error{totalErrors === 1 ? "" : "es"} en {withErrors.length} máquina{withErrors.length === 1 ? "" : "s"}
               </Badge>
             ) : alertsQuery.isSuccess ? (
               <Badge className="gap-1.5" variant="secondary">
@@ -253,11 +255,13 @@ export function ReturnAlertsHomeSection() {
           {alertsQuery.isSuccess && elapsed !== null
             ? `Última consulta: hace ${formatElapsed(elapsed)}${generatedAt ? ` (${new Date(generatedAt).toLocaleTimeString("es-CO")})` : ""}. `
             : ""}
-          Fuente: transacciones del día en curso por máquina, filtradas por estado «{RETURNED_ERROR_STATE}». El veredicto de
-          atasco es el MISMO motor del control de dispensado («Transaction/{"{id}"}/Details», «PayPad/GetStorage»,
-          «Tonnage/GetByPaypad», «Load/GetByPaypad»), calculado en el servidor y reutilizado 10 min; se analiza una máquina
-          por vuelta en segundo plano, así que puede tardar unas vueltas en aparecer. Mientras no haya veredicto, la alerta
-          temprana compara los arqueos del día con los pagos. Al abrir una tarjeta se consulta esa máquina en el panel.
+          Fuente: transacciones del día en curso por máquina, filtradas por estado «{RETURNED_ERROR_STATE}». El valor neto de la
+          tarjeta es ingreso menos devuelto y describe el estado transaccional; no es el total físico rechazado. El RJ físico se
+          confirma en el control de dispensado con el detalle `Reject` y el baúl por denominación. El veredicto de atasco es el
+          MISMO motor del control de dispensado («Transaction/{"{id}"}/Details», «PayPad/GetStorage», «Tonnage/GetByPaypad»,
+          «Load/GetByPaypad»), calculado en el servidor y reutilizado 10 min; se analiza una máquina por vuelta en segundo plano,
+          así que puede tardar unas vueltas en aparecer. Mientras no haya veredicto, la alerta temprana compara los arqueos del día
+          con los pagos. Al abrir una tarjeta se consulta esa máquina en el panel.
         </p>
       </CardContent>
     </Card>
@@ -478,22 +482,27 @@ function MachineAlertCard({ machine, nowMs }: { machine: ReturnAlertMachine; now
           {machine.errorCount}
         </Badge>
       </div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        {/* Una máquina puede operar COP y USD (cambio divisa): sumar sus importes daría un
-            número no comparable, así que en ese caso se declara en lugar de mostrarlo. */}
+      <div className="grid gap-1">
+        {/* El importe principal coincide con `metrics.rj.total`: ingreso − devuelto del
+            estado transaccional. Nunca representa el valor físico del baúl RJ. */}
         {machine.errorTotalMixedCurrency ? (
           <span className="text-sm font-semibold text-amber-700 dark:text-amber-300">
-            Importe en varias monedas{machine.currencyLabels.length > 0 ? ` (${machine.currencyLabels.join(", ")})` : ""}
+            Valor neto en varias monedas{machine.currencyLabels.length > 0 ? ` (${machine.currencyLabels.join(", ")})` : ""}
           </span>
         ) : (
           <span className="font-numeric text-lg font-semibold text-amber-700 dark:text-amber-300">
             {formatDashboardMoney(machine.errorTotal)}
           </span>
         )}
-        <span className="text-xs text-muted-foreground">
-          {machine.transactions} transacción(es) hoy
+        <p className="text-xs text-muted-foreground">
+          Valor neto del estado «{RETURNED_ERROR_STATE}» · {machine.errorCount} error{machine.errorCount === 1 ? "" : "es"} · {machine.transactions} transacción{machine.transactions === 1 ? "" : "es"} hoy
           {machine.errorTotalIncomplete && !machine.errorTotalMixedCurrency ? " · importe parcial (hay importes ilegibles)" : ""}
-        </span>
+        </p>
+        {!machine.errorTotalMixedCurrency && machine.errorIncomeTotal !== machine.errorTotal ? (
+          <p className="text-xs text-muted-foreground">
+            Ingresado asociado: {formatDashboardMoney(machine.errorIncomeTotal)} · no es RJ físico
+          </p>
+        ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
         {lastErrorElapsed === null

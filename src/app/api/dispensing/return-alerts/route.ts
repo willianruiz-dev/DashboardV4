@@ -9,7 +9,7 @@ import {
 import { getPaypadMachineName } from "@/features/paypads/paypad-display";
 import { paypadSchema, type PayPad } from "@/features/paypads/schemas";
 import { transactionSchema, type DashboardTransaction } from "@/features/transactions/schemas";
-import { sumMoneyStringsLenient } from "@/lib/formatters/money";
+import { sumMoneyStrings, sumMoneyStringsLenient } from "@/lib/formatters/money";
 import { mapWithConcurrency } from "@/lib/server/concurrency";
 import { getPaypadCurrencyProfiles } from "@/lib/server/paypad-currencies";
 import { BackendApiError, requestBackend } from "@/lib/server/backend-client";
@@ -151,14 +151,24 @@ function summarizeMachine(paypad: PayPad, transactions: readonly DashboardTransa
     return time > new Date(latest).getTime() ? (transaction.dateCreated ?? latest) : latest;
   }, null);
 
-  const totals = sumMoneyStringsLenient(errors.map((transaction) => transaction.incomeAmount));
+  const incomeTotals = sumMoneyStringsLenient(errors.map((transaction) => transaction.incomeAmount));
+  const netEntries = errors.map((transaction) => {
+    const income = sumMoneyStringsLenient([transaction.incomeAmount]);
+    const returned = sumMoneyStringsLenient([transaction.returnAmount]);
+    return {
+      complete: income.skipped === 0 && returned.skipped === 0,
+      value: sumMoneyStrings([income.total, `-${returned.total}`]),
+    };
+  });
+  const netTotals = sumMoneyStringsLenient(netEntries.map((entry) => entry.value));
 
   return {
     approvedCount: transactions.filter((transaction) => (transaction.stateTransaction ?? "").trim() === "Aprobada").length,
     currencyLabels: [],
     errorCount: errors.length,
-    errorTotal: totals.total,
-    errorTotalIncomplete: totals.skipped > 0,
+    errorIncomeTotal: incomeTotals.total,
+    errorTotal: netTotals.total,
+    errorTotalIncomplete: incomeTotals.skipped > 0 || netEntries.some((entry) => !entry.complete) || netTotals.skipped > 0,
     errorTotalMixedCurrency: false,
     // El semáforo lo completa `getMachineAlert`; el veredicto del motor, la ruta.
     jamScreen: null,
@@ -267,7 +277,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // Moneda de cada máquina: sólo se consulta el baúl de las que acumularon errores, con
     // caché (el sondeo del inicio es cada 30 s). Sin esto, `errorTotal` podía sumar pesos y
-    // dólares y presentarse como un importe comparable.
+    // dólares y presentarse como un importe comparable; el valor sigue siendo transaccional,
+    // no el RJ físico del baúl.
     const withErrors = alerts.filter((alert) => alert.errorCount > 0).slice(0, MAX_STORAGE_LOOKUPS);
     const errorPaypads = withErrors
       .map((alert) => paypads.find((entry) => entry.id === alert.paypadId))

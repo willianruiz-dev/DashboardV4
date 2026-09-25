@@ -175,7 +175,10 @@ export const returnAlertMachineSchema = z.object({
   /** Monedas que la máquina trabaja hoy, según su baúl (p. ej. `["COP","USD"]`). */
   currencyLabels: z.array(z.string()).default([]),
   errorCount: z.number().int().nonnegative(),
+  /** Valor neto del estado `Aprobada Error Devuelta`: ingresado − devuelto. No es el RJ físico. */
   errorTotal: z.string(),
+  /** Valor ingresado asociado a esas transacciones, visible como contexto y no como RJ. */
+  errorIncomeTotal: z.string().default("0"),
   /** `true` si algún importe del día no se pudo interpretar y el total queda corto. */
   errorTotalIncomplete: z.boolean().default(false),
   /**
