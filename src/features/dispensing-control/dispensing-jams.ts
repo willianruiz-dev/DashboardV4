@@ -386,7 +386,7 @@ export interface JamDiagnostics {
   warnings: readonly string[];
 }
 
-const failedOperationPattern = /error|fall|rechaz/i;
+const failedOperationPattern = /error|fall|rechaz|reject/i;
 const acceptOperationPattern = /acept|recib|ingres|deposit|entrada|carga/i;
 const dispenseOperationPattern = /dispens|entreg|devuel|vuelta|retorn|cambio|expend|salida|pago/i;
 
@@ -413,6 +413,11 @@ export function classifyJamOperation(operation: string | null): JamOperationKind
 
 export function isErrorReturnedState(state: string | null | undefined): boolean {
   return /error/i.test(state?.trim() ?? "");
+}
+
+/** `Reject`/`Rechazo` mueve la unidad al baúl RJ: no es dinero entregado al cliente. */
+export function isRejectOperation(operation: string | null | undefined): boolean {
+  return /reject|rechaz/i.test(operation?.trim() ?? "");
 }
 
 function toInt(value: string | number | null | undefined, fallback = 0): number {

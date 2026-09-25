@@ -12,7 +12,7 @@ import {
   type PayoutReconciliation,
 } from "@/features/dispensing-control/dispensing-payout-reconciliation";
 import { formatDashboardDateTime } from "@/lib/formatters/date";
-import { formatDashboardMoney } from "@/lib/formatters/money";
+import { formatDashboardMoney, multiplyMoneyString } from "@/lib/formatters/money";
 import { cn } from "@/lib/utils";
 
 /**
@@ -83,7 +83,8 @@ export function PayoutReconciliationSection({ data, loading = false, rangeLabel 
             <h2 className="text-base font-semibold tracking-tight">Conciliación por denominación: esperado vs. dispensado</h2>
             <p className="text-sm text-muted-foreground">
               Por cada devolución se reconstruye el plan (qué denominaciones debería haber usado el valor) y se compara con lo que el
-              detalle confirma entregado, <span className="font-medium text-foreground">dispositivo por dispositivo</span>. Periodo:{" "}
+              detalle confirma entregado al cliente. Las operaciones <span className="font-medium text-foreground">Reject/Rechazo</span> se
+              muestran aparte como RJ y no se suman a «Dispensado». Periodo:{" "}
               {rangeLabel}.
             </p>
           </div>
@@ -118,6 +119,12 @@ export function PayoutReconciliationSection({ data, loading = false, rangeLabel 
                   Faltante valorizado:{" "}
                   <span className={cn("font-numeric font-semibold", data.missingTotal !== "0" ? "text-red-500 dark:text-red-400" : "")}>
                     {formatDashboardMoney(data.missingTotal)}
+                  </span>
+                </span>
+                <span>
+                  Rechazo detectado en detalles (RJ):{" "}
+                  <span className="font-numeric font-semibold text-red-500 dark:text-red-400">
+                    {formatDashboardMoney(data.rejectedTotal)}
                   </span>
                 </span>
               </p>
@@ -171,6 +178,7 @@ export function PayoutReconciliationSection({ data, loading = false, rangeLabel 
                     <TableHead>Denominación</TableHead>
                     <TableHead className="text-right">Esperado</TableHead>
                     <TableHead className="text-right">Dispensado</TableHead>
+                    <TableHead className="text-right">Rechazado (RJ)</TableHead>
                     <TableHead className="text-right">Diferencia</TableHead>
                     <TableHead className="text-right">Faltó</TableHead>
                     <TableHead className="text-right">Saldo del baúl</TableHead>
@@ -204,6 +212,12 @@ export function PayoutReconciliationSection({ data, loading = false, rangeLabel 
                         <TableCell className="text-right align-top font-numeric">{units(row.expectedUnits)}</TableCell>
                         <TableCell className="text-right align-top font-numeric text-emerald-600 dark:text-emerald-400">
                           {units(row.dispensedUnits)}
+                        </TableCell>
+                        <TableCell className="text-right align-top">
+                          <span className={cn("font-numeric", row.rejectedUnits > 0 ? "font-semibold text-red-500 dark:text-red-400" : "text-muted-foreground")}>
+                            {units(row.rejectedUnits)}
+                          </span>
+                          {row.rejectedUnits > 0 ? <span className="block text-xs text-muted-foreground">{formatDashboardMoney(multiplyMoneyString(row.unitValue, String(row.rejectedUnits)))}</span> : null}
                         </TableCell>
                         <TableCell
                           className={cn(
@@ -266,6 +280,10 @@ export function PayoutReconciliationSection({ data, loading = false, rangeLabel 
                         <dd className="font-numeric">{units(row.dispensedUnits)}</dd>
                       </div>
                       <div className="flex justify-between">
+                        <dt className="text-muted-foreground">Rechazado (RJ)</dt>
+                        <dd className="font-numeric text-red-500 dark:text-red-400">{units(row.rejectedUnits)}</dd>
+                      </div>
+                      <div className="flex justify-between">
                         <dt className="text-muted-foreground">Diferencia</dt>
                         <dd className="font-numeric">{differenceText(row.differenceUnits)}</dd>
                       </div>
@@ -313,6 +331,7 @@ export function PayoutReconciliationSection({ data, loading = false, rangeLabel 
                             {formatDashboardMoney(line.denominationValue)}: esperado {units(line.expectedUnits)} · dispensado{" "}
                             {units(line.dispensedUnits)}
                             {line.missingUnits > 0 ? ` · faltó ${units(line.missingUnits)}` : ""}
+                            {line.rejectedUnits > 0 ? ` · rechazado RJ ${units(line.rejectedUnits)}` : ""}
                             {line.missingUnits === 0 && line.dispensedUnits > line.expectedUnits ? " · cubrió el hueco" : ""}
                           </li>
                         ))}

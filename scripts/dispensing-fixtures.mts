@@ -2073,6 +2073,27 @@ expect(
   JSON.stringify(payCorrect.byDenomination.find((row) => row.denominationValue === "5000")),
 );
 
+const payWithReject = payCase({ "10000": "10", "500": "10" }, [
+  transaction(
+    6,
+    "2026-09-20T15:00:00.000Z",
+    [
+      { denominationId: payIds["10000"], operation: "Reject", operationId: 3, quantity: "1" },
+      { denominationId: payIds["10000"], operation: "Dispensar", operationId: 2, quantity: "1" },
+      { denominationId: payIds["500"], operation: "Dispensar", operationId: 2, quantity: "1" },
+    ],
+    { income: "50000", real: "39500", ret: "10500" },
+  ),
+]);
+expect(
+  "Reject va a RJ y no infla el valor entregado al cliente",
+  payWithReject.transactions[0]?.complete === true &&
+    payWithReject.transactions[0]?.dispensedValue === "10500" &&
+    payWithReject.transactions[0]?.rejectedValue === "10000" &&
+    payWithReject.byDenomination.find((row) => row.denominationValue === "10000")?.rejectedUnits === 1,
+  JSON.stringify({ transaction: payWithReject.transactions[0], row: payWithReject.byDenomination.find((row) => row.denominationValue === "10000") }),
+);
+
 const payMissingWithStock = payCase({ "10000": "10", "5000": "20", "500": "30" }, [payPayout(2, { "5000": 2, "500": 1 }, "Aprobada Error Devuelta")]);
 const payMissingRow = payMissingWithStock.byDenomination.find((row) => row.denominationValue === "10000") ?? null;
 expect(

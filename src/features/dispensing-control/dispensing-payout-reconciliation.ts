@@ -13,6 +13,7 @@ import {
   decimalToCents,
   inferOperationRoles,
   isErrorReturnedState,
+  isRejectOperation,
   readJamDetail,
   reconcileDetailInterpretation,
   type JamScanPayload,
@@ -68,8 +69,10 @@ export interface PayoutLine {
   expectedUnits: number;
   /** Unidades que el kiosco PODÍA armar con el inventario leído (sin contar agotadas). */
   feasibleUnits: number;
-  /** Unidades que el detalle confirma entregadas. */
+  /** Unidades que el detalle confirma entregadas al cliente. */
   dispensedUnits: number;
+  /** Unidades que el detalle marca como `Reject`/`Rechazo`: quedaron en RJ, no llegaron al cliente. */
+  rejectedUnits: number;
   /**
    * `expectedUnits − dispensedUnits`: diferencia de COMPOSICIÓN contra el plan canónico.
    * Con la devolución completa puede ser distinta de cero sin que nada esté mal (el kiosco
@@ -96,6 +99,8 @@ export interface PayoutTransactionReconciliation {
   lines: PayoutLine[];
   /** Faltante valorizado: el valor solicitado que NO salió del dispensador. */
   missingValue: string;
+  /** Valor de los detalles que terminaron en el baúl RJ: no se cuenta como entrega al cliente. */
+  rejectedValue: string;
   /**
    * Parte del faltante que no se puede atribuir a una denominación del plan (no había
    * combinación exacta con el inventario leído). `missingValue = Σ(unidades faltantes × valor) + este resto`.
@@ -132,6 +137,8 @@ export interface PayoutReconciliation {
   /** Lo que el API actual NO permite verificar (se declara, no se inventa). */
   limitations: string[];
   missingTotal: string;
+  /** Valor total que el detalle marca como enviado al baúl de rechazo (RJ). */
+  rejectedTotal: string;
   notes: string[];
   transactions: PayoutTransactionReconciliation[];
 }
@@ -195,6 +202,7 @@ interface StorageRow {
  */
 interface DenominationAggregate {
   dispensedUnits: number;
+  rejectedUnits: number;
   expectedTransactions: Set<number>;
   expectedUnits: number;
   feasibleUnits: number;
@@ -275,7 +283,9 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
 
     const errorState = isErrorReturnedState(transaction.stateTransaction);
     const dispensed = new Map<number, number>();
+    const rejected = new Map<number, number>();
     let dispensedCents = 0n;
+    let rejectedCents = 0n;
 
     for (const detail of transaction.details) {
       if (detail.denominationId === null) {
@@ -286,8 +296,18 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
         continue;
       }
 
-      const { denominationId, kind } = readJamDetail(detail, roles);
+      const { denominationId, kind, rawOperation } = readJamDetail(detail, roles);
       if (denominationId === null || kind === "accept") {
+        continue;
+      }
+
+      // `Reject`/`Rechazo` significa que la unidad terminó en el baúl RJ. Se muestra
+      // aparte y nunca se suma a lo entregado al cliente.
+      if (kind === "failed") {
+        if (isRejectOperation(rawOperation)) {
+          rejected.set(denominationId, (rejected.get(denominationId) ?? 0) + quantity);
+          rejectedCents += BigInt(quantity) * (denominationValueById.get(denominationId) ?? 0n);
+        }
         continue;
       }
 
@@ -323,9 +343,9 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
     const feasibleMix = canonicalPayoutMix(payoutCents, withStock);
     const expectedUnits = idealMix?.units ?? new Map<number, number>();
 
-    const denominationIds = new Set<number>([...expectedUnits.keys(), ...dispensed.keys()]);
+    const denominationIds = new Set<number>([...expectedUnits.keys(), ...dispensed.keys(), ...rejected.keys()]);
     const composition: PayoutLine[] = [...denominationIds]
-      .map((denominationId) => buildLine(denominationId, expectedUnits, feasibleMix?.units ?? null, dispensed, currencyIndex, storageById, valueIndex))
+      .map((denominationId) => buildLine(denominationId, expectedUnits, feasibleMix?.units ?? null, dispensed, rejected, currencyIndex, storageById, valueIndex))
       .sort((left, right) => Number(right.unitValue) - Number(left.unitValue));
 
     // El veredicto del negocio es por VALOR: «entregado exacto» es correcto aunque el kiosco
@@ -351,6 +371,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
     for (const line of lines) {
       const aggregate = byDenomination.get(line.denominationId) ?? {
         dispensedUnits: 0,
+        rejectedUnits: 0,
         expectedTransactions: new Set<number>(),
         expectedUnits: 0,
         feasibleUnits: 0,
@@ -358,6 +379,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
         missingUnits: 0,
       };
       aggregate.dispensedUnits += line.dispensedUnits;
+      aggregate.rejectedUnits += line.rejectedUnits;
       aggregate.expectedUnits += line.expectedUnits;
       aggregate.feasibleUnits += line.feasibleUnits;
       if (line.expectedUnits > 0) {
@@ -379,6 +401,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
       id: transaction.id,
       lines,
       missingValue: centsToValue(missingCents),
+      rejectedValue: centsToValue(rejectedCents),
       requestedValue: centsToValue(payoutCents),
       returnedWithError: errorState,
       stateTransaction: transaction.stateTransaction,
@@ -392,6 +415,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
         lines,
         missingCents,
         payoutCents,
+        rejectedCents,
         unattributedMissing: decomposed.leftover,
       }),
     });
@@ -410,6 +434,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
         expectedUnits: aggregate.expectedUnits,
         incompletePayouts,
         missingUnits: aggregate.missingUnits,
+        rejectedUnits: aggregate.rejectedUnits,
         stock: storageRow?.stock ?? 0,
         storagePresent: storageRow !== null,
       });
@@ -422,6 +447,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
         denominationValue: storageRow?.value ?? valueIndex.get(denominationId) ?? "0",
         differenceUnits,
         dispensedUnits: aggregate.dispensedUnits,
+        rejectedUnits: aggregate.rejectedUnits,
         expectedTransactions: [...aggregate.expectedTransactions].sort((left, right) => left - right),
         expectedUnits: aggregate.expectedUnits,
         feasibleUnits: aggregate.feasibleUnits,
@@ -436,6 +462,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
           incompletePayouts,
           minDpQuantity: storageRow?.minDpQuantity ?? 0,
           missingUnits: aggregate.missingUnits,
+          rejectedUnits: aggregate.rejectedUnits,
           stock: storageRow?.stock ?? 0,
           storagePresent: storageRow !== null,
         }),
@@ -444,7 +471,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
         unitValue: storageRow?.value ?? valueIndex.get(denominationId) ?? "0",
       };
     })
-    .filter((row) => row.expectedUnits > 0 || row.dispensedUnits > 0 || row.missingUnits > 0)
+    .filter((row) => row.expectedUnits > 0 || row.dispensedUnits > 0 || row.rejectedUnits > 0 || row.missingUnits > 0)
     .sort((left, right) => {
       const leftLabel = left.currencyLabel ?? "";
       const rightLabel = right.currencyLabel ?? "";
@@ -457,6 +484,9 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
   const incomplete = reconciliationRows.filter((row) => !row.complete);
   const missingTotal = centsToValue(
     reconciliationRows.reduce((total, row) => total + decimalToCents(row.missingValue), 0n),
+  );
+  const rejectedTotal = centsToValue(
+    reconciliationRows.reduce((total, row) => total + decimalToCents(row.rejectedValue), 0n),
   );
 
   const coinRule = describeCoinOnlyRule({
@@ -475,6 +505,7 @@ export function buildPayoutReconciliation(input: PayoutReconciliationInput): Pay
     incompleteTransactions: incomplete.length,
     limitations,
     missingTotal,
+    rejectedTotal,
     notes,
     transactions: reconciliationRows.sort((left, right) => (right.missingValue > left.missingValue ? 1 : -1)),
   };
@@ -488,6 +519,7 @@ function emptyReconciliation(limitations: string[], notes: string[]): PayoutReco
     incompleteTransactions: 0,
     limitations,
     missingTotal: "0",
+    rejectedTotal: "0",
     notes,
     transactions: [],
   };
@@ -532,12 +564,14 @@ function buildLine(
   expected: ReadonlyMap<number, number>,
   feasible: ReadonlyMap<number, number> | null,
   dispensed: ReadonlyMap<number, number>,
+  rejected: ReadonlyMap<number, number>,
   currencyIndex: ReadonlyMap<number, DenominationCurrencyInfo>,
   storageById: ReadonlyMap<number, StorageRow>,
   valueIndex: ReadonlyMap<number, string>,
 ): PayoutLine {
   const expectedUnits = expected.get(denominationId) ?? 0;
   const dispensedUnits = dispensed.get(denominationId) ?? 0;
+  const rejectedUnits = rejected.get(denominationId) ?? 0;
   const storageRow = storageById.get(denominationId) ?? null;
 
   return {
@@ -547,6 +581,7 @@ function buildLine(
     denominationValue: storageRow?.value ?? valueIndex.get(denominationId) ?? "0",
     differenceUnits: expectedUnits - dispensedUnits,
     dispensedUnits,
+    rejectedUnits,
     expectedUnits,
     feasibleUnits: feasible?.get(denominationId) ?? 0,
     missingUnits: 0,
@@ -570,6 +605,7 @@ function classifyDenominationState(input: {
   expectedUnits: number;
   incompletePayouts: number;
   missingUnits: number;
+  rejectedUnits: number;
   stock: number;
   storagePresent: boolean;
 }): PayoutDenominationState {
@@ -612,16 +648,20 @@ function describeDenominationState(input: {
   incompletePayouts: number;
   minDpQuantity: number;
   missingUnits: number;
+  rejectedUnits: number;
   stock: number;
   storagePresent: boolean;
 }): string {
   const configuration = input.configured ? "" : " La denominación no está marcada para dispensar en la configuración del Pay+.";
+  const rejectionNote = input.rejectedUnits > 0
+    ? ` El detalle registra ${unitsText(input.rejectedUnits)} unidad(es) en rechazo (RJ): no llegaron al cliente y no cuentan como dispensado.`
+    : "";
   if (input.missingUnits > 0) {
     if (!input.storagePresent) {
-      return "Faltó y la denominación no aparece en el inventario de la máquina: no se puede saber si había unidades. Confirmar la configuración de dispensado.";
+      return `Faltó y la denominación no aparece en el inventario de la máquina: no se puede saber si había unidades. Confirmar la configuración de dispensado.${rejectionNote}`;
     }
     if (input.stock <= 0) {
-      return `Faltaron ${unitsText(input.missingUnits)} unidad(es) y el inventario está en cero: es AGOTAMIENTO, no un atasco. Cargar la denominación y confirmar con arqueo.`;
+      return `Faltaron ${unitsText(input.missingUnits)} unidad(es) y el inventario está en cero: es AGOTAMIENTO, no un atasco. Cargar la denominación y confirmar con arqueo.${rejectionNote}`;
     }
 
     // Sólo se atenúa el diagnóstico cuando el baúl está de verdad en el umbral configurado
@@ -629,22 +669,22 @@ function describeDenominationState(input: {
     const nearThreshold = input.minDpQuantity > 0 && input.stock <= input.minDpQuantity + LOW_BALANCE_TOLERANCE;
     return `Faltaron ${unitsText(input.missingUnits)} unidad(es) con ${unitsText(input.stock)} en el baúl${
       nearThreshold ? " (cerca del umbral de recarga: el desabasto también lo explica)" : ""
-    }: revisar el módulo antes de acusar un fallo.${configuration}`;
+    }: revisar el módulo antes de acusar un fallo.${configuration}${rejectionNote}`;
   }
 
   if (input.expectedUnits === 0) {
-    return "El valor de las devoluciones del período no exigía esta denominación, pero entregó unidades: participó con otra combinación válida.";
+    return `El valor de las devoluciones del período no exigía esta denominación, pero entregó unidades: participó con otra combinación válida.${rejectionNote}`;
   }
   if (input.differenceUnits < 0) {
-    return `Entregó ${unitsText(Math.abs(input.differenceUnits))} unidad(es) más de las que le tocaban: está compensando la entrega de otra denominación.`;
+    return `Entregó ${unitsText(Math.abs(input.differenceUnits))} unidad(es) más de las que le tocaban: está compensando la entrega de otra denominación.${rejectionNote}`;
   }
   if (input.differenceUnits === 0) {
-    return "El detalle confirma la entrega de la parte que le correspondía.";
+    return `El detalle confirma la entrega de la parte que le correspondía.${rejectionNote}`;
   }
   if (input.incompletePayouts > 0) {
-    return "El plan de referencia pedía unidades de esta denominación que no salieron, pero el faltante del período no se pudo repartir hasta aquí (no había combinación exacta con el inventario leído). Cruzar con el análisis de atascos antes de concluir.";
+    return `El plan de referencia pedía unidades de esta denominación que no salieron, pero el faltante del período no se pudo repartir hasta aquí (no había combinación exacta con el inventario leído). Cruzar con el análisis de atascos antes de concluir.${rejectionNote}`;
   }
-  return "Las devoluciones se completaron con otra combinación válida: esta denominación no participó y no hay entrega incompleta que explicar.";
+  return `Las devoluciones se completaron con otra combinación válida: esta denominación no participó y no hay entrega incompleta que explicar.${rejectionNote}`;
 }
 
 /**
@@ -689,12 +729,16 @@ function describeTransaction(input: {
   lines: readonly PayoutLine[];
   missingCents: bigint;
   payoutCents: bigint;
+  rejectedCents: bigint;
   unattributedMissing: bigint;
 }): string {
+  const rejectionNote = input.rejectedCents > 0n
+    ? ` Además, ${amountText(centsToValue(input.rejectedCents))} terminó en rechazo (RJ) y no cuenta como entregado al cliente.`
+    : "";
   if (input.complete) {
     return input.compositionMatchesPlan
-      ? `Entregado exacto: ${amountText(centsToValue(input.dispensedCents))} con la combinación esperada.`
-      : `Entregado exacto: ${amountText(centsToValue(input.dispensedCents))} con otra combinación válida (el plan de referencia era ${amountText(centsToValue(input.expectedCents))}).`;
+      ? `Entregado exacto: ${amountText(centsToValue(input.dispensedCents))} con la combinación esperada.${rejectionNote}`
+      : `Entregado exacto: ${amountText(centsToValue(input.dispensedCents))} con otra combinación válida (el plan de referencia era ${amountText(centsToValue(input.expectedCents))}).${rejectionNote}`;
   }
 
   const missing = input.lines
@@ -715,7 +759,8 @@ function describeTransaction(input: {
     parts.push("con el inventario leído no había combinación exacta para ese valor");
   }
   parts.push(input.errorState ? "el kiosco registró la devolución con ERROR" : "la transacción no reporta error de devolución");
-  return `${parts.join(" · ")}.`;
+  const verdict = `${parts.join(" · ")}.`;
+  return rejectionNote ? `${verdict}${rejectionNote}` : verdict;
 }
 
 /**
